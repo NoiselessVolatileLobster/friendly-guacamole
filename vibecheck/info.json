@@ -1,0 +1,12 @@
+{
+    "author": ["NoiselessVolatileLobster"],
+    "description": "VibeCheck is a cog for counting good vibes and bad vibes for every user in the server. It is a very small facelift of Tobotimus' ReactKarma",
+    "install_msg": "Thanks for installing `vibecheck`. See `[p]help VibeCheck` for details.",
+    "short": "Good vibes? Bad vibes? You decide. Give them to other users and check the vibeboard to see how you're doing.",
+    "hidden": false,
+    "disabled": false,
+    "required_cogs": {},
+    "requirements": [],
+    "tags": ["vibes", "upvote", "downvote"],
+    "type": "COG"
+  }
