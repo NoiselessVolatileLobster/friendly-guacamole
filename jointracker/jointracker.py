@@ -183,35 +183,22 @@ class JoinTracker(commands.Cog):
             # Fallback to current discord.py data if not yet populated
             last_join_date = member.joined_at.strftime('%Y-%m-%d %H:%M:%S UTC')
             
-        channel_id = await self.config.guild(ctx.guild).welcome_channel_id()
-        welcome_channel = ctx.guild.get_channel(channel_id) if channel_id else "Not set"
-
         embed = discord.Embed(
             title=f"Join/Rejoin History for {member.display_name}",
             color=member.color if member.color != discord.Color.default() else discord.Color.blue()
         )
         
+        # Field 1: Times in Server
         embed.add_field(
             name="Times in Server",
             value=f"**{times_here}** time{'s' if times_here > 1 else ''} total.",
             inline=False
         )
         
-        embed.add_field(
-            name="Rejoin Count Override",
-            value=f"{rejoin_count} time{'s' if rejoin_count > 1 else ''} (The number used for 'Welcome Back' message logic)",
-            inline=False
-        )
-
+        # Field 2: Last Joined
         embed.add_field(
             name="Last Joined",
             value=last_join_date,
-            inline=False
-        )
-
-        embed.add_field(
-            name="Welcome Channel",
-            value=welcome_channel.mention if isinstance(welcome_channel, discord.TextChannel) else welcome_channel,
             inline=False
         )
         
