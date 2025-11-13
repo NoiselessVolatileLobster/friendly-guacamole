@@ -205,12 +205,12 @@ class OuijaPoke(commands.Cog):
         await ctx.send(message)
 
 
-    # CHANGE: Alias updated from 'poke' to 'o-poke', and 'name' is kept as 'poke' within the group.
-    @ouijapoke.command(name="poke", aliases=["o-poke"]) 
+    # REVERTED: Alias is now simply "poke"
+    @ouijapoke.command(name="poke", aliases=["poke"]) 
     async def ouijapoke_random(self, ctx: commands.Context):
         """
         Pokes a random member who has been inactive for the configured number of days.
-        Can be used with [p]o-poke or [p]ouijapoke poke.
+        Can be used with [p]poke or [p]ouijapoke poke.
         """
         async with ctx.typing():
             settings = await self._get_settings(ctx.guild)
@@ -229,12 +229,12 @@ class OuijaPoke(commands.Cog):
                 settings.poke_gifs,
             )
     
-    # CHANGE: Alias updated from 'summon' to 'o-summon'
-    @ouijapoke.command(name="summon", aliases=["o-summon"])
+    # REVERTED: Alias is now simply "summon"
+    @ouijapoke.command(name="summon", aliases=["summon"])
     async def ouijasummon_random(self, ctx: commands.Context):
         """
         Summons a random member who has been inactive for the configured number of days.
-        Can be used with [p]o-summon or [p]ouijapoke summon.
+        Can be used with [p]summon or [p]ouijapoke summon.
         """
         async with ctx.typing():
             settings = await self._get_settings(ctx.guild)
