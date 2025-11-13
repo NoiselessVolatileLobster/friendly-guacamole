@@ -8,6 +8,10 @@ from datetime import datetime, timezone
 # Define the default configuration structure for the cog
 DEFAULT_GUILD = {
     "welcome_channel_id": None,
+    # New: Store role ID for mention in the welcome message
+    "welcome_role_id": None, 
+    # New: Customizable message template with {user}, {role}, and {count} variables
+    "welcome_message": "Welcome back, {user}! We're glad you're here for your {count} time. Please check out {role} for next steps.",
 }
 DEFAULT_MEMBER = {
     "rejoin_count": 0,
@@ -34,12 +38,12 @@ class JoinTracker(commands.Cog):
 
         guild = member.guild
         member_data = await self.config.member(member).all()
+        guild_settings = await self.config.guild(guild).all() # Fetch all guild settings
         
         # 1. Update/Calculate Rejoin Count
         rejoin_count = member_data["rejoin_count"]
         
-        # Check if they have been here before (based on whether we have stored a last join date)
-        # Note: on_member_remove stores the join date right before leaving.
+        # Check if they have been here before
         if member_data["last_join_date"] is not None:
             # They are rejoining, increment the counter
             rejoin_count += 1
@@ -50,35 +54,51 @@ class JoinTracker(commands.Cog):
         await self.config.member(member).last_join_date.set(join_date_iso)
         
         # 3. Send "Welcome Back" message if applicable
-        channel_id = await self.config.guild(guild).welcome_channel_id()
+        channel_id = guild_settings["welcome_channel_id"]
 
         if rejoin_count > 0 and channel_id:
             channel = guild.get_channel(channel_id)
             if channel:
-                if rejoin_count == 1:
-                    await channel.send(
-                        f"Welcome back, {member.mention}! This is your second time joining the server. "
-                        f"We're glad to have you again."
+                
+                # Fetch customization settings
+                welcome_msg_template = guild_settings["welcome_message"]
+                role_id = guild_settings["welcome_role_id"]
+                
+                # Prepare role mention
+                role_mention = ""
+                if role_id:
+                    role = guild.get_role(role_id)
+                    # Use role mention if role exists, otherwise use a plain string name
+                    role_mention = role.mention if role else "the specified role"
+
+                # Prepare count display (rejoin_count + 1 is the total times here)
+                count_display = rejoin_count + 1
+                
+                # Format the message using the template variables
+                try:
+                    formatted_message = welcome_msg_template.format(
+                        user=member.mention,
+                        role=role_mention,
+                        count=count_display
                     )
-                else:
-                    await channel.send(
-                        f"Welcome back, {member.mention}! This is your **{rejoin_count + 1}** time "
-                        f"joining the server! We're glad to have you again."
+                except KeyError:
+                    # Fallback message if the template is broken or variables are missing
+                    formatted_message = (
+                        f"Welcome back, {member.mention}! This is your {count_display} time "
+                        f"joining the server. (Error formatting custom message.)"
                     )
+
+                # Send the customized message
+                await channel.send(formatted_message)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         """
-        Handle members leaving. We store the current join date (which is before they leave)
-        to indicate they were here, so the next join counts as a rejoin.
+        Handle members leaving. No explicit action is needed here as the join date 
+        is stored on join, which is what we check for when they rejoin.
         """
         if member.bot:
             return
-            
-        # We don't need to increment the counter here; we check for a stored date on join.
-        # We just need to make sure the last_join_date is recorded for the *next* time they join.
-        # Since on_member_join already stores it, no explicit action is needed here 
-        # unless we want to record the *leave* date, but the requirement is just to track the count.
         pass
         
     @commands.group(name="jointracker", aliases=["jt"])
@@ -100,6 +120,39 @@ class JoinTracker(commands.Cog):
         else:
             await self.config.guild(ctx.guild).welcome_channel_id.set(None)
             await ctx.send("The welcome back channel has been cleared. No automated welcome messages will be sent.")
+
+    @jointracker.command(name="setwelcomerole")
+    async def jointracker_setwelcomerole(self, ctx: Context, role: discord.Role = None):
+        """
+        Sets the role to be mentioned using the {role} variable in the welcome message.
+        
+        If no role is provided, the current setting will be cleared.
+        """
+        if role:
+            await self.config.guild(ctx.guild).welcome_role_id.set(role.id)
+            await ctx.send(f"The welcome role to mention has been set to **{role.name}**.")
+        else:
+            await self.config.guild(ctx.guild).welcome_role_id.set(None)
+            await ctx.send("The welcome role mention has been cleared.")
+
+    @jointracker.command(name="setwelcomemsg")
+    async def jointracker_setwelcomemsg(self, ctx: Context, *, message: str):
+        """
+        Sets the custom "Welcome back" message template.
+        
+        Use the following variables:
+        - {user}: The member mention.
+        - {role}: The mention of the configured welcome role.
+        - {count}: The total number of times the user has joined (e.g., 2, 3, 4...).
+        
+        Example: [p]jointracker setwelcomemsg Welcome back, {user}! The {role} team missed you!
+        """
+        await self.config.guild(ctx.guild).welcome_message.set(message)
+        await ctx.send(
+            "The custom welcome message template has been set to:\n"
+            f"```\n{message}\n```\n"
+            "Ensure you use `{user}`, `{role}`, and `{count}` for dynamic content."
+        )
 
     @jointracker.command(name="setrejoins")
     async def jointracker_setrejoins(self, ctx: Context, member: discord.Member, count: int):
