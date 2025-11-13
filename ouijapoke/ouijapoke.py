@@ -4,6 +4,7 @@ from redbot.core.utils.chat_formatting import humanize_list
 from datetime import datetime, timedelta, timezone
 import random
 import re
+from typing import Union # Used for the updated helper function signatures
 
 # Pydantic is used for structured configuration in modern Red cogs
 try:
@@ -32,12 +33,9 @@ class OuijaSettings(BaseModel):
 class OuijaPoke(commands.Cog):
     """Tracks user activity and allows 'poking' or 'summoning' inactive members with a spooky twist."""
 
-    # Updated identifier to reflect the new name/concept, though Red uses the file name too.
     def __init__(self, bot):
         self.bot = bot
         # Config setup:
-        # last_seen: A dictionary mapping user IDs to their last active datetime (ISO 8601 string)
-        # ouija_settings: The Pydantic model for configurable settings
         self.config = Config.get_conf(self, identifier=148000552390, force_registration=True)
         self.config.register_guild(
             last_seen={}, # {user_id: "ISO_DATETIME_STRING"}
@@ -46,14 +44,18 @@ class OuijaPoke(commands.Cog):
 
     # --- Utility Methods ---
 
-    async def _get_settings(self, guild_id: int) -> OuijaSettings:
+    # FIX: Now accepts discord.Guild object, not guild_id: int
+    async def _get_settings(self, guild: discord.Guild) -> OuijaSettings:
         """Retrieves and parses the guild settings."""
-        settings_data = await self.config.guild(guild_id).ouija_settings()
+        # FIX: Passes the whole guild object to self.config.guild()
+        settings_data = await self.config.guild(guild).ouija_settings()
         return OuijaSettings(**settings_data)
 
-    async def _set_settings(self, guild_id: int, settings: OuijaSettings):
+    # FIX: Now accepts discord.Guild object, not guild_id: int
+    async def _set_settings(self, guild: discord.Guild, settings: OuijaSettings):
         """Saves the updated guild settings."""
-        await self.config.guild(guild_id).ouija_settings.set(settings.model_dump())
+        # FIX: Passes the whole guild object to self.config.guild()
+        await self.config.guild(guild).ouija_settings.set(settings.model_dump())
     
     def _is_valid_gif_url(self, url: str) -> bool:
         """Simple check if the URL looks like a GIF link."""
@@ -70,8 +72,11 @@ class OuijaPoke(commands.Cog):
         user_id = str(message.author.id)
         current_time_utc = datetime.now(timezone.utc).isoformat()
         
+        # FIX: Pass the whole message.guild object
         data = await self.config.guild(message.guild).last_seen()
+        
         data[user_id] = current_time_utc
+        # FIX: Pass the whole message.guild object
         await self.config.guild(message.guild).last_seen.set(data)
     
     @commands.Cog.listener()
@@ -83,14 +88,18 @@ class OuijaPoke(commands.Cog):
         user_id = str(member.id)
         current_time_utc = datetime.now(timezone.utc).isoformat()
         
+        # FIX: Pass the whole member.guild object
         data = await self.config.guild(member.guild).last_seen()
+        # Only set if they are not already in the tracking (e.g., first join)
         if user_id not in data:
             data[user_id] = current_time_utc
+            # FIX: Pass the whole member.guild object
             await self.config.guild(member.guild).last_seen.set(data)
 
 
     # --- Poking/Summoning Logic ---
-
+    # NOTE: _get_eligible_members correctly takes a discord.Guild object as 'guild'
+    
     def _get_inactivity_cutoff(self, days: int) -> datetime:
         """Calculates the ISO datetime cutoff point for inactivity."""
         return datetime.now(timezone.utc) - timedelta(days=days)
@@ -98,7 +107,10 @@ class OuijaPoke(commands.Cog):
     async def _get_eligible_members(self, guild: discord.Guild, days_inactive: int) -> list[discord.Member]:
         """Gets a list of members eligible for poking/summoning."""
         cutoff_dt = self._get_inactivity_cutoff(days_inactive)
-        last_seen_data = await self.config.guild(guild.id).last_seen()
+        
+        # FIX: Pass the whole guild object
+        last_seen_data = await self.config.guild(guild).last_seen()
+        
         eligible_members = []
         
         for user_id_str, last_seen_dt_str in last_seen_data.items():
@@ -149,7 +161,8 @@ class OuijaPoke(commands.Cog):
     async def ouijapoke_check(self, ctx: commands.Context):
         """Shows how many days it has been since you last sent a message."""
         user_id = str(ctx.author.id)
-        data = await self.config.guild(ctx.guild.id).last_seen()
+        # FIX: Pass the whole ctx.guild object
+        data = await self.config.guild(ctx.guild).last_seen()
         last_seen_dt_str = data.get(user_id)
 
         if not last_seen_dt_str:
@@ -174,7 +187,8 @@ class OuijaPoke(commands.Cog):
         Pokes a random member who has been inactive for the configured number of days.
         """
         await ctx.trigger_typing()
-        settings = await self._get_settings(ctx.guild.id)
+        # FIX: Pass the whole ctx.guild object
+        settings = await self._get_settings(ctx.guild)
         
         eligible_members = await self._get_eligible_members(ctx.guild, settings.poke_days)
         
@@ -197,7 +211,8 @@ class OuijaPoke(commands.Cog):
         Summons a random member who has been inactive for the configured number of days.
         """
         await ctx.trigger_typing()
-        settings = await self._get_settings(ctx.guild.id)
+        # FIX: Pass the whole ctx.guild object
+        settings = await self._get_settings(ctx.guild)
         
         eligible_members = await self._get_eligible_members(ctx.guild, settings.summon_days)
         
@@ -222,7 +237,8 @@ class OuijaPoke(commands.Cog):
     async def ouijaset(self, ctx: commands.Context):
         """Manages the OuijaPoke settings."""
         if ctx.invoked_subcommand is None:
-            settings = await self._get_settings(ctx.guild.id)
+            # FIX: Pass the whole ctx.guild object
+            settings = await self._get_settings(ctx.guild)
             
             msg = (
                 "**OuijaPoke Settings**\n"
@@ -241,9 +257,11 @@ class OuijaPoke(commands.Cog):
         """Sets the number of days a member must be inactive to be eligible for a 'poke'."""
         if days < 1:
             return await ctx.send("Days must be 1 or greater.")
-        settings = await self._get_settings(ctx.guild.id)
+        # FIX: Pass the whole ctx.guild object
+        settings = await self._get_settings(ctx.guild)
         settings.poke_days = days
-        await self._set_settings(ctx.guild.id, settings)
+        # FIX: Pass the whole ctx.guild object
+        await self._set_settings(ctx.guild, settings)
         await ctx.send(f"Members are now eligible to be poked after **{days}** days of inactivity.")
 
     @ouijaset.command(name="summondays")
@@ -251,9 +269,11 @@ class OuijaPoke(commands.Cog):
         """Sets the number of days a member must be inactive to be eligible for a 'summon'."""
         if days < 1:
             return await ctx.send("Days must be 1 or greater.")
-        settings = await self._get_settings(ctx.guild.id)
+        # FIX: Pass the whole ctx.guild object
+        settings = await self._get_settings(ctx.guild)
         settings.summon_days = days
-        await self._set_settings(ctx.guild.id, settings)
+        # FIX: Pass the whole ctx.guild object
+        await self._set_settings(ctx.guild, settings)
         await ctx.send(f"Members are now eligible to be summoned after **{days}** days of inactivity.")
 
     # --- Message Setting ---
@@ -267,9 +287,11 @@ class OuijaPoke(commands.Cog):
         """
         if "{user_mention}" not in message:
             return await ctx.send("The message must contain `{user_mention}` to mention the inactive user.")
-        settings = await self._get_settings(ctx.guild.id)
+        # FIX: Pass the whole ctx.guild object
+        settings = await self._get_settings(ctx.guild)
         settings.poke_message = message
-        await self._set_settings(ctx.guild.id, settings)
+        # FIX: Pass the whole ctx.guild object
+        await self._set_settings(ctx.guild, settings)
         await ctx.send(f"Poke message set to: `{message}`")
 
 
@@ -282,7 +304,8 @@ class OuijaPoke(commands.Cog):
         
         Use `[p]ouijaset pokegifs add <url>` or `[p]ouijaset pokegifs remove <url>`
         """
-        settings = await self._get_settings(ctx.guild.id)
+        # FIX: Pass the whole ctx.guild object
+        settings = await self._get_settings(ctx.guild)
         gifs = settings.poke_gifs
         if not gifs:
             msg = "There are currently no Poke GIFs configured."
@@ -298,22 +321,26 @@ class OuijaPoke(commands.Cog):
         if not self._is_valid_gif_url(url):
             return await ctx.send("That doesn't look like a valid GIF URL. Make sure it ends with `.gif` or a common animated extension.")
         
-        settings = await self._get_settings(ctx.guild.id)
+        # FIX: Pass the whole ctx.guild object
+        settings = await self._get_settings(ctx.guild)
         if url in settings.poke_gifs:
             return await ctx.send("That GIF is already in the list.")
         
         settings.poke_gifs.append(url)
-        await self._set_settings(ctx.guild.id, settings)
+        # FIX: Pass the whole ctx.guild object
+        await self._set_settings(ctx.guild, settings)
         await ctx.send(f"Added new Poke GIF: <{url}>")
 
     @ouijaset_pokegifs.command(name="remove")
     async def pokegifs_remove(self, ctx: commands.Context, url: str):
         """Removes a GIF URL from the poke list."""
-        settings = await self._get_settings(ctx.guild.id)
+        # FIX: Pass the whole ctx.guild object
+        settings = await self._get_settings(ctx.guild)
         
         try:
             settings.poke_gifs.remove(url)
-            await self._set_settings(ctx.guild.id, settings)
+            # FIX: Pass the whole ctx.guild object
+            await self._set_settings(ctx.guild, settings)
             await ctx.send(f"Removed Poke GIF: <{url}>")
         except ValueError:
             await ctx.send("That GIF URL was not found in the list.")
@@ -326,7 +353,8 @@ class OuijaPoke(commands.Cog):
         
         Use `[p]ouijaset summongifs add <url>` or `[p]ouijaset summongifs remove <url>`
         """
-        settings = await self._get_settings(ctx.guild.id)
+        # FIX: Pass the whole ctx.guild object
+        settings = await self._get_settings(ctx.guild)
         gifs = settings.summon_gifs
         if not gifs:
             msg = "There are currently no Summon GIFs configured."
@@ -342,22 +370,26 @@ class OuijaPoke(commands.Cog):
         if not self._is_valid_gif_url(url):
             return await ctx.send("That doesn't look like a valid GIF URL. Make sure it ends with `.gif` or a common animated extension.")
         
-        settings = await self._get_settings(ctx.guild.id)
+        # FIX: Pass the whole ctx.guild object
+        settings = await self._get_settings(ctx.guild)
         if url in settings.summon_gifs:
             return await ctx.send("That GIF is already in the list.")
         
         settings.summon_gifs.append(url)
-        await self._set_settings(ctx.guild.id, settings)
+        # FIX: Pass the whole ctx.guild object
+        await self._set_settings(ctx.guild, settings)
         await ctx.send(f"Added new Summon GIF: <{url}>")
 
     @ouijaset_summongifs.command(name="remove")
     async def summongifs_remove(self, ctx: commands.Context, url: str):
         """Removes a GIF URL from the summon list."""
-        settings = await self._get_settings(ctx.guild.id)
+        # FIX: Pass the whole ctx.guild object
+        settings = await self._get_settings(ctx.guild)
         
         try:
             settings.summon_gifs.remove(url)
-            await self._set_settings(ctx.guild.id, settings)
+            # FIX: Pass the whole ctx.guild object
+            await self._set_settings(ctx.guild, settings)
             await ctx.send(f"Removed Summon GIF: <{url}>")
         except ValueError:
             await ctx.send("That GIF URL was not found in the list.")
@@ -381,7 +413,8 @@ class OuijaPoke(commands.Cog):
         target_last_active_dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
         target_last_active_dt_str = target_last_active_dt.isoformat()
         
-        last_seen_data = await self.config.guild(ctx.guild.id).last_seen()
+        # FIX: Pass the whole ctx.guild object
+        last_seen_data = await self.config.guild(ctx.guild).last_seen()
         
         updated_count = 0
         
@@ -392,7 +425,8 @@ class OuijaPoke(commands.Cog):
             last_seen_data[str(member.id)] = target_last_active_dt_str
             updated_count += 1
             
-        await self.config.guild(ctx.guild.id).last_seen.set(last_seen_data)
+        # FIX: Pass the whole ctx.guild object
+        await self.config.guild(ctx.guild).last_seen.set(last_seen_data)
         
         await ctx.send(
             f"The Ouija spirits have whispered that **{updated_count}** members "
