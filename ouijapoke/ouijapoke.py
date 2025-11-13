@@ -47,6 +47,8 @@ class OuijaPoke(commands.Cog):
             last_seen={}, # {user_id: "ISO_DATETIME_STRING"}
             ouija_settings=OuijaSettings().model_dump()
         )
+        # NEW: In-memory tracker for voice channel connections
+        self.voice_connect_times = {} # {member_id: datetime_object}
 
     # --- Utility Methods ---
 
@@ -58,6 +60,15 @@ class OuijaPoke(commands.Cog):
     async def _set_settings(self, guild: discord.Guild, settings: OuijaSettings):
         """Saves the updated guild settings."""
         await self.config.guild(guild).ouija_settings.set(settings.model_dump())
+    
+    async def _update_last_seen(self, guild: discord.Guild, user_id: int):
+        """Updates the last_seen time for a user in the guild config."""
+        user_id_str = str(user_id)
+        current_time_utc = datetime.now(timezone.utc).isoformat()
+        
+        data = await self.config.guild(guild).last_seen()
+        data[user_id_str] = current_time_utc
+        await self.config.guild(guild).last_seen.set(data)
     
     def _is_valid_gif_url(self, url: str) -> bool:
         """Simple check if the URL looks like a GIF link or page."""
@@ -71,14 +82,9 @@ class OuijaPoke(commands.Cog):
         """Updates the last_seen time for any message sent."""
         if message.guild is None or message.author.bot or message.webhook_id:
             return
-
-        user_id = str(message.author.id)
-        current_time_utc = datetime.now(timezone.utc).isoformat()
         
-        data = await self.config.guild(message.guild).last_seen()
-        
-        data[user_id] = current_time_utc
-        await self.config.guild(message.guild).last_seen.set(data)
+        # Use the new utility method to update last_seen
+        await self._update_last_seen(message.guild, message.author.id)
     
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
@@ -86,13 +92,39 @@ class OuijaPoke(commands.Cog):
         if member.bot:
             return
         
-        user_id = str(member.id)
-        current_time_utc = datetime.now(timezone.utc).isoformat()
-        
+        # Only set if they are not already in the tracking (e.g., first join)
         data = await self.config.guild(member.guild).last_seen()
-        if user_id not in data:
-            data[user_id] = current_time_utc
-            await self.config.guild(member.guild).last_seen.set(data)
+        if str(member.id) not in data:
+            await self._update_last_seen(member.guild, member.id)
+
+    # NEW: Voice activity listener
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+        """Tracks voice channel connection duration and updates last_seen if > 5 minutes."""
+        if member.bot:
+            return
+        
+        member_id = member.id
+        
+        # CASE 1: Joined a channel (or moved channels)
+        if after.channel is not None and before.channel != after.channel:
+            # Check if user is not server-muted or server-deafened (implies true presence)
+            if not after.self_mute and not after.self_deaf and not after.mute and not after.deaf:
+                self.voice_connect_times[member_id] = datetime.now(timezone.utc)
+        
+        # CASE 2: Left a channel (or moved from one to none)
+        if before.channel is not None and after.channel is None:
+            if member_id in self.voice_connect_times:
+                join_time = self.voice_connect_times.pop(member_id)
+                duration = datetime.now(timezone.utc) - join_time
+                
+                # Check if connection was 5 minutes or longer
+                if duration >= timedelta(minutes=5):
+                    await self._update_last_seen(member.guild, member_id)
+                
+                # Handle the case where they moved from one channel to another without leaving VC
+                # (This is handled by the "Joined a channel" logic which overwrites the time, 
+                # but we handle the final departure here.)
 
 
     # --- Poking/Summoning Logic ---
@@ -126,7 +158,6 @@ class OuijaPoke(commands.Cog):
         
         return eligible_members
 
-    # NEW LOGIC: Sends two separate messages for reliable GIF display.
     async def _send_activity_message(self, ctx: commands.Context, member: discord.Member, message_text: str, gif_list: list[str]):
         """
         Sends the message text and the GIF URL as two separate messages 
@@ -177,7 +208,6 @@ class OuijaPoke(commands.Cog):
         await ctx.send(message)
 
 
-    # CHANGE: Added 'poke' as an alias
     @ouijapoke.command(name="poke", aliases=["poke"]) 
     async def ouijapoke_random(self, ctx: commands.Context):
         """
@@ -201,7 +231,6 @@ class OuijaPoke(commands.Cog):
                 settings.poke_gifs,
             )
     
-    # CHANGE: Added 'summon' as an alias
     @ouijapoke.command(name="summon", aliases=["summon"])
     async def ouijasummon_random(self, ctx: commands.Context):
         """
