@@ -6,4 +6,4 @@ async def setup(bot):
     It imports the NorthernLights class and adds it to the bot.
     """
     # Instantiate the cog class and register it with the bot
-    await bot.add_cog(JoinTracker(bot))
+    await bot.add_cog(NorthernLights(bot))
