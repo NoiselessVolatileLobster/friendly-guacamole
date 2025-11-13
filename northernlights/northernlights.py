@@ -33,7 +33,7 @@ class NorthernLights(commands.Cog):
 
         # Create the embed for a visually appealing message
         embed = discord.Embed(
-            title=":sparkles: Northern Hemisphere Aurora Forecast (Ovation)",
+            title=":sparkles: Northern Hemisphere Aurora Forecast",
             description="The map below shows the predicted location and intensity of the Aurora Borealis based on the latest data.",
             color=discord.Color.blue()
         )
