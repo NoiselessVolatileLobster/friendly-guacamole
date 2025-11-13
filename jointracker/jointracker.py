@@ -8,10 +8,12 @@ from datetime import datetime, timezone
 # Define the default configuration structure for the cog
 DEFAULT_GUILD = {
     "welcome_channel_id": None,
-    # New: Store role ID for mention in the welcome message
+    # Store role ID for mention in the welcome message
     "welcome_role_id": None, 
-    # New: Customizable message template with {user}, {role}, and {count} variables
+    # Customizable message template for REJOINS (supports {user}, {role}, and {count})
     "welcome_message": "Welcome back, {user}! We're glad you're here for your {count} time. Please check out {role} for next steps.",
+    # New: Customizable message template for FIRST TIME JOINS (supports {user} and {role})
+    "first_join_message": "Welcome, {user}! We are thrilled to have you here for the first time. Check out {role} to get started.",
 }
 DEFAULT_MEMBER = {
     "rejoin_count": 0,
@@ -40,11 +42,12 @@ class JoinTracker(commands.Cog):
         member_data = await self.config.member(member).all()
         guild_settings = await self.config.guild(guild).all() # Fetch all guild settings
         
-        # 1. Update/Calculate Rejoin Count
+        # Determine if this is a first-time join
+        is_first_join = member_data["last_join_date"] is None and member_data["rejoin_count"] == 0
         rejoin_count = member_data["rejoin_count"]
-        
-        # Check if they have been here before
-        if member_data["last_join_date"] is not None:
+
+        # 1. Update/Calculate Rejoin Count
+        if not is_first_join:
             # They are rejoining, increment the counter
             rejoin_count += 1
             await self.config.member(member).rejoin_count.set(rejoin_count)
@@ -53,40 +56,52 @@ class JoinTracker(commands.Cog):
         join_date_iso = member.joined_at.astimezone(timezone.utc).isoformat()
         await self.config.member(member).last_join_date.set(join_date_iso)
         
-        # 3. Send "Welcome Back" message if applicable
+        # 3. Send Welcome Message
         channel_id = guild_settings["welcome_channel_id"]
 
-        if rejoin_count > 0 and channel_id:
+        if channel_id:
             channel = guild.get_channel(channel_id)
             if channel:
                 
-                # Fetch customization settings
-                welcome_msg_template = guild_settings["welcome_message"]
                 role_id = guild_settings["welcome_role_id"]
                 
                 # Prepare role mention
                 role_mention = ""
                 if role_id:
                     role = guild.get_role(role_id)
-                    # Use role mention if role exists, otherwise use a plain string name
+                    # Use role mention if role exists, otherwise use a fallback string
                     role_mention = role.mention if role else "the specified role"
 
-                # Prepare count display (rejoin_count + 1 is the total times here)
-                count_display = rejoin_count + 1
-                
+                if is_first_join:
+                    # Case A: First Time Join
+                    msg_template = guild_settings["first_join_message"]
+                    template_vars = {
+                        "user": member.mention,
+                        "role": role_mention,
+                    }
+                else:
+                    # Case B: Rejoin
+                    msg_template = guild_settings["welcome_message"]
+                    # Calculate total times here (rejoin_count starts at 0 for the first time)
+                    count_display = rejoin_count + 1 
+                    template_vars = {
+                        "user": member.mention,
+                        "role": role_mention,
+                        "count": count_display
+                    }
+
                 # Format the message using the template variables
                 try:
-                    formatted_message = welcome_msg_template.format(
-                        user=member.mention,
-                        role=role_mention,
-                        count=count_display
-                    )
+                    formatted_message = msg_template.format(**template_vars)
                 except KeyError:
                     # Fallback message if the template is broken or variables are missing
-                    formatted_message = (
-                        f"Welcome back, {member.mention}! This is your {count_display} time "
-                        f"joining the server. (Error formatting custom message.)"
-                    )
+                    if is_first_join:
+                        formatted_message = f"Welcome, {member.mention}! (Error formatting custom first-join message.)"
+                    else:
+                        formatted_message = (
+                            f"Welcome back, {member.mention}! This is your {rejoin_count + 1} time "
+                            f"joining the server. (Error formatting custom rejoin message.)"
+                        )
 
                 # Send the customized message
                 await channel.send(formatted_message)
@@ -94,8 +109,7 @@ class JoinTracker(commands.Cog):
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         """
-        Handle members leaving. No explicit action is needed here as the join date 
-        is stored on join, which is what we check for when they rejoin.
+        Handle members leaving. No explicit action is needed here.
         """
         if member.bot:
             return
@@ -110,21 +124,21 @@ class JoinTracker(commands.Cog):
     @jointracker.command(name="setchannel")
     async def jointracker_setchannel(self, ctx: Context, channel: discord.TextChannel = None):
         """
-        Sets the channel where "Welcome back" messages are sent.
+        Sets the channel where "Welcome" messages are sent.
         
         If no channel is provided, the current setting will be cleared.
         """
         if channel:
             await self.config.guild(ctx.guild).welcome_channel_id.set(channel.id)
-            await ctx.send(f"The welcome back channel has been set to {channel.mention}.")
+            await ctx.send(f"The welcome channel has been set to {channel.mention}.")
         else:
             await self.config.guild(ctx.guild).welcome_channel_id.set(None)
-            await ctx.send("The welcome back channel has been cleared. No automated welcome messages will be sent.")
+            await ctx.send("The welcome channel has been cleared. No automated welcome messages will be sent.")
 
     @jointracker.command(name="setwelcomerole")
     async def jointracker_setwelcomerole(self, ctx: Context, role: discord.Role = None):
         """
-        Sets the role to be mentioned using the {role} variable in the welcome message.
+        Sets the role to be mentioned using the {role} variable in welcome messages.
         
         If no role is provided, the current setting will be cleared.
         """
@@ -135,10 +149,28 @@ class JoinTracker(commands.Cog):
             await self.config.guild(ctx.guild).welcome_role_id.set(None)
             await ctx.send("The welcome role mention has been cleared.")
 
+    @jointracker.command(name="setfirstjoinmsg")
+    async def jointracker_setfirstjoinmsg(self, ctx: Context, *, message: str):
+        """
+        Sets the custom "First time join" message template.
+        
+        Use the following variables:
+        - {user}: The member mention.
+        - {role}: The mention of the configured welcome role.
+        
+        Example: [p]jointracker setfirstjoinmsg Hello {user}! Check out {role}.
+        """
+        await self.config.guild(ctx.guild).first_join_message.set(message)
+        await ctx.send(
+            "The custom **first time join** message template has been set to:\n"
+            f"```\n{message}\n```\n"
+            "Ensure you use `{user}` and `{role}` for dynamic content."
+        )
+
     @jointracker.command(name="setwelcomemsg")
     async def jointracker_setwelcomemsg(self, ctx: Context, *, message: str):
         """
-        Sets the custom "Welcome back" message template.
+        Sets the custom "Welcome back" message template for returning users.
         
         Use the following variables:
         - {user}: The member mention.
@@ -149,7 +181,7 @@ class JoinTracker(commands.Cog):
         """
         await self.config.guild(ctx.guild).welcome_message.set(message)
         await ctx.send(
-            "The custom welcome message template has been set to:\n"
+            "The custom **welcome back** message template has been set to:\n"
             f"```\n{message}\n```\n"
             "Ensure you use `{user}`, `{role}`, and `{count}` for dynamic content."
         )
