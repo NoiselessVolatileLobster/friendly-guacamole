@@ -32,6 +32,13 @@ class JoinTracker(commands.Cog):
         self.config.register_guild(**DEFAULT_GUILD)
         self.config.register_member(**DEFAULT_MEMBER)
 
+    def _get_ordinal(self, n: int) -> str:
+        """Converts an integer to its ordinal string representation (1 -> 1st, 2 -> 2nd, etc.)."""
+        if 10 <= n % 100 <= 20:
+            return str(n) + 'th'
+        else:
+            return str(n) + {1 : 'st', 2 : 'nd', 3 : 'rd'}.get(n % 10, 'th')
+
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         """Handle new members joining the guild."""
@@ -82,8 +89,9 @@ class JoinTracker(commands.Cog):
                 else:
                     # Case B: Rejoin
                     msg_template = guild_settings["welcome_message"]
-                    # Calculate total times here (rejoin_count starts at 0 for the first time)
-                    count_display = rejoin_count + 1 
+                    # Calculate total times here (rejoin_count + 1 is the total times here)
+                    count_int = rejoin_count + 1 
+                    count_display = self._get_ordinal(count_int) # <-- Use ordinal helper function
                     template_vars = {
                         "user": member.mention,
                         "role": role_mention,
@@ -175,9 +183,9 @@ class JoinTracker(commands.Cog):
         Use the following variables:
         - {user}: The member mention.
         - {role}: The mention of the configured welcome role.
-        - {count}: The total number of times the user has joined (e.g., 2, 3, 4...).
+        - {count}: The total number of times the user has joined (e.g., 2nd, 3rd, 4th...).
         
-        Example: [p]jointracker setwelcomemsg Welcome back, {user}! The {role} team missed you!
+        Example: [p]jointracker setwelcomemsg Welcome back, {user}! The {role} team missed you on your {count} visit!
         """
         await self.config.guild(ctx.guild).welcome_message.set(message)
         await ctx.send(
