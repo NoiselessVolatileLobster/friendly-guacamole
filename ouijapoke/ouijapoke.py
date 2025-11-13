@@ -60,7 +60,7 @@ class OuijaPoke(commands.Cog):
         await self.config.guild(guild).ouija_settings.set(settings.model_dump())
     
     def _is_valid_gif_url(self, url: str) -> bool:
-        """Simple check if the URL looks like a GIF link."""
+        """Simple check if the URL looks like a GIF link or page."""
         # Using a relaxed check since Discord autolinks/autoplays many formats
         return re.match(r'^https?://[^\s/$.?#].[^\s]*\.(gif|webp|mp4|mov)(\?.*)?$', url, re.IGNORECASE) is not None or "tenor.com" in url or "giphy.com" in url
 
@@ -126,22 +126,23 @@ class OuijaPoke(commands.Cog):
         
         return eligible_members
 
-    # CHANGE: Function signature is now simpler as 'title' is no longer used
+    # NEW LOGIC: Sends two separate messages for reliable GIF display.
     async def _send_activity_message(self, ctx: commands.Context, member: discord.Member, message_text: str, gif_list: list[str]):
-        """Sends the final message without an embed, ensuring GIF reliability."""
+        """
+        Sends the message text and the GIF URL as two separate messages 
+        to ensure the GIF unfurls properly.
+        """
         
         final_message = message_text.replace("{user_mention}", member.mention)
-        content_parts = [final_message]
         
+        # 1. Send the text message (including the mention)
+        await ctx.send(content=final_message)
+        
+        # 2. Conditionally send the GIF URL in a second message
         if gif_list:
             gif_url = random.choice(gif_list)
-            # Add the GIF URL as a separate line of content
-            content_parts.append(gif_url)
-
-        final_content = "\n".join(content_parts)
-        
-        # Send the final content as a single, non-embed message
-        await ctx.send(content=final_content)
+            # The second message is just the URL, forcing Discord to unfurl it as the media
+            await ctx.send(content=gif_url)
 
 
     # --- User Commands ---
@@ -181,7 +182,6 @@ class OuijaPoke(commands.Cog):
         """
         Pokes a random member who has been inactive for the configured number of days.
         """
-        # FIX: Use ctx.typing() context manager
         async with ctx.typing():
             settings = await self._get_settings(ctx.guild)
             
@@ -192,7 +192,6 @@ class OuijaPoke(commands.Cog):
 
             member_to_poke = random.choice(eligible_members)
             
-            # CHANGE: Removed 'title' argument
             await self._send_activity_message(
                 ctx,
                 member_to_poke,
@@ -205,7 +204,6 @@ class OuijaPoke(commands.Cog):
         """
         Summons a random member who has been inactive for the configured number of days.
         """
-        # FIX: Use ctx.typing() context manager
         async with ctx.typing():
             settings = await self._get_settings(ctx.guild)
             
@@ -216,7 +214,6 @@ class OuijaPoke(commands.Cog):
 
             member_to_summon = random.choice(eligible_members)
             
-            # CHANGE: Removed 'title' argument
             await self._send_activity_message(
                 ctx,
                 member_to_summon,
@@ -321,7 +318,7 @@ class OuijaPoke(commands.Cog):
     async def pokegifs_add(self, ctx: commands.Context, url: str):
         """Adds a new GIF URL to the poke list."""
         if not self._is_valid_gif_url(url):
-            return await ctx.send("That doesn't look like a valid GIF URL. Please ensure it is a direct link to an image/GIF, or a Tenor/GIPHY page link.")
+            return await ctx.send("That doesn't look like a valid URL. Please ensure it's a link to an image/GIF, or a Tenor/GIPHY page link.")
         
         settings = await self._get_settings(ctx.guild)
         if url in settings.poke_gifs:
@@ -365,7 +362,7 @@ class OuijaPoke(commands.Cog):
     async def summongifs_add(self, ctx: commands.Context, url: str):
         """Adds a new GIF URL to the summon list."""
         if not self._is_valid_gif_url(url):
-            return await ctx.send("That doesn't look like a valid GIF URL. Please ensure it is a direct link to an image/GIF, or a Tenor/GIPHY page link.")
+            return await ctx.send("That doesn't look like a valid URL. Please ensure it's a link to an image/GIF, or a Tenor/GIPHY page link.")
         
         settings = await self._get_settings(ctx.guild)
         if url in settings.summon_gifs:
@@ -401,7 +398,6 @@ class OuijaPoke(commands.Cog):
         if days_ago < 0:
             return await ctx.send("The number of days must be 0 or greater.")
         
-        # FIX: Using ctx.typing() context manager
         async with ctx.typing():
             
             target_last_active_dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
