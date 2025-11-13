@@ -61,7 +61,8 @@ class OuijaPoke(commands.Cog):
     
     def _is_valid_gif_url(self, url: str) -> bool:
         """Simple check if the URL looks like a GIF link."""
-        return re.match(r'^https?://[^\s/$.?#].[^\s]*\.(gif|webp)(\?.*)?$', url, re.IGNORECASE) is not None
+        # Using a relaxed check since Discord autolinks/autoplays many formats
+        return re.match(r'^https?://[^\s/$.?#].[^\s]*\.(gif|webp|mp4|mov)(\?.*)?$', url, re.IGNORECASE) is not None or "tenor.com" in url or "giphy.com" in url
 
     # --- Listeners (Event Handlers) ---
     
@@ -125,22 +126,22 @@ class OuijaPoke(commands.Cog):
         
         return eligible_members
 
-    async def _send_activity_message(self, ctx: commands.Context, member: discord.Member, message_text: str, gif_list: list[str], title: str):
-        """Sends the final message with the embedded GIF."""
+    # CHANGE: Function signature is now simpler as 'title' is no longer used
+    async def _send_activity_message(self, ctx: commands.Context, member: discord.Member, message_text: str, gif_list: list[str]):
+        """Sends the final message without an embed, ensuring GIF reliability."""
         
         final_message = message_text.replace("{user_mention}", member.mention)
-
-        embed = discord.Embed(
-            title=title,
-            description=final_message,
-            color=await ctx.embed_color()
-        )
+        content_parts = [final_message]
         
         if gif_list:
             gif_url = random.choice(gif_list)
-            embed.set_image(url=gif_url)
+            # Add the GIF URL as a separate line of content
+            content_parts.append(gif_url)
 
-        await ctx.send(content=member.mention, embed=embed)
+        final_content = "\n".join(content_parts)
+        
+        # Send the final content as a single, non-embed message
+        await ctx.send(content=final_content)
 
 
     # --- User Commands ---
@@ -191,12 +192,12 @@ class OuijaPoke(commands.Cog):
 
             member_to_poke = random.choice(eligible_members)
             
+            # CHANGE: Removed 'title' argument
             await self._send_activity_message(
                 ctx,
                 member_to_poke,
-                settings.poke_message, # Use poke message
+                settings.poke_message, 
                 settings.poke_gifs,
-                title="👻 Ouija Poke!"
             )
     
     @ouijapoke.command(name="summon")
@@ -215,12 +216,12 @@ class OuijaPoke(commands.Cog):
 
             member_to_summon = random.choice(eligible_members)
             
+            # CHANGE: Removed 'title' argument
             await self._send_activity_message(
                 ctx,
                 member_to_summon,
-                settings.summon_message, # Use summon message
+                settings.summon_message, 
                 settings.summon_gifs, 
-                title="🕯️ ADMIN SUMMONING RITUAL 🕯️"
             )
 
 
@@ -320,7 +321,7 @@ class OuijaPoke(commands.Cog):
     async def pokegifs_add(self, ctx: commands.Context, url: str):
         """Adds a new GIF URL to the poke list."""
         if not self._is_valid_gif_url(url):
-            return await ctx.send("That doesn't look like a valid GIF URL. Make sure it ends with `.gif` or a common animated extension.")
+            return await ctx.send("That doesn't look like a valid GIF URL. Please ensure it is a direct link to an image/GIF, or a Tenor/GIPHY page link.")
         
         settings = await self._get_settings(ctx.guild)
         if url in settings.poke_gifs:
@@ -364,7 +365,7 @@ class OuijaPoke(commands.Cog):
     async def summongifs_add(self, ctx: commands.Context, url: str):
         """Adds a new GIF URL to the summon list."""
         if not self._is_valid_gif_url(url):
-            return await ctx.send("That doesn't look like a valid GIF URL. Make sure it ends with `.gif` or a common animated extension.")
+            return await ctx.send("That doesn't look like a valid GIF URL. Please ensure it is a direct link to an image/GIF, or a Tenor/GIPHY page link.")
         
         settings = await self._get_settings(ctx.guild)
         if url in settings.summon_gifs:
