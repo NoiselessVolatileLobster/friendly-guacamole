@@ -4,7 +4,7 @@ from redbot.core.utils.chat_formatting import humanize_list
 from datetime import datetime, timedelta, timezone
 import random
 import re
-from typing import Union # Used for the updated helper function signatures
+from typing import Union
 
 # Pydantic is used for structured configuration in modern Red cogs
 try:
@@ -23,6 +23,12 @@ class OuijaSettings(BaseModel):
     poke_message: str = Field(
         default="Hey {user_mention}, the Ouija Board feels your presence. Come say hello!",
         description="The message used when poking. Use {user_mention} for the user."
+    )
+    
+    # NEW: Separate configurable message for summoning
+    summon_message: str = Field(
+        default="**{user_mention}**! The spirits demand your return! Do not resist the summoning ritual!",
+        description="The message used when summoning. Use {user_mention} for the user."
     )
     
     poke_gifs: list[str] = Field(default=[], description="List of URLs for 'poke' GIFs.")
@@ -98,7 +104,6 @@ class OuijaPoke(commands.Cog):
 
 
     # --- Poking/Summoning Logic ---
-    # NOTE: _get_eligible_members correctly takes a discord.Guild object as 'guild'
     
     def _get_inactivity_cutoff(self, days: int) -> datetime:
         """Calculates the ISO datetime cutoff point for inactivity."""
@@ -200,7 +205,7 @@ class OuijaPoke(commands.Cog):
         await self._send_activity_message(
             ctx,
             member_to_poke,
-            settings.poke_message,
+            settings.poke_message, # Use poke message
             settings.poke_gifs,
             title="👻 Ouija Poke!"
         )
@@ -224,8 +229,8 @@ class OuijaPoke(commands.Cog):
         await self._send_activity_message(
             ctx,
             member_to_summon,
-            settings.poke_message, 
-            settings.summon_gifs, # Use the summon GIF list
+            settings.summon_message, # Use summon message
+            settings.summon_gifs, 
             title="🕯️ ADMIN SUMMONING RITUAL 🕯️"
         )
 
@@ -245,6 +250,7 @@ class OuijaPoke(commands.Cog):
                 f"- **Poke Inactivity:** {settings.poke_days} days\n"
                 f"- **Summon Inactivity:** {settings.summon_days} days\n"
                 f"- **Poke Message:** `{settings.poke_message}`\n"
+                f"- **Summon Message:** `{settings.summon_message}`\n"
                 f"- **Poke GIFs:** {len(settings.poke_gifs)} stored\n"
                 f"- **Summon GIFs:** {len(settings.summon_gifs)} stored"
             )
@@ -276,7 +282,7 @@ class OuijaPoke(commands.Cog):
         await self._set_settings(ctx.guild, settings)
         await ctx.send(f"Members are now eligible to be summoned after **{days}** days of inactivity.")
 
-    # --- Message Setting ---
+    # --- Message Settings ---
     
     @ouijaset.command(name="pokemessage")
     async def ouijaset_pokemessage(self, ctx: commands.Context, *, message: str):
@@ -293,6 +299,22 @@ class OuijaPoke(commands.Cog):
         # FIX: Pass the whole ctx.guild object
         await self._set_settings(ctx.guild, settings)
         await ctx.send(f"Poke message set to: `{message}`")
+        
+    @ouijaset.command(name="summonmessage")
+    async def ouijaset_summonmessage(self, ctx: commands.Context, *, message: str):
+        """
+        Sets the message used when a user is summoned. 
+        
+        Use `{user_mention}` as a variable for the user mention.
+        """
+        if "{user_mention}" not in message:
+            return await ctx.send("The message must contain `{user_mention}` to mention the inactive user.")
+        # FIX: Pass the whole ctx.guild object
+        settings = await self._get_settings(ctx.guild)
+        settings.summon_message = message
+        # FIX: Pass the whole ctx.guild object
+        await self._set_settings(ctx.guild, settings)
+        await ctx.send(f"Summon message set to: `{message}`")
 
 
     # --- GIF Management Commands ---
