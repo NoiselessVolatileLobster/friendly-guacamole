@@ -1,7 +1,7 @@
 import discord
 import time
+import datetime
 from redbot.core import commands
-from redbot.core.utils.chat_formatting import humanize_number
 
 class NorthernLights(commands.Cog):
     """
@@ -21,11 +21,15 @@ class NorthernLights(commands.Cog):
         """
         Displays the latest forecast image for the Northern Lights (Aurora Borealis).
         """
-        # Get the current Unix epoch time in seconds as an integer
+        # Get the current Unix epoch time in seconds as an integer. This is used for cache-busting the image URL.
         current_time = int(time.time())
         
         # Construct the final URL with the cache-busting parameter
         image_url = f"{self.BASE_URL}{current_time}"
+
+        # Convert the Unix timestamp to a human-readable UTC time string for the footer
+        # We use UTC to avoid confusing time zone issues on the server.
+        refresh_time_utc = datetime.datetime.utcfromtimestamp(current_time).strftime('%Y-%m-%d %H:%M:%S UTC')
 
         # Create the embed for a visually appealing message
         embed = discord.Embed(
@@ -37,9 +41,9 @@ class NorthernLights(commands.Cog):
         # Set the dynamic image URL
         embed.set_image(url=image_url)
         
-        # Add a note about the source and the refresh time
+        # Add a note about the source and the refresh time, using the formatted time string
         embed.set_footer(
-            text=f"Source: NOAA | Refreshed: {humanize_number(current_time)}"
+            text=f"Source: NOAA | Refreshed: {refresh_time_utc}"
         )
 
         try:
