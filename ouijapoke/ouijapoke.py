@@ -97,7 +97,7 @@ class OuijaPoke(commands.Cog):
         if str(member.id) not in data:
             await self._update_last_seen(member.guild, member.id)
 
-    # NEW: Voice activity listener
+    # Voice activity listener
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         """Tracks voice channel connection duration and updates last_seen if > 5 minutes."""
@@ -122,9 +122,6 @@ class OuijaPoke(commands.Cog):
                 if duration >= timedelta(minutes=5):
                     await self._update_last_seen(member.guild, member_id)
                 
-                # Handle the case where they moved from one channel to another without leaving VC
-                # (This is handled by the "Joined a channel" logic which overwrites the time, 
-                # but we handle the final departure here.)
 
 
     # --- Poking/Summoning Logic ---
@@ -208,11 +205,12 @@ class OuijaPoke(commands.Cog):
         await ctx.send(message)
 
 
-    @ouijapoke.command(name="poke", aliases=["poke"]) 
+    # CHANGE: Alias updated from 'poke' to 'o-poke', and 'name' is kept as 'poke' within the group.
+    @ouijapoke.command(name="poke", aliases=["o-poke"]) 
     async def ouijapoke_random(self, ctx: commands.Context):
         """
         Pokes a random member who has been inactive for the configured number of days.
-        Can be used with [p]poke or [p]ouijapoke poke.
+        Can be used with [p]o-poke or [p]ouijapoke poke.
         """
         async with ctx.typing():
             settings = await self._get_settings(ctx.guild)
@@ -231,11 +229,12 @@ class OuijaPoke(commands.Cog):
                 settings.poke_gifs,
             )
     
-    @ouijapoke.command(name="summon", aliases=["summon"])
+    # CHANGE: Alias updated from 'summon' to 'o-summon'
+    @ouijapoke.command(name="summon", aliases=["o-summon"])
     async def ouijasummon_random(self, ctx: commands.Context):
         """
         Summons a random member who has been inactive for the configured number of days.
-        Can be used with [p]summon or [p]ouijapoke summon.
+        Can be used with [p]o-summon or [p]ouijapoke summon.
         """
         async with ctx.typing():
             settings = await self._get_settings(ctx.guild)
