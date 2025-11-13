@@ -70,9 +70,9 @@ class OuijaPoke(commands.Cog):
         user_id = str(message.author.id)
         current_time_utc = datetime.now(timezone.utc).isoformat()
         
-        data = await self.config.guild(message.guild.id).last_seen()
+        data = await self.config.guild(message.guild).last_seen()
         data[user_id] = current_time_utc
-        await self.config.guild(message.guild.id).last_seen.set(data)
+        await self.config.guild(message.guild).last_seen.set(data)
     
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
@@ -83,10 +83,10 @@ class OuijaPoke(commands.Cog):
         user_id = str(member.id)
         current_time_utc = datetime.now(timezone.utc).isoformat()
         
-        data = await self.config.guild(member.guild.id).last_seen()
+        data = await self.config.guild(member.guild).last_seen()
         if user_id not in data:
             data[user_id] = current_time_utc
-            await self.config.guild(member.guild.id).last_seen.set(data)
+            await self.config.guild(member.guild).last_seen.set(data)
 
 
     # --- Poking/Summoning Logic ---
