@@ -1,0 +1,158 @@
+import discord
+from redbot.core import Config, commands
+from redbot.core.utils.menus import menu, DEFAULT_CONTROLS
+from typing import Dict, Optional
+
+# Identifier used for the Config instance to ensure unique storage
+# This should be a unique number for the cog.
+IDENTIFIER = 825480081037
+
+class WhereAreWe(commands.Cog):
+    """
+    Posts an embed showing the member count for a configured list of roles.
+    Admins can add and remove roles to track.
+    """
+
+    def __init__(self, bot):
+        self.bot = bot
+        # Initialize Config: scoped to guild level, storing a dictionary of role IDs (str) to emoji strings.
+        self.config = Config.get_conf(self, identifier=IDENTIFIER, force_registration=True)
+        self.config.register_guild(
+            tracked_roles={} # Changed to a dictionary to store role ID and emoji pairing
+        )
+
+    @commands.guild_only()
+    @commands.command(name="wherearewe")
+    async def wherearewe_command(self, ctx: commands.Context):
+        """
+        Displays an embed with the member count for all tracked roles in this server.
+        """
+        guild: discord.Guild = ctx.guild
+        # Retrieve the dictionary: {role_id_str: emoji_string}
+        tracked_data: Dict[str, str] = await self.config.guild(guild).tracked_roles()
+
+        if not tracked_data:
+            return await ctx.send(
+                "No roles are currently configured for tracking. "
+                f"An administrator must use `{ctx.prefix}wherearesettings add <role> [emoji]` first."
+            )
+
+        # Build fields for the embed
+        role_data = []
+        found_roles = 0
+        
+        # Iterate over ID and Emoji
+        for role_id_str, emoji in tracked_data.items():
+            role_id = int(role_id_str)
+            role: discord.Role = guild.get_role(role_id)
+            
+            if role:
+                # Format name with emoji, ensuring proper spacing with .strip()
+                display_name = f"{emoji} {role.name}".strip()
+                role_data.append((display_name, str(len(role.members)), False))
+                found_roles += 1
+            else:
+                # Role not found (deleted)
+                role_data.append((f"❌ Deleted Role (ID: {role_id})", "0", False))
+
+        if not tracked_data:
+             return
+
+        embed = discord.Embed(
+            title=f"📊 Member Distribution in {guild.name}",
+            description="Current member counts for tracked roles:",
+            color=await ctx.embed_color()
+        )
+        
+        for name, value, inline in role_data:
+            embed.add_field(name=name, value=value, inline=inline)
+
+        await ctx.send(embed=embed)
+
+
+    @commands.guild_only()
+    @commands.group(name="wherearesettings")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def wherearewe_settings(self, ctx: commands.Context):
+        """Manages the list of roles tracked by the wherearewe command."""
+        pass
+
+    @wherearewe_settings.command(name="list")
+    async def settings_list(self, ctx: commands.Context):
+        """Lists all roles currently being tracked, including their associated emoji."""
+        guild: discord.Guild = ctx.guild
+        # Retrieve the dictionary: {role_id_str: emoji_string}
+        tracked_data: Dict[str, str] = await self.config.guild(guild).tracked_roles()
+
+        if not tracked_data:
+            return await ctx.send("No roles are currently being tracked.")
+
+        roles_text = []
+        
+        for role_id_str, emoji in tracked_data.items():
+            role_id = int(role_id_str)
+            role: discord.Role = guild.get_role(role_id)
+            
+            emoji_display = emoji if emoji else ""
+            
+            if role:
+                roles_text.append(f"{emoji_display} {role.mention} (`{role.id}`)")
+            else:
+                roles_text.append(f"❌ **Deleted Role** (`{role_id}`)")
+
+        # Use pagination for potentially long lists
+        pages = []
+        for i in range(0, len(roles_text), 10):
+            chunk = roles_text[i:i + 10]
+            embed = discord.Embed(
+                title="Current Tracked Roles",
+                description="\n".join(chunk),
+                color=await ctx.embed_color()
+            )
+            embed.set_footer(text=f"Total tracked roles: {len(tracked_data)}")
+            pages.append(embed)
+
+        if pages:
+            await menu(ctx, pages, DEFAULT_CONTROLS)
+        else:
+            await ctx.send("No roles are currently being tracked.")
+
+    @wherearewe_settings.command(name="add")
+    async def settings_add(self, ctx: commands.Context, role: discord.Role, emoji: Optional[str] = None):
+        """Adds a role to the list of roles to be tracked, optionally with an emoji."""
+        guild: discord.Guild = ctx.guild
+        # Retrieve the dictionary: {role_id_str: emoji_string}
+        tracked_data: Dict[str, str] = await self.config.guild(guild).tracked_roles()
+        role_id_str = str(role.id)
+        
+        # Use a default emoji if none is provided
+        emoji_to_store = emoji if emoji else "⚪"
+
+        if role_id_str in tracked_data:
+            if tracked_data[role_id_str] == emoji_to_store:
+                 return await ctx.send(f"**{role.name}** is already tracked with the emoji {emoji_to_store}.")
+            else:
+                 # Update the emoji if the role is already tracked but the emoji is different
+                 tracked_data[role_id_str] = emoji_to_store
+                 await self.config.guild(guild).tracked_roles.set(tracked_data)
+                 return await ctx.send(f"Updated the emoji for **{role.name}** to {emoji_to_store}.")
+
+        # Add the new role/emoji pair
+        tracked_data[role_id_str] = emoji_to_store
+        await self.config.guild(guild).tracked_roles.set(tracked_data)
+        await ctx.send(f"Successfully added **{role.name}** to the tracked list with emoji {emoji_to_store}.")
+
+    @wherearewe_settings.command(name="remove")
+    async def settings_remove(self, ctx: commands.Context, role: discord.Role):
+        """Removes a role from the list of roles being tracked."""
+        guild: discord.Guild = ctx.guild
+        # Retrieve the dictionary: {role_id_str: emoji_string}
+        tracked_data: Dict[str, str] = await self.config.guild(guild).tracked_roles()
+        role_id_str = str(role.id)
+
+        if role_id_str not in tracked_data:
+            return await ctx.send(f"{role.name} is not currently being tracked.")
+
+        del tracked_data[role_id_str]
+        await self.config.guild(guild).tracked_roles.set(tracked_data)
+        await ctx.send(f"Successfully removed **{role.name}** from the tracked list.")
