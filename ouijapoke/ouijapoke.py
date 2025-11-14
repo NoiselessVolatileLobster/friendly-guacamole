@@ -175,64 +175,37 @@ class OuijaPoke(commands.Cog):
 
     # --- User Commands ---
 
-    # CHANGE: Moved the aliases 'poke' and 'summon' to the group command.
-    @commands.group(invoke_without_command=True, aliases=["ouija", "poke", "summon"])
+    # CHANGE: Removed aliases ["poke", "summon"] from the group to prevent calling the group's help.
+    @commands.group(invoke_without_command=True, aliases=["ouija"])
     async def ouijapoke(self, ctx: commands.Context):
         """
         Commands for OuijaPoke: check your status, or poke/summon inactive members.
         
         Use [p]poke or [p]summon to call these directly.
         """
+        # If invoked as just [p]ouijapoke, show help for the group.
         if ctx.invoked_subcommand is None:
             await ctx.send_help(ctx.command)
-
-    # REMOVED ALIAS: Command name is now the only name/alias for this command.
-    @ouijapoke.command(name="poke") 
-    async def ouijapoke_random(self, ctx: commands.Context):
+    
+    # NEW: Top-level command [p]poke
+    @commands.command(name="poke")
+    async def poke(self, ctx: commands.Context):
         """
         Pokes a random member who has been inactive for the configured number of days.
-        Can be used with [p]poke or [p]ouijapoke poke.
+        (Equivalent to [p]ouijapoke poke)
         """
-        async with ctx.typing():
-            settings = await self._get_settings(ctx.guild)
-            
-            eligible_members = await self._get_eligible_members(ctx.guild, settings.poke_days)
-            
-            if not eligible_members:
-                return await ctx.send(f"Everyone is active! No one is eligible to be poked (needs >{settings.poke_days} days of inactivity).")
+        # Execute the logic from ouijapoke_random
+        await self.ouijapoke_random(ctx)
 
-            member_to_poke = random.choice(eligible_members)
-            
-            await self._send_activity_message(
-                ctx,
-                member_to_poke,
-                settings.poke_message, 
-                settings.poke_gifs,
-            )
-    
-    # REMOVED ALIAS: Command name is now the only name/alias for this command.
-    @ouijapoke.command(name="summon")
-    async def ouijasummon_random(self, ctx: commands.Context):
+    # NEW: Top-level command [p]summon
+    @commands.command(name="summon")
+    async def summon(self, ctx: commands.Context):
         """
         Summons a random member who has been inactive for the configured number of days.
-        Can be used with [p]summon or [p]ouijapoke summon.
+        (Equivalent to [p]ouijapoke summon)
         """
-        async with ctx.typing():
-            settings = await self._get_settings(ctx.guild)
-            
-            eligible_members = await self._get_eligible_members(ctx.guild, settings.summon_days)
-            
-            if not eligible_members:
-                return await ctx.send(f"The spirits are quiet. No one is eligible to be summoned (needs >{settings.summon_days} days of inactivity).")
-
-            member_to_summon = random.choice(eligible_members)
-            
-            await self._send_activity_message(
-                ctx,
-                member_to_summon,
-                settings.summon_message, 
-                settings.summon_gifs, 
-            )
+        # Execute the logic from ouijasummon_random
+        await self.ouijasummon_random(ctx)
 
     @ouijapoke.command(name="check")
     async def ouijapoke_check(self, ctx: commands.Context):
@@ -255,6 +228,55 @@ class OuijaPoke(commands.Cog):
             f"(On {last_seen_dt.strftime('%Y-%m-%d %H:%M:%S UTC')})"
         )
         await ctx.send(message)
+
+
+    # Kept as subcommand under ouijapoke
+    @ouijapoke.command(name="poke") 
+    async def ouijapoke_random(self, ctx: commands.Context):
+        """
+        Pokes a random member who has been inactive for the configured number of days.
+        Can be used with [p]ouijapoke poke.
+        """
+        async with ctx.typing():
+            settings = await self._get_settings(ctx.guild)
+            
+            eligible_members = await self._get_eligible_members(ctx.guild, settings.poke_days)
+            
+            if not eligible_members:
+                return await ctx.send(f"Everyone is active! No one is eligible to be poked (needs >{settings.poke_days} days of inactivity).")
+
+            member_to_poke = random.choice(eligible_members)
+            
+            await self._send_activity_message(
+                ctx,
+                member_to_poke,
+                settings.poke_message, 
+                settings.poke_gifs,
+            )
+    
+    # Kept as subcommand under ouijapoke
+    @ouijapoke.command(name="summon")
+    async def ouijasummon_random(self, ctx: commands.Context):
+        """
+        Summons a random member who has been inactive for the configured number of days.
+        Can be used with [p]ouijapoke summon.
+        """
+        async with ctx.typing():
+            settings = await self._get_settings(ctx.guild)
+            
+            eligible_members = await self._get_eligible_members(ctx.guild, settings.summon_days)
+            
+            if not eligible_members:
+                return await ctx.send(f"The spirits are quiet. No one is eligible to be summoned (needs >{settings.summon_days} days of inactivity).")
+
+            member_to_summon = random.choice(eligible_members)
+            
+            await self._send_activity_message(
+                ctx,
+                member_to_summon,
+                settings.summon_message, 
+                settings.summon_gifs, 
+            )
 
 
     # --- Admin Commands (Settings and Overrides) ---
