@@ -47,7 +47,7 @@ class OuijaPoke(commands.Cog):
             last_seen={}, # {user_id: "ISO_DATETIME_STRING"}
             ouija_settings=OuijaSettings().model_dump()
         )
-        # NEW: In-memory tracker for voice channel connections
+        # In-memory tracker for voice channel connections
         self.voice_connect_times = {} # {member_id: datetime_object}
 
     # --- Utility Methods ---
@@ -175,38 +175,19 @@ class OuijaPoke(commands.Cog):
 
     # --- User Commands ---
 
-    @commands.group(invoke_without_command=True, aliases=["ouija"])
+    # CHANGE: Moved the aliases 'poke' and 'summon' to the group command.
+    @commands.group(invoke_without_command=True, aliases=["ouija", "poke", "summon"])
     async def ouijapoke(self, ctx: commands.Context):
         """
         Commands for OuijaPoke: check your status, or poke/summon inactive members.
+        
+        Use [p]poke or [p]summon to call these directly.
         """
-        await ctx.send_help(ctx.command)
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
 
-    @ouijapoke.command(name="check")
-    async def ouijapoke_check(self, ctx: commands.Context):
-        """Shows how many days it has been since you last sent a message."""
-        user_id = str(ctx.author.id)
-        data = await self.config.guild(ctx.guild).last_seen()
-        last_seen_dt_str = data.get(user_id)
-
-        if not last_seen_dt_str:
-            return await ctx.send("I haven't recorded any activity for you yet! Say something now!")
-
-        last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
-        now_dt = datetime.now(timezone.utc)
-        
-        difference = now_dt - last_seen_dt
-        days = difference.days
-        
-        message = (
-            f"The Ouija Planchette last saw you move **{days} days** ago. "
-            f"(On {last_seen_dt.strftime('%Y-%m-%d %H:%M:%S UTC')})"
-        )
-        await ctx.send(message)
-
-
-    # REVERTED: Alias is now simply "poke"
-    @ouijapoke.command(name="poke", aliases=["poke"]) 
+    # REMOVED ALIAS: Command name is now the only name/alias for this command.
+    @ouijapoke.command(name="poke") 
     async def ouijapoke_random(self, ctx: commands.Context):
         """
         Pokes a random member who has been inactive for the configured number of days.
@@ -229,8 +210,8 @@ class OuijaPoke(commands.Cog):
                 settings.poke_gifs,
             )
     
-    # REVERTED: Alias is now simply "summon"
-    @ouijapoke.command(name="summon", aliases=["summon"])
+    # REMOVED ALIAS: Command name is now the only name/alias for this command.
+    @ouijapoke.command(name="summon")
     async def ouijasummon_random(self, ctx: commands.Context):
         """
         Summons a random member who has been inactive for the configured number of days.
@@ -252,6 +233,28 @@ class OuijaPoke(commands.Cog):
                 settings.summon_message, 
                 settings.summon_gifs, 
             )
+
+    @ouijapoke.command(name="check")
+    async def ouijapoke_check(self, ctx: commands.Context):
+        """Shows how many days it has been since you last sent a message."""
+        user_id = str(ctx.author.id)
+        data = await self.config.guild(ctx.guild).last_seen()
+        last_seen_dt_str = data.get(user_id)
+
+        if not last_seen_dt_str:
+            return await ctx.send("I haven't recorded any activity for you yet! Say something now!")
+
+        last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
+        now_dt = datetime.now(timezone.utc)
+        
+        difference = now_dt - last_seen_dt
+        days = difference.days
+        
+        message = (
+            f"The Ouija Planchette last saw you move **{days} days** ago. "
+            f"(On {last_seen_dt.strftime('%Y-%m-%d %H:%M:%S UTC')})"
+        )
+        await ctx.send(message)
 
 
     # --- Admin Commands (Settings and Overrides) ---
