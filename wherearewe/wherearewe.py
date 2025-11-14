@@ -59,8 +59,8 @@ class WhereAreWe(commands.Cog):
              return
 
         embed = discord.Embed(
-            title=f"📊 Member Distribution in {guild.name}",
-            description="Current member counts for tracked roles:",
+            title=f"🌎 {guild.name}",
+            description="This is where we are:",
             color=await ctx.embed_color()
         )
         
