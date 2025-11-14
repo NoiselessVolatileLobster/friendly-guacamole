@@ -175,7 +175,6 @@ class OuijaPoke(commands.Cog):
 
     # --- User Commands ---
 
-    # CHANGE: Removed aliases ["poke", "summon"] from the group to prevent calling the group's help.
     @commands.group(invoke_without_command=True, aliases=["ouija"])
     async def ouijapoke(self, ctx: commands.Context):
         """
@@ -194,8 +193,16 @@ class OuijaPoke(commands.Cog):
         Pokes a random member who has been inactive for the configured number of days.
         (Equivalent to [p]ouijapoke poke)
         """
-        # Execute the logic from ouijapoke_random
-        await self.ouijapoke_random(ctx)
+        try:
+            # Execute the logic from ouijapoke_random
+            await self.ouijapoke_random(ctx)
+        finally:
+            # ADDITION: Delete the user's message
+            if ctx.channel.permissions_for(ctx.me).manage_messages:
+                await ctx.message.delete()
+            else:
+                await ctx.send("I need the `Manage Messages` permission to delete your command message.", delete_after=10)
+
 
     # NEW: Top-level command [p]summon
     @commands.command(name="summon")
@@ -204,8 +211,16 @@ class OuijaPoke(commands.Cog):
         Summons a random member who has been inactive for the configured number of days.
         (Equivalent to [p]ouijapoke summon)
         """
-        # Execute the logic from ouijasummon_random
-        await self.ouijasummon_random(ctx)
+        try:
+            # Execute the logic from ouijasummon_random
+            await self.ouijasummon_random(ctx)
+        finally:
+            # ADDITION: Delete the user's message
+            if ctx.channel.permissions_for(ctx.me).manage_messages:
+                await ctx.message.delete()
+            else:
+                await ctx.send("I need the `Manage Messages` permission to delete your command message.", delete_after=10)
+
 
     @ouijapoke.command(name="check")
     async def ouijapoke_check(self, ctx: commands.Context):
@@ -214,20 +229,26 @@ class OuijaPoke(commands.Cog):
         data = await self.config.guild(ctx.guild).last_seen()
         last_seen_dt_str = data.get(user_id)
 
-        if not last_seen_dt_str:
-            return await ctx.send("I haven't recorded any activity for you yet! Say something now!")
+        try:
+            if not last_seen_dt_str:
+                return await ctx.send("I haven't recorded any activity for you yet! Say something now!")
 
-        last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
-        now_dt = datetime.now(timezone.utc)
-        
-        difference = now_dt - last_seen_dt
-        days = difference.days
-        
-        message = (
-            f"The Ouija Planchette last saw you move **{days} days** ago. "
-            f"(On {last_seen_dt.strftime('%Y-%m-%d %H:%M:%S UTC')})"
-        )
-        await ctx.send(message)
+            last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
+            now_dt = datetime.now(timezone.utc)
+            
+            difference = now_dt - last_seen_dt
+            days = difference.days
+            
+            message = (
+                f"The Ouija Planchette last saw you move **{days} days** ago. "
+                f"(On {last_seen_dt.strftime('%Y-%m-%d %H:%M:%S UTC')})"
+            )
+            await ctx.send(message)
+        finally:
+            # ADDITION: Delete the user's message
+            if ctx.channel.permissions_for(ctx.me).manage_messages:
+                await ctx.message.delete()
+            # Note: Not sending a failure message here as the check output is the main purpose.
 
 
     # Kept as subcommand under ouijapoke
