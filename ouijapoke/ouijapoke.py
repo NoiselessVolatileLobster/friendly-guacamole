@@ -907,6 +907,7 @@ class OuijaPoke(commands.Cog):
         if eligible_members:
             entries = []
             for i, member_data in enumerate(eligible_members):
+                # The corrected multi-line f-string construction (no backslashes in expression parts)
                 entry = (
                     f"**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)\n"
                     f"  ➡️ Last Active: **{member_data['last_seen_days']} days ago**\n"
@@ -946,6 +947,7 @@ class OuijaPoke(commands.Cog):
         if excluded_eligible_members:
             excluded_entries = []
             for i, member_data in enumerate(excluded_eligible_members):
+                # The corrected multi-line f-string construction (no backslashes in expression parts)
                 entry = (
                     f"**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)\n"
                     f"  ➡️ Last Active: **{member_data['last_seen_days']} days ago**\n"
