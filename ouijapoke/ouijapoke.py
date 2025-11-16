@@ -11,6 +11,7 @@ from typing import Union, List, Tuple, Dict, Any
 try:
     from pydantic import BaseModel, Field, conint, conlist
 except ImportError:
+    # Define simple placeholders if pydantic is not installed (for older Red environments)
     BaseModel = object
     Field = lambda *args, **kwargs: None
     conint = lambda **kwargs: int
@@ -76,7 +77,12 @@ class OuijaPoke(commands.Cog):
     async def _get_settings(self, guild: discord.Guild) -> OuijaSettings:
         """Retrieves and parses the guild settings."""
         settings_data = await self.config.guild(guild).ouija_settings()
-        return OuijaSettings(**settings_data)
+        # Use try-except for robust initialization in case of config migration issues
+        try:
+            return OuijaSettings(**settings_data)
+        except Exception:
+            # Fallback to default if parsing fails
+            return OuijaSettings() 
 
     async def _set_settings(self, guild: discord.Guild, settings: OuijaSettings):
         """Saves the updated guild settings."""
@@ -525,7 +531,9 @@ class OuijaPoke(commands.Cog):
             await self.ouijapoke_random(ctx)
         finally:
             if ctx.channel.permissions_for(ctx.me).manage_messages:
-                await ctx.message.delete()
+                # Only delete if command was successful/ran
+                if ctx.invoked_with == "poke":
+                    await ctx.message.delete()
             else:
                 await ctx.send("I need the `Manage Messages` permission to delete your command message.", delete_after=10)
 
@@ -540,7 +548,9 @@ class OuijaPoke(commands.Cog):
             await self.ouijasummon_random(ctx)
         finally:
             if ctx.channel.permissions_for(ctx.me).manage_messages:
-                await ctx.message.delete()
+                # Only delete if command was successful/ran
+                if ctx.invoked_with == "summon":
+                    await ctx.message.delete()
             else:
                 await ctx.send("I need the `Manage Messages` permission to delete your command message.", delete_after=10)
 
@@ -907,15 +917,15 @@ class OuijaPoke(commands.Cog):
         if eligible_members:
             entries = []
             for i, member_data in enumerate(eligible_members):
-                # FIXED: Using a single f-string with triple quotes to handle newlines,
-                # ensuring no backslash escapes are inside the expression braces {}.
-                entry = f"""
-**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)
-  ➡️ Last Active: **{member_data['last_seen_days']} days ago**
-  👀 Last Poked: {member_data['last_poked']}
-  👻 Last Summoned: {member_data['last_summoned']}
-  ✅ Eligible For: {member_data['eligible_for']}
-""".strip()
+                # FIX: Switched to explicit string concatenation to avoid
+                # SyntaxError related to backslashes in multiline f-string expressions.
+                entry = (
+                    f"**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)\n"
+                    f"  ➡️ Last Active: **{member_data['last_seen_days']} days ago**\n"
+                    f"  👀 Last Poked: {member_data['last_poked']}\n"
+                    f"  👻 Last Summoned: {member_data['last_summoned']}\n"
+                    f"  ✅ Eligible For: {member_data['eligible_for']}"
+                )
                 entries.append(entry)
 
             # --- Pagination Logic ---
@@ -948,13 +958,13 @@ class OuijaPoke(commands.Cog):
         if excluded_eligible_members:
             excluded_entries = []
             for i, member_data in enumerate(excluded_eligible_members):
-                # FIXED: Using a single f-string with triple quotes to handle newlines
-                entry = f"""
-**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)
-  ➡️ Last Active: **{member_data['last_seen_days']} days ago**
-  🚫 Excluded By: **{member_data['excluded_by']}**
-  ⚠️ *Would be Eligible For: {member_data['eligible_for']}*
-""".strip()
+                # FIX: Switched to explicit string concatenation here as well.
+                entry = (
+                    f"**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)\n"
+                    f"  ➡️ Last Active: **{member_data['last_seen_days']} days ago**\n"
+                    f"  🚫 Excluded By: **{member_data['excluded_by']}**\n"
+                    f"  ⚠️ *Would be Eligible For: {member_data['eligible_for']}*"
+                )
                 excluded_entries.append(entry)
 
             # --- Pagination Logic ---
