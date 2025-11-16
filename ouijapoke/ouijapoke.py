@@ -1173,7 +1173,7 @@ class OuijaPoke(commands.Cog):
         
         await ctx.send(
             "✅ **Activity tracking successfully reset.** "
-            "All members are now considered 'new' and tracking will start with the next message they send."
+            "All members are now considered 'new' and tracking will start with the next message they send.."
         )
 
 # --- Red Setup Function ---
