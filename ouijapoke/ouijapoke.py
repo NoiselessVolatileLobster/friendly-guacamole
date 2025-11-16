@@ -155,9 +155,9 @@ class OuijaPoke(commands.Cog):
         user_id_str = str(user_id)
         current_time_utc = datetime.now(timezone.utc).isoformat()
         
-        data = await self.config.guild().get_attr(key)()
+        data = await self.config.guild(guild).get_attr(key)()
         data[user_id_str] = current_time_utc
-        await self.config.guild().get_attr(key).set(data)
+        await self.config.guild(guild).get_attr(key).set(data)
         
 
     # --- Listeners (Event Handlers) ---
