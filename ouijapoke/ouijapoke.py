@@ -907,14 +907,15 @@ class OuijaPoke(commands.Cog):
         if eligible_members:
             entries = []
             for i, member_data in enumerate(eligible_members):
-                # The corrected multi-line f-string construction (no backslashes in expression parts)
-                entry = (
-                    f"**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)\n"
-                    f"  ➡️ Last Active: **{member_data['last_seen_days']} days ago**\n"
-                    f"  👀 Last Poked: {member_data['last_poked']}\n"
-                    f"  👻 Last Summoned: {member_data['last_summoned']}\n"
-                    f"  ✅ Eligible For: {member_data['eligible_for']}"
-                )
+                # FIXED: Using a single f-string with triple quotes to handle newlines,
+                # ensuring no backslash escapes are inside the expression braces {}.
+                entry = f"""
+**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)
+  ➡️ Last Active: **{member_data['last_seen_days']} days ago**
+  👀 Last Poked: {member_data['last_poked']}
+  👻 Last Summoned: {member_data['last_summoned']}
+  ✅ Eligible For: {member_data['eligible_for']}
+""".strip()
                 entries.append(entry)
 
             # --- Pagination Logic ---
@@ -947,13 +948,13 @@ class OuijaPoke(commands.Cog):
         if excluded_eligible_members:
             excluded_entries = []
             for i, member_data in enumerate(excluded_eligible_members):
-                # The corrected multi-line f-string construction (no backslashes in expression parts)
-                entry = (
-                    f"**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)\n"
-                    f"  ➡️ Last Active: **{member_data['last_seen_days']} days ago**\n"
-                    f"  🚫 Excluded By: **{member_data['excluded_by']}**\n"
-                    f"  ⚠️ *Would be Eligible For: {member_data['eligible_for']}*"
-                )
+                # FIXED: Using a single f-string with triple quotes to handle newlines
+                entry = f"""
+**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)
+  ➡️ Last Active: **{member_data['last_seen_days']} days ago**
+  🚫 Excluded By: **{member_data['excluded_by']}**
+  ⚠️ *Would be Eligible For: {member_data['eligible_for']}*
+""".strip()
                 excluded_entries.append(entry)
 
             # --- Pagination Logic ---
@@ -1173,7 +1174,7 @@ class OuijaPoke(commands.Cog):
         
         await ctx.send(
             "✅ **Activity tracking successfully reset.** "
-            "All members are now considered 'new' and tracking will start with the next message they send.."
+            "All members are now considered 'new' and tracking will start with the next message they send."
         )
 
 # --- Red Setup Function ---
