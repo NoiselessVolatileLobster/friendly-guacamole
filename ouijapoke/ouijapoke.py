@@ -907,15 +907,14 @@ class OuijaPoke(commands.Cog):
         if eligible_members:
             entries = []
             for i, member_data in enumerate(eligible_members):
-                # FIXED: Using a single f-string with triple quotes to handle newlines,
-                # ensuring no backslash escapes are inside the expression braces {}.
-                entry = f"""
-**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)
-  ➡️ Last Active: **{member_data['last_seen_days']} days ago**
-  👀 Last Poked: {member_data['last_poked']}
-  👻 Last Summoned: {member_data['last_summoned']}
-  ✅ Eligible For: {member_data['eligible_for']}
-""".strip()
+                # *** FIX APPLIED: Using explicit string concatenation to avoid f-string backslash issue. ***
+                entry = (
+                    f"**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)\n"
+                    f"  ➡️ Last Active: **{member_data['last_seen_days']} days ago**\n"
+                    f"  👀 Last Poked: {member_data['last_poked']}\n"
+                    f"  👻 Last Summoned: {member_data['last_summoned']}\n"
+                    f"  ✅ Eligible For: {member_data['eligible_for']}"
+                )
                 entries.append(entry)
 
             # --- Pagination Logic ---
@@ -948,13 +947,13 @@ class OuijaPoke(commands.Cog):
         if excluded_eligible_members:
             excluded_entries = []
             for i, member_data in enumerate(excluded_eligible_members):
-                # FIXED: Using a single f-string with triple quotes to handle newlines
-                entry = f"""
-**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)
-  ➡️ Last Active: **{member_data['last_seen_days']} days ago**
-  🚫 Excluded By: **{member_data['excluded_by']}**
-  ⚠️ *Would be Eligible For: {member_data['eligible_for']}*
-""".strip()
+                # *** FIX APPLIED: Using explicit string concatenation to avoid f-string backslash issue. ***
+                entry = (
+                    f"**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)\n"
+                    f"  ➡️ Last Active: **{member_data['last_seen_days']} days ago**\n"
+                    f"  🚫 Excluded By: **{member_data['excluded_by']}**\n"
+                    f"  ⚠️ *Would be Eligible For: {member_data['eligible_for']}*"
+                )
                 excluded_entries.append(entry)
 
             # --- Pagination Logic ---
