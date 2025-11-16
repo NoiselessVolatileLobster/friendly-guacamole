@@ -742,6 +742,78 @@ class OuijaPoke(commands.Cog):
             pass
 
 
+    # --- Last Seen All Command ---
+
+    @ouijaset.command(name="lastseen")
+    async def ouijaset_lastseen(self, ctx: commands.Context):
+        """Displays a list of every member's last recorded activity date, sorted by inactivity."""
+        
+        async with ctx.typing():
+            last_seen_data = await self.config.guild(ctx.guild).last_seen()
+            
+            if not last_seen_data:
+                return await ctx.send("No activity has been recorded for any user yet.")
+            
+            activity_list = []
+            
+            for user_id_str, last_seen_dt_str in last_seen_data.items():
+                user_id = int(user_id_str)
+                member = ctx.guild.get_member(user_id)
+                
+                if member is None or member.bot:
+                    continue
+                
+                try:
+                    last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
+                    last_seen_diff = (datetime.now(timezone.utc) - last_seen_dt)
+                    
+                    activity_list.append({
+                        "member": member,
+                        "last_seen_dt": last_seen_dt,
+                        "last_seen_days": last_seen_diff.days
+                    })
+                except ValueError:
+                    # Skip invalid dates
+                    continue
+
+            # Sort by most inactive (highest last_seen_days)
+            activity_list.sort(key=lambda x: x['last_seen_days'], reverse=True)
+            
+            # Prepare content for display
+            entries = []
+            for i, data in enumerate(activity_list):
+                entry = (
+                    f"**{i+1}. {data['member'].display_name}** (`{data['member'].id}`)\n"
+                    f"  ➡️ Last Active: **{data['last_seen_days']} days ago** "
+                    f"({data['last_seen_dt'].strftime('%Y-%m-%d %H:%M UTC')})"
+                )
+                entries.append(entry)
+
+            # Use basic page separation for clarity
+            pages = []
+            MAX_CHARS = 1000
+            current_page = ""
+            
+            for entry in entries:
+                if len(current_page) + len(entry) + 2 > MAX_CHARS:
+                    pages.append(current_page)
+                    current_page = entry + "\n"
+                else:
+                    current_page += entry + "\n"
+            if current_page:
+                pages.append(current_page)
+            
+            # Send the pages
+            for page_num, content in enumerate(pages):
+                embed = discord.Embed(
+                    title=f"All User Activity Records ({len(activity_list)} Total)",
+                    description=f"Below is a list of all recorded users, sorted by inactivity (most inactive first):\n\n{content}",
+                    color=discord.Color.blue()
+                )
+                embed.set_footer(text=f"Page {page_num + 1}/{len(pages)}")
+                await ctx.send(embed=embed)
+
+
     # --- Excluded Roles Management ---
 
     @ouijaset.group(name="excludedroles", aliases=["exclrole"], invoke_without_command=True)
