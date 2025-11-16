@@ -529,7 +529,8 @@ class OuijaPoke(commands.Cog):
         """
         Manages roles whose members are permanently excluded from being poked or summoned.
         """
-        excluded_roles = await self.config.guild().excluded_roles()
+        # FIX: Pass ctx.guild to config.guild()
+        excluded_roles = await self.config.guild(ctx.guild).excluded_roles()
         
         if not excluded_roles:
             return await ctx.send("No roles are currently excluded from poking/summoning.")
@@ -548,7 +549,8 @@ class OuijaPoke(commands.Cog):
     @ouijaset_excludedroles.command(name="add")
     async def excludedroles_add(self, ctx: commands.Context, role: discord.Role):
         """Adds a role to the exclusion list."""
-        async with self.config.guild().excluded_roles() as excluded_roles:
+        # FIX: Pass ctx.guild to config.guild()
+        async with self.config.guild(ctx.guild).excluded_roles() as excluded_roles:
             if role.id in excluded_roles:
                 return await ctx.send(f"The role **{role.name}** is already excluded.")
             excluded_roles.append(role.id)
@@ -558,7 +560,8 @@ class OuijaPoke(commands.Cog):
     @ouijaset_excludedroles.command(name="remove")
     async def excludedroles_remove(self, ctx: commands.Context, role: discord.Role):
         """Removes a role from the exclusion list."""
-        async with self.config.guild().excluded_roles() as excluded_roles:
+        # FIX: Pass ctx.guild to config.guild()
+        async with self.config.guild(ctx.guild).excluded_roles() as excluded_roles:
             if role.id not in excluded_roles:
                 return await ctx.send(f"The role **{role.name}** was not found in the excluded list.")
             excluded_roles.remove(role.id)
