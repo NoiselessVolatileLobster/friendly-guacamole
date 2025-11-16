@@ -744,7 +744,7 @@ class OuijaPoke(commands.Cog):
 
     # --- Last Seen All Command ---
 
-    @ouijaset.command(name="lastseen")
+    @ouijaset.command(name="lastseen") # <--- Correction is here: ensures it's a subcommand of ouijaset
     async def ouijaset_lastseen(self, ctx: commands.Context):
         """Displays a list of every member's last recorded activity date, sorted by inactivity."""
         
