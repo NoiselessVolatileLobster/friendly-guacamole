@@ -2,929 +2,901 @@ import discord
 from redbot.core import Config, commands, checks
 from redbot.core.utils.chat_formatting import humanize_list
 from datetime import datetime, timedelta, timezone
-import asyncio
 import random
 import re
-from typing import Union, List, Tuple, Dict, Any
+from typing import Union, List, Tuple
 
 # Pydantic is used for structured configuration in modern Red cogs
 try:
-    from pydantic import BaseModel, Field, conint, conlist
+    from pydantic import BaseModel, Field
 except ImportError:
-    # Define simple placeholders if Pydantic isn't available
     BaseModel = object
     Field = lambda *args, **kwargs: None
-    conint = lambda **kwargs: int
-    conlist = lambda *args, **kwargs: list
-
 
 # --- Configuration Schema (Settings) ---
 
-class InactivityRolePair(BaseModel):
-    """Schema for a single role and its required inactivity days."""
-    role_id: int = Field(description="The ID of the role to assign.")
-    days: conint(ge=1) = Field(description="Minimum days of inactivity required to assign this role.")
-
 class OuijaSettings(BaseModel):
     """Schema for guild configuration settings."""
-    poke_days: conint(ge=1) = Field(default=30, description="Days a member must be inactive to be eligible for a poke.")
-    summon_days: conint(ge=1) = Field(default=60, description="Days a member must be inactive to be eligible for a summon.")
+    poke_days: int = Field(default=30, ge=1, description="Days a member must be inactive to be eligible for a poke.")
+    summon_days: int = Field(default=60, ge=1, description="Days a member must be inactive to be eligible for a summon.")
     
-    # UPDATED: List of role/day pairings for automated assignment
-    inactivity_roles: conlist(item_type=InactivityRolePair, min_length=0) = Field(
-        default_factory=list,
-        description="List of roles to assign based on inactivity duration."
-    )
-    
-    # NEW: Flag to control auto-unassign behavior
-    auto_unassign: bool = Field(
-        default=True,
-        description="If True, remove inactivity roles when a member becomes active."
-    )
-
-    # NEW: List of roles that are *ignored* by all tracking and assignment logic
-    ignored_roles: conlist(item_type=int, min_length=0) = Field(
-        default_factory=list,
-        description="A list of role IDs to ignore for all tracking/poking/summoning logic."
-    )
-
-    # NEW: List of channel IDs where activity is ignored
-    ignored_channels: conlist(item_type=int, min_length=0) = Field(
-        default_factory=list,
-        description="A list of channel IDs where messages are ignored for activity tracking."
-    )
-
-    # NEW: Target channel for automatic poke/summon messages
-    target_channel_id: Union[int, None] = Field(
-        default=None,
-        description="The channel ID where the bot should send automated poke/summon messages."
-    )
-
-    # NEW: Custom message for 'poke'
     poke_message: str = Field(
-        default="Psst... {mention}, it's been {days} days since you last showed your face. We miss you! Come say hello.",
-        description="The message used when poking an inactive member. Supports {mention} and {days}."
+        default="Hey {user_mention}, the Ouija Board feels your presence. Come say hello!",
+        description="The message used when poking. Use {user_mention} for the user."
     )
-
-    # NEW: Custom message for 'summon'
+    
     summon_message: str = Field(
-        default="By the power of the Ouija board, we summon {mention}! You've been gone {days} days. Is there life out there?",
-        description="The message used when summoning a highly inactive member. Supports {mention} and {days}."
+        default="**{user_mention}**! The spirits demand your return! Do not resist the summoning ritual!",
+        description="The message used when summoning. Use {user_mention} for the user."
     )
     
-    # NEW: Flag to enable automatic poke/summon
-    auto_poke_enabled: bool = Field(default=False, description="Whether the bot should automatically poke/summon.")
-    
-    # NEW: Interval (in hours) for the automatic check
-    auto_check_interval_hours: conint(ge=1) = Field(default=24, description="How often (in hours) to run the automatic check for inactivity.")
-
-    # NEW: Maximum pokes/summons per check
-    max_auto_pokes: conint(ge=1) = Field(default=5, description="Maximum number of members to poke/summon in a single automatic check.")
-
-    # NEW: Flag to track non-message activity (e.g., voice, reactions)
-    track_non_message_activity: bool = Field(
-        default=False,
-        description="If True, activity tracking includes voice state changes and reactions."
-    )
-    
-    # NEW: Flag to allow pokes/summons in the target channel
-    allow_pokes_in_target_channel: bool = Field(
-        default=True,
-        description="If False, pokes/summons will only be sent to the member's DMs."
-    )
-
-    # NEW: Flag to enable a quiet mode for role assignment (no log messages)
-    quiet_role_assignment: bool = Field(
-        default=False,
-        description="If True, the bot will not send log messages for role assignment/removal."
-    )
-
+    poke_gifs: list[str] = Field(default=[], description="List of URLs for 'poke' GIFs.")
+    summon_gifs: list[str] = Field(default=[], description="List of URLs for 'summon' GIFs.")
 
 # --- Cog Class ---
 
-class Ouijapoke(commands.Cog):
-    """
-    Track member activity and assign roles or poke/summon inactive users.
-    """
+class OuijaPoke(commands.Cog):
+    """Tracks user activity and allows 'poking' or 'summoning' inactive members with a spooky twist."""
 
     def __init__(self, bot):
         self.bot = bot
-        # Initialize the config with the new schema definition
-        self.config = Config.get_conf(self, identifier=140120250425, force_registration=True)
-        
-        # Default settings are stored in a format compatible with Red's Config structure
-        self.default_guild_settings = {
-            "poke_days": 30,
-            "summon_days": 60,
-            "inactivity_roles": [], # Stored as a list of dicts: [{"role_id": int, "days": int}]
-            "auto_unassign": True,
-            "ignored_roles": [],
-            "ignored_channels": [],
-            "target_channel_id": None,
-            "poke_message": "Psst... {mention}, it's been {days} days since you last showed your face. We miss you! Come say hello.",
-            "summon_message": "By the power of the Ouija board, we summon {mention}! You've been gone {days} days. Is there life out there?",
-            "auto_poke_enabled": False,
-            "auto_check_interval_hours": 24,
-            "max_auto_pokes": 5,
-            "track_non_message_activity": False,
-            "allow_pokes_in_target_channel": True,
-            "quiet_role_assignment": False,
-            
-            # Internal tracking data
-            "last_seen": {},  # {user_id: timestamp_float}
-            "last_poked": {}, # {user_id: timestamp_float}
-            "last_summoned": {}, # {user_id: timestamp_float}
-        }
-        
-        self.config.register_guild(**self.default_guild_settings)
-        self.last_check_times = {} # {guild_id: timestamp_float}
-        
-        # Task for periodic activity checks
-        self.bg_task = self.bot.loop.create_task(self.auto_check_loop())
-
-
-    def cog_unload(self):
-        """Clean up the background task when the cog is unloaded."""
-        if self.bg_task:
-            self.bg_task.cancel()
+        # Config setup:
+        self.config = Config.get_conf(self, identifier=148000552390, force_registration=True)
+        self.config.register_guild(
+            last_seen={}, # {user_id: "ISO_DATETIME_STRING"}
+            last_poked={}, # {user_id: "ISO_DATETIME_STRING"}
+            last_summoned={}, # {user_id: "ISO_DATETIME_STRING"}
+            excluded_roles=[], # [role_id, ...]
+            ouija_settings=OuijaSettings().model_dump()
+        )
+        # In-memory tracker for voice channel connections
+        self.voice_connect_times = {} # {member_id: datetime_object}
 
     # --- Utility Methods ---
 
-    def _get_guild_data_path(self, guild_id: int) -> str:
-        """
-        Helper to get the base path for a guild's artifact data, using the 
-        Firebase artifact ID structure.
-        """
-        # FIX: Replaced JavaScript syntax with Python-safe lookup using globals().get()
-        appId = globals().get('__app_id', 'default-app-id')
-        # We store data under /artifacts/{appId}/public/data/ouijapoke/{guildId}
-        # This is a good place for multi-user/multi-admin cog data.
-        return f"artifacts/{appId}/public/data/ouijapoke/{guild_id}"
+    async def _get_settings(self, guild: discord.Guild) -> OuijaSettings:
+        """Retrieves and parses the guild settings."""
+        settings_data = await self.config.guild(guild).ouija_settings()
+        return OuijaSettings(**settings_data)
 
-    async def _get_guild_settings(self, guild: discord.Guild) -> OuijaSettings:
-        """Retrieves and validates guild settings using the Pydantic schema."""
-        raw_settings = await self.config.guild(guild).all()
+    async def _set_settings(self, guild: discord.Guild, settings: OuijaSettings):
+        """Saves the updated guild settings."""
+        await self.config.guild(guild).ouija_settings.set(settings.model_dump())
+    
+    async def _update_last_seen(self, guild: discord.Guild, user_id: int):
+        """
+        Updates the last_seen time for a user in the guild config.
+        """
+        user_id_str = str(user_id)
+        current_time_utc = datetime.now(timezone.utc).isoformat()
         
-        # We only want the settings part for the Pydantic model
-        # Using a safer way to get fields for Pydantic v1 or v2 compatibility
-        settings_keys = list(OuijaSettings.__annotations__.keys()) if hasattr(OuijaSettings, '__annotations__') else list(OuijaSettings.__dict__.get('__fields__', {}).keys())
-        settings_data = {k: v for k, v in raw_settings.items() if k in settings_keys}
-
-        try:
-            # Pydantic will validate types and apply defaults for missing fields
-            # Use model_validate if Pydantic v2 is present, otherwise direct instantiation
-            if hasattr(OuijaSettings, 'model_validate'):
-                return OuijaSettings.model_validate(settings_data)
-            else:
-                return OuijaSettings(**settings_data)
-        except Exception as e:
-            print(f"Error validating OuijaSettings for guild {guild.id}: {e}")
-            # Fallback to defaults
-            return OuijaSettings() 
-            
-    async def _get_last_seen(self, guild: discord.Guild) -> Dict[int, float]:
-        """Retrieves the raw last_seen dictionary."""
-        # Ensure the keys are converted back to ints if stored as strings (common Config behavior)
-        raw_data = await self.config.guild(guild).last_seen()
-        return {int(k): v for k, v in raw_data.items()}
-
-    async def _set_last_seen(self, guild: discord.Guild, data: Dict[int, float]):
-        """Sets the raw last_seen dictionary."""
+        data = await self.config.guild(guild).last_seen()
+        data[user_id_str] = current_time_utc
         await self.config.guild(guild).last_seen.set(data)
         
-    async def _get_last_poked(self, guild: discord.Guild) -> Dict[int, float]:
-        """Retrieves the raw last_poked dictionary."""
-        raw_data = await self.config.guild(guild).last_poked()
-        return {int(k): v for k, v in raw_data.items()}
+    def _is_valid_gif_url(self, url: str) -> bool:
+        """Simple check if the URL looks like a GIF link or page."""
+        return re.match(r'^https?://[^\s/$.?#].[^\s]*\.(gif|webp|mp4|mov)(\?.*)?$', url, re.IGNORECASE) is not None or "tenor.com" in url or "giphy.com" in url
 
-    async def _set_last_poked(self, guild: discord.Guild, data: Dict[int, float]):
-        """Sets the raw last_poked dictionary."""
-        await self.config.guild(guild).last_poked.set(data)
+    def _get_inactivity_cutoff(self, days: int) -> datetime:
+        """Calculates the ISO datetime cutoff point for inactivity."""
+        return datetime.now(timezone.utc) - timedelta(days=days)
 
-    async def _get_last_summoned(self, guild: discord.Guild) -> Dict[int, float]:
-        """Retrieves the raw last_summoned dictionary."""
-        raw_data = await self.config.guild(guild).last_summoned()
-        return {int(k): v for k, v in raw_data.items()}
+    def _is_excluded(self, member: discord.Member, excluded_roles: List[int]) -> bool:
+        """Checks if the member has any role that is in the excluded list."""
+        if not excluded_roles:
+            return False
+        
+        member_role_ids = {role.id for role in member.roles}
+        excluded_role_ids = set(excluded_roles)
+        
+        return bool(member_role_ids.intersection(excluded_role_ids))
+    
+    def _get_excluded_role_names(self, member: discord.Member, excluded_roles: List[int]) -> List[str]:
+        """Returns the names of the roles that are causing the exclusion."""
+        excluded_names = []
+        excluded_role_ids = set(excluded_roles)
+        for role in member.roles:
+            if role.id in excluded_role_ids:
+                excluded_names.append(role.name)
+        return excluded_names
 
-    async def _set_last_summoned(self, guild: discord.Guild, data: Dict[int, float]):
-        """Sets the raw last_summoned dictionary."""
-        await self.config.guild(guild).last_summoned.set(data)
+    async def _get_eligible_members(self, ctx: commands.Context, days_inactive: int, last_action_key: str) -> Tuple[List[discord.Member], List[discord.Member]]:
+        """
+        Gets a list of members eligible for action, prioritized by whether they have been acted upon.
 
-    # --- Activity Tracking Listeners ---
+        Returns: (priority_1_members, priority_2_members)
+        """
+        guild = ctx.guild
+        cutoff_dt = self._get_inactivity_cutoff(days_inactive)
+        
+        # Fetch all tracking data
+        data = await self.config.guild(guild).all()
+        last_seen_data = data["last_seen"]
+        last_action_data = data[last_action_key] # either 'last_poked' or 'last_summoned'
+        excluded_roles = data["excluded_roles"]
+        
+        priority_1: List[discord.Member] = [] # Never poked/summoned
+        priority_2: List[Tuple[discord.Member, datetime]] = [] # Poked/summoned least recently
+        
+        for user_id_str, last_seen_dt_str in last_seen_data.items():
+            user_id = int(user_id_str)
+            member = guild.get_member(user_id)
+            
+            # Skip if member doesn't exist, is a bot, or is excluded by role
+            if member is None or member.bot or self._is_excluded(member, excluded_roles):
+                continue
 
+            try:
+                last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+
+            # Check if inactive enough
+            if last_seen_dt < cutoff_dt:
+                # Member is eligible due to inactivity
+                
+                # Check if member has been poked/summoned before
+                last_action_dt_str = last_action_data.get(user_id_str)
+                
+                if last_action_dt_str is None:
+                    # Priority 1: Never been acted upon
+                    priority_1.append(member)
+                else:
+                    # Priority 2: Has been acted upon, track the date
+                    try:
+                        last_action_dt = datetime.fromisoformat(last_action_dt_str).replace(tzinfo=timezone.utc)
+                        priority_2.append((member, last_action_dt))
+                    except ValueError:
+                        # Should not happen, but if date is invalid, treat as never acted upon
+                        priority_1.append(member)
+
+        # Sort Priority 2 by oldest action date first (least recently acted upon)
+        # We only need the member object for the final list
+        priority_2_members = [
+            member for member, dt in sorted(priority_2, key=lambda x: x[1])
+        ]
+        
+        return priority_1, priority_2_members
+    
+    async def _set_last_action_time(self, guild: discord.Guild, user_id: int, key: str):
+        """Updates the last_poked or last_summoned time for a user."""
+        user_id_str = str(user_id)
+        current_time_utc = datetime.now(timezone.utc).isoformat()
+        
+        data = await self.config.guild(guild).get_attr(key)()
+        data[user_id_str] = current_time_utc
+        await self.config.guild(guild).get_attr(key).set(data)
+
+    def _format_date_diff(self, dt_str: Union[str, None]) -> str:
+        """Helper function for formatting ISO dates into 'X days ago' or 'Never'."""
+        if dt_str:
+            try:
+                dt = datetime.fromisoformat(dt_str).replace(tzinfo=timezone.utc)
+                diff = datetime.now(timezone.utc) - dt
+                return f"{diff.days} days ago"
+            except ValueError:
+                return "Invalid Date"
+        return "Never"
+
+    async def _get_all_eligible_member_data(self, ctx: commands.Context) -> List[dict]:
+        """
+        Retrieves comprehensive data for all members who meet EITHER the poke or summon inactivity criteria.
+        
+        Does NOT include role-excluded members.
+        """
+        guild = ctx.guild
+        data = await self.config.guild(guild).all()
+        
+        settings = OuijaSettings(**data["ouija_settings"])
+        last_seen_data = data["last_seen"]
+        last_poked_data = data["last_poked"]
+        last_summoned_data = data["last_summoned"]
+        excluded_roles = data["excluded_roles"]
+        
+        poke_cutoff = self._get_inactivity_cutoff(settings.poke_days)
+        summon_cutoff = self._get_inactivity_cutoff(settings.summon_days)
+        
+        eligible_list = []
+        
+        for user_id_str, last_seen_dt_str in last_seen_data.items():
+            user_id = int(user_id_str)
+            member = guild.get_member(user_id)
+            
+            if member is None or member.bot or self._is_excluded(member, excluded_roles):
+                continue
+            
+            try:
+                last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+
+            is_poke_eligible = last_seen_dt < poke_cutoff
+            is_summon_eligible = last_seen_dt < summon_cutoff
+            
+            # Member must be eligible for at least one action
+            if is_poke_eligible or is_summon_eligible:
+                
+                last_poked_str = last_poked_data.get(user_id_str)
+                last_summoned_str = last_summoned_data.get(user_id_str)
+                
+                last_seen_diff = (datetime.now(timezone.utc) - last_seen_dt).days
+                
+                eligible_list.append({
+                    "member": member,
+                    "last_seen_days": last_seen_diff,
+                    "last_poked": self._format_date_diff(last_poked_str),
+                    "last_summoned": self._format_date_diff(last_summoned_str),
+                    "eligible_for": ("Poke" if is_poke_eligible else "") + (" & Summon" if is_poke_eligible and is_summon_eligible else "Summon" if is_summon_eligible else "")
+                })
+
+        # Sort by most inactive (highest last_seen_days)
+        eligible_list.sort(key=lambda x: x['last_seen_days'], reverse=True)
+        return eligible_list
+    
+    async def _get_excluded_eligible_members(self, ctx: commands.Context) -> List[dict]:
+        """
+        Retrieves data for members who are eligible by activity but excluded by role.
+        """
+        guild = ctx.guild
+        data = await self.config.guild(guild).all()
+        
+        settings = OuijaSettings(**data["ouija_settings"])
+        last_seen_data = data["last_seen"]
+        excluded_roles = data["excluded_roles"]
+        
+        poke_cutoff = self._get_inactivity_cutoff(settings.poke_days)
+        summon_cutoff = self._get_inactivity_cutoff(settings.summon_days)
+        
+        excluded_eligible_list = []
+        
+        for user_id_str, last_seen_dt_str in last_seen_data.items():
+            user_id = int(user_id_str)
+            member = guild.get_member(user_id)
+            
+            if member is None or member.bot:
+                continue
+            
+            # Check if excluded by role
+            if not self._is_excluded(member, excluded_roles):
+                continue
+            
+            try:
+                last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+
+            is_poke_eligible = last_seen_dt < poke_cutoff
+            is_summon_eligible = last_seen_dt < summon_cutoff
+            
+            # Member must be inactive enough for at least one action
+            if is_poke_eligible or is_summon_eligible:
+                
+                last_seen_diff = (datetime.now(timezone.utc) - last_seen_dt).days
+                excluded_names = self._get_excluded_role_names(member, excluded_roles)
+                
+                excluded_eligible_list.append({
+                    "member": member,
+                    "last_seen_days": last_seen_diff,
+                    "eligible_for": ("Poke" if is_poke_eligible else "") + (" & Summon" if is_poke_eligible and is_summon_eligible else "Summon" if is_summon_eligible else ""),
+                    "excluded_by": humanize_list([f"@{name}" for name in excluded_names])
+                })
+
+        # Sort by most inactive (highest last_seen_days)
+        excluded_eligible_list.sort(key=lambda x: x['last_seen_days'], reverse=True)
+        return excluded_eligible_list
+
+
+    # --- Listeners (Event Handlers) ---
+    
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Track activity based on messages sent."""
-        if message.guild is None or message.author.bot:
+        """Updates the last_seen time for any message sent."""
+        if message.guild is None or message.author.bot or message.webhook_id:
             return
-
-        settings = await self._get_guild_settings(message.guild)
-
-        if message.channel.id in settings.ignored_channels:
-            return
-
-        # Check if the member has an ignored role
-        member = message.author
-        if isinstance(member, discord.Member):
-            if any(role.id in settings.ignored_roles for role in member.roles):
-                return
-
-        timestamp = message.created_at.timestamp()
         
-        # Update last_seen
-        last_seen = await self._get_last_seen(message.guild)
-        last_seen[member.id] = timestamp
-        await self._set_last_seen(message.guild, last_seen)
-
+        await self._update_last_seen(message.guild, message.author.id)
+    
     @commands.Cog.listener()
-    async def on_reaction_add(self, reaction: discord.Reaction, user: Union[discord.Member, discord.User]):
-        """Track activity based on reactions added if enabled."""
-        if isinstance(user, discord.User) or user.bot or reaction.message.guild is None:
+    async def on_member_join(self, member: discord.Member):
+        """Sets the last_seen time for a new member to now."""
+        if member.bot:
             return
-
-        guild = reaction.message.guild
-        settings = await self._get_guild_settings(guild)
         
-        if not settings.track_non_message_activity:
-            return
-
-        if reaction.message.channel.id in settings.ignored_channels:
-            return
-
-        # Check if the member has an ignored role
-        if any(role.id in settings.ignored_roles for role in user.roles):
-            return
-
-        # Use the reaction time as the timestamp
-        timestamp = datetime.now(timezone.utc).timestamp()
-        
-        # Update last_seen
-        last_seen = await self._get_last_seen(guild)
-        last_seen[user.id] = timestamp
-        await self._set_last_seen(guild, last_seen)
+        data = await self.config.guild(member.guild).last_seen()
+        if str(member.id) not in data:
+            await self._update_last_seen(member.guild, member.id)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        """Track activity based on voice state changes if enabled."""
-        if member.bot or member.guild is None:
-            return
-
-        guild = member.guild
-        settings = await self._get_guild_settings(guild)
-        
-        if not settings.track_non_message_activity:
-            return
-
-        # If the user joins or leaves a voice channel
-        if before.channel != after.channel:
-            # Check if the member has an ignored role
-            if any(role.id in settings.ignored_roles for role in member.roles):
-                return
-
-            # Use the current time as the timestamp
-            timestamp = datetime.now(timezone.utc).timestamp()
-            
-            # Update last_seen
-            last_seen = await self._get_last_seen(guild)
-            last_seen[member.id] = timestamp
-            await self._set_last_seen(guild, last_seen)
-
-
-    # --- Inactivity Role and Notification Logic ---
-
-    async def _get_inactivity_info(self, member: discord.Member, last_seen: Dict[int, float]) -> Tuple[int, timedelta]:
-        """
-        Calculates inactivity duration for a member.
-        Returns: Tuple[user_id, timedelta]
-        """
-        user_id = member.id
-        now = datetime.now(timezone.utc)
-        
-        last_seen_ts = last_seen.get(user_id)
-        if last_seen_ts is None:
-            # If never seen, assume activity started when they joined the guild
-            # Ensure member.joined_at is timezone-aware
-            joined_at = member.joined_at.replace(tzinfo=timezone.utc) if member.joined_at.tzinfo is None else member.joined_at
-            last_seen_dt = joined_at
-        else:
-            last_seen_dt = datetime.fromtimestamp(last_seen_ts, tz=timezone.utc)
-
-        inactivity_duration = now - last_seen_dt
-        return user_id, inactivity_duration
-
-
-    async def _process_inactivity_roles(self, guild: discord.Guild, settings: OuijaSettings, last_seen: Dict[int, float]):
-        """Assigns and removes inactivity roles based on configured days."""
-        if not settings.inactivity_roles and not settings.auto_unassign:
-            return
-
-        # Sort from longest required days to shortest
-        inactivity_roles = sorted(settings.inactivity_roles, key=lambda x: x.days, reverse=True)
-        all_role_ids = {r.role_id for r in inactivity_roles}
-
-        log_messages = []
-
-        for member in guild.members:
-            if member.bot:
-                continue
-            
-            # Skip if member has an ignored role
-            if any(role.id in settings.ignored_roles for role in member.roles):
-                continue
-
-            user_id, inactivity_duration = await self._get_inactivity_info(member, last_seen)
-            days_inactive = inactivity_duration.days
-
-            # 1. Determine the highest applicable role
-            target_role = None
-            for role_pair in inactivity_roles:
-                if days_inactive >= role_pair.days:
-                    target_role = guild.get_role(role_pair.role_id)
-                    if target_role:
-                        break # Found the highest applicable role
-            
-            member_role_ids = {r.id for r in member.roles}
-            current_inactivity_roles = member_role_ids.intersection(all_role_ids)
-
-            # 2. Assign the target role (if needed)
-            if target_role and target_role.id not in current_inactivity_roles:
-                try:
-                    await member.add_roles(target_role, reason=f"Inactivity: {days_inactive} days.")
-                    if not settings.quiet_role_assignment:
-                        log_messages.append(f"✅ Assigned **{target_role.name}** to {member.display_name} ({days_inactive} days inactive).")
-                except discord.Forbidden:
-                    log_messages.append(f"⚠️ Failed to assign **{target_role.name}** to {member.display_name} (Missing Permissions).")
-                except discord.HTTPException as e:
-                    log_messages.append(f"⚠️ Failed to assign **{target_role.name}** to {member.display_name}: {e}")
-            
-            # 3. Remove other/outdated inactivity roles
-            roles_to_remove = []
-            
-            # Check for roles that should be removed because they are lower than the new target
-            for role_id in current_inactivity_roles:
-                if target_role and role_id != target_role.id:
-                    role_to_remove = guild.get_role(role_id)
-                    if role_to_remove:
-                        roles_to_remove.append(role_to_remove)
-
-            # Check for roles that should be removed due to new activity (auto_unassign)
-            if settings.auto_unassign and not target_role and current_inactivity_roles:
-                 # Member is now active enough not to need any inactivity role
-                for role_id in current_inactivity_roles:
-                    role_to_remove = guild.get_role(role_id)
-                    if role_to_remove:
-                        roles_to_remove.append(role_to_remove)
-            
-            # Perform removal
-            # Use a set to handle duplicate roles that might have been added to roles_to_remove
-            unique_roles_to_remove = {r for r in roles_to_remove if r is not None and r in member.roles}
-
-            for role in unique_roles_to_remove:
-                try:
-                    await member.remove_roles(role, reason="Activity detected or better inactivity role assigned.")
-                    if not settings.quiet_role_assignment:
-                        log_messages.append(f"❌ Removed **{role.name}** from {member.display_name}.")
-                except discord.Forbidden:
-                    log_messages.append(f"⚠️ Failed to remove **{role.name}** from {member.display_name} (Missing Permissions).")
-                except discord.HTTPException as e:
-                    log_messages.append(f"⚠️ Failed to remove **{role.name}** from {member.display_name}: {e}")
-
-        # Log results to the console
-        if log_messages:
-            print(f"Ouijapoke Role Assignment Log for {guild.name} ({len(log_messages)} actions):")
-            for msg in log_messages:
-                print(msg)
-
-
-    async def _send_notification(self, member: discord.Member, action_type: str, days_inactive: int, settings: OuijaSettings) -> bool:
-        """Sends a poke or summon notification to a member."""
-        message_template = settings.poke_message if action_type == "poke" else settings.summon_message
-        
-        # Format the message
-        message = message_template.format(mention=member.mention, days=days_inactive)
-
-        # 1. Try to DM
-        dm_sent = False
-        try:
-            await member.send(
-                f"👻 **Ouijapoke Alert** from {member.guild.name}:\n"
-                f"{message}"
-            )
-            dm_sent = True
-        except (discord.Forbidden, discord.HTTPException):
-            # DM failed, try channel fallback
-            pass
-
-        if dm_sent:
-            return True
-
-        # 2. Try target channel
-        if settings.target_channel_id and settings.allow_pokes_in_target_channel:
-            target_channel = member.guild.get_channel(settings.target_channel_id)
-            if target_channel and isinstance(target_channel, discord.TextChannel):
-                try:
-                    await target_channel.send(message)
-                    return True
-                except discord.Forbidden:
-                    print(f"Ouijapoke: Failed to send {action_type} message to target channel {target_channel.name} due to permissions.")
-                except discord.HTTPException as e:
-                    print(f"Ouijapoke: Failed to send {action_type} message to target channel: {e}")
-        
-        return False # Failed to send via DM or target channel
-
-    async def _process_pokes_and_summons(self, guild: discord.Guild, settings: OuijaSettings, last_seen: Dict[int, float]):
-        """Checks for members to poke or summon and notifies them."""
-        
-        if not settings.auto_poke_enabled or settings.max_auto_pokes <= 0:
-            return
-
-        now_ts = datetime.now(timezone.utc).timestamp()
-        
-        # Load existing tracking data
-        last_poked = await self._get_last_poked(guild)
-        last_summoned = await self._get_last_summoned(guild)
-
-        poke_threshold = timedelta(days=settings.poke_days)
-        summon_threshold = timedelta(days=settings.summon_days)
-
-        members_to_poke = []
-        members_to_summon = []
-
-        for member in guild.members:
-            if member.bot:
-                continue
-            
-            # Skip if member has an ignored role
-            if any(role.id in settings.ignored_roles for role in member.roles):
-                continue
-
-            user_id, inactivity_duration = await self._get_inactivity_info(member, last_seen)
-            
-            # Check for summons (highest priority)
-            if inactivity_duration >= summon_threshold:
-                # Only summon if they haven't been summoned more recently than they were last seen
-                last_summon_ts = last_summoned.get(user_id, 0)
-                last_seen_ts = last_seen.get(user_id, 0)
-
-                # Use a small buffer (e.g., 5 seconds) to handle near-simultaneous updates
-                if last_summon_ts < last_seen_ts + 5:
-                    # They've been active since the last summon, or never summoned
-                    members_to_summon.append((member, inactivity_duration.days))
-
-            # Check for pokes
-            elif inactivity_duration >= poke_threshold:
-                # Only poke if they haven't been poked or summoned more recently than they were last seen
-                last_poke_ts = last_poked.get(user_id, 0)
-                last_summon_ts = last_summoned.get(user_id, 0)
-                last_notification_ts = max(last_poke_ts, last_summon_ts)
-                last_seen_ts = last_seen.get(user_id, 0)
-
-                # Use a small buffer (e.g., 5 seconds) to handle near-simultaneous updates
-                if last_notification_ts < last_seen_ts + 5:
-                    # They've been active since the last poke/summon, or never notified
-                    members_to_poke.append((member, inactivity_duration.days))
-
-
-        # Sort for more natural progression (most inactive first)
-        members_to_summon.sort(key=lambda x: x[1], reverse=True)
-        members_to_poke.sort(key=lambda x: x[1], reverse=True)
-        
-        total_pokes_done = 0
-
-        # Process summons first
-        for member, days_inactive in members_to_summon:
-            if total_pokes_done >= settings.max_auto_pokes:
-                break
-                
-            sent = await self._send_notification(member, "summon", days_inactive, settings)
-            if sent:
-                last_summoned[member.id] = now_ts
-                total_pokes_done += 1
-                # Remove from poke eligibility if they were just summoned
-                if member.id in last_poked:
-                    del last_poked[member.id]
-
-        # Process pokes
-        for member, days_inactive in members_to_poke:
-            if total_pokes_done >= settings.max_auto_pokes:
-                break
-            
-            # Re-check to ensure they weren't just summoned in this batch
-            if member.id in last_summoned:
-                continue
-
-            sent = await self._send_notification(member, "poke", days_inactive, settings)
-            if sent:
-                last_poked[member.id] = now_ts
-                total_pokes_done += 1
-
-        # Save updated tracking data
-        if total_pokes_done > 0 or members_to_summon or members_to_poke:
-            await self._set_last_poked(guild, last_poked)
-            await self._set_last_summoned(guild, last_summoned)
-            print(f"Ouijapoke: Completed auto-check for {guild.name}. Notified {total_pokes_done} members.")
-        
-    
-    # --- Background Loop ---
-    
-    async def auto_check_loop(self):
-        """The main background loop for periodic activity checks and actions."""
-        # Wait until the bot is fully ready
-        await self.bot.wait_until_ready() 
-        
-        while self.bot.is_ready():
-            try:
-                # Iterate over all guilds the bot is in
-                for guild in self.bot.guilds:
-                    # Use guild.unavailable check to skip if Discord is having issues
-                    if guild.unavailable:
-                        continue
-                        
-                    settings = await self._get_guild_settings(guild)
-                    
-                    if not settings.auto_poke_enabled and not settings.inactivity_roles:
-                        continue # Skip if no features are enabled
-                        
-                    interval_seconds = settings.auto_check_interval_hours * 3600
-                    last_check = self.last_check_times.get(guild.id, 0)
-                    now_ts = datetime.now(timezone.utc).timestamp()
-                    
-                    if now_ts - last_check >= interval_seconds:
-                        
-                        last_seen = await self._get_last_seen(guild)
-                        
-                        # 1. Process Roles (Assignment/Removal)
-                        await self._process_inactivity_roles(guild, settings, last_seen)
-                        
-                        # 2. Process Pokes/Summons (Notifications)
-                        if settings.auto_poke_enabled:
-                            await self._process_pokes_and_summons(guild, settings, last_seen)
-                            
-                        # Update last check time
-                        self.last_check_times[guild.id] = now_ts
-                    
-                # Wait for a fixed 30-minute sleep interval
-                await asyncio.sleep(1800) 
-
-            except asyncio.CancelledError:
-                # The task was cancelled, break the loop
-                break
-            except Exception as e:
-                # Catch any other exceptions and continue the loop after a delay
-                print(f"An error occurred in the Ouijapoke background loop: {e}")
-                await asyncio.sleep(60) # Wait a minute before retrying
-
-    # --- Commands ---
-
-    @commands.group(name="ouijaset")
-    @commands.guild_only()
-    @checks.mod_or_permissions(manage_guild=True)
-    async def ouijaset(self, ctx: commands.Context):
-        """Configuration for the Ouijapoke cog."""
-        pass
-
-    @ouijaset.command(name="show")
-    async def ouijaset_show(self, ctx: commands.Context):
-        """Show the current Ouijapoke settings for this guild."""
-        settings = await self._get_guild_settings(ctx.guild)
-        
-        role_list = []
-        for pair in settings.inactivity_roles:
-            role = ctx.guild.get_role(pair.role_id)
-            role_name = role.name if role else f"Unknown Role ({pair.role_id})"
-            role_list.append(f"  - **{role_name}**: {pair.days} days")
-            
-        ignored_role_names = [r.name for r in [ctx.guild.get_role(rid) for rid in settings.ignored_roles] if r]
-        ignored_channel_names = [c.name for c in [ctx.guild.get_channel(cid) for cid in settings.ignored_channels] if c]
-        
-        target_channel = ctx.guild.get_channel(settings.target_channel_id)
-        target_channel_name = target_channel.name if target_channel else "Not Set"
-
-        msg = (
-            "__**Ouijapoke Current Settings**__\n\n"
-            "**Inactivity Thresholds**\n"
-            f"  - **Poke After**: `{settings.poke_days}` days\n"
-            f"  - **Summon After**: `{settings.summon_days}` days\n\n"
-            
-            "**Automatic Role Assignment**\n"
-            f"  - **Roles to Assign** (Highest Inactivity to Lowest):\n{'\n'.join(role_list) or '  - None'}\n"
-            f"  - **Auto-Unassign Roles on Activity**: `{settings.auto_unassign}`\n"
-            f"  - **Quiet Role Assignment (No Log Messages)**: `{settings.quiet_role_assignment}`\n\n"
-            
-            "**Automatic Notifications (Poking/Summoning)**\n"
-            f"  - **Auto-Poke/Summon Enabled**: `{settings.auto_poke_enabled}`\n"
-            f"  - **Check Interval**: `{settings.auto_check_interval_hours}` hours\n"
-            f"  - **Max Notifications Per Check**: `{settings.max_auto_pokes}`\n"
-            f"  - **Target Channel**: `#{target_channel_name}`\n"
-            f"  - **Allow Notifications in Target Channel**: `{settings.allow_pokes_in_target_channel}`\n"
-            f"  - **Poke Message**: `\"...{settings.poke_message[:50]}...\"`\n"
-            f"  - **Summon Message**: `\"...{settings.summon_message[:50]}...\"`\n\n"
-            
-            "**Ignored Items & Activity Tracking**\n"
-            f"  - **Ignored Roles**: {humanize_list(ignored_role_names) or 'None'}\n"
-            f"  - **Ignored Channels**: {humanize_list(ignored_channel_names) or 'None'}\n"
-            f"  - **Track Non-Message Activity (Voice/Reactions)**: `{settings.track_non_message_activity}`\n"
-        )
-        
-        await ctx.send(msg)
-
-    @ouijaset.command(name="poke_days")
-    async def ouijaset_poke_days(self, ctx: commands.Context, days: int):
-        """Set the minimum number of days a member must be inactive to be eligible for a poke."""
-        if days < 1:
-            return await ctx.send("The number of days must be at least 1.")
-        await self.config.guild(ctx.guild).poke_days.set(days)
-        await ctx.send(f"Minimum inactivity for **poking** set to **{days}** days.")
-
-    @ouijaset.command(name="summon_days")
-    async def ouijaset_summon_days(self, ctx: commands.Context, days: int):
-        """Set the minimum number of days a member must be inactive to be eligible for a summon."""
-        if days < 1:
-            return await ctx.send("The number of days must be at least 1.")
-        await self.config.guild(ctx.guild).summon_days.set(days)
-        await ctx.send(f"Minimum inactivity for **summoning** set to **{days}** days.")
-
-    # --- Role Assignment Commands ---
-    
-    @ouijaset.group(name="inactivityrole")
-    async def ouijaset_inactivityrole(self, ctx: commands.Context):
-        """Manage roles automatically assigned based on inactivity."""
-        pass
-
-    @ouijaset_inactivityrole.command(name="add")
-    async def ouijaset_inactivityrole_add(self, ctx: commands.Context, role: discord.Role, days: int):
-        """Add a role to be assigned after a specific number of inactive days."""
-        if days < 1:
-            return await ctx.send("The number of days must be at least 1.")
-        
-        current_roles = await self.config.guild(ctx.guild).inactivity_roles()
-        
-        # Check for duplicates or overwrites
-        for item in current_roles:
-            if item["role_id"] == role.id:
-                item["days"] = days
-                await self.config.guild(ctx.guild).inactivity_roles.set(current_roles)
-                return await ctx.send(f"Role **{role.name}** already existed. Inactivity required updated to **{days}** days.")
-        
-        current_roles.append({"role_id": role.id, "days": days})
-        await self.config.guild(ctx.guild).inactivity_roles.set(current_roles)
-        await ctx.send(f"Role **{role.name}** will be assigned after **{days}** days of inactivity.")
-
-    @ouijaset_inactivityrole.command(name="remove")
-    async def ouijaset_inactivityrole_remove(self, ctx: commands.Context, role: discord.Role):
-        """Remove a role from the automatic inactivity assignment list."""
-        current_roles = await self.config.guild(ctx.guild).inactivity_roles()
-        
-        new_roles = [item for item in current_roles if item["role_id"] != role.id]
-        
-        if len(new_roles) == len(current_roles):
-            return await ctx.send(f"Role **{role.name}** was not found in the inactivity role list.")
-
-        await self.config.guild(ctx.guild).inactivity_roles.set(new_roles)
-        await ctx.send(f"Role **{role.name}** removed from the automatic inactivity assignment list.")
-
-    @ouijaset_inactivityrole.command(name="unassign")
-    async def ouijaset_inactivityrole_unassign(self, ctx: commands.Context, enable: bool):
-        """Toggle whether inactivity roles are automatically removed when a member becomes active."""
-        await self.config.guild(ctx.guild).auto_unassign.set(enable)
-        state = "enabled" if enable else "disabled"
-        await ctx.send(f"Automatic removal of inactivity roles is now **{state}**.")
-
-    @ouijaset_inactivityrole.command(name="quiet")
-    async def ouijaset_inactivityrole_quiet(self, ctx: commands.Context, enable: bool):
-        """Toggle quiet mode for role assignment/removal (prevents console logging)."""
-        await self.config.guild(ctx.guild).quiet_role_assignment.set(enable)
-        state = "enabled" if enable else "disabled"
-        await ctx.send(f"Quiet mode for role assignment/removal is now **{state}**.")
-
-    # --- Ignore Lists ---
-
-    @ouijaset.group(name="ignore")
-    async def ouijaset_ignore(self, ctx: commands.Context):
-        """Manage ignored roles and channels for activity tracking."""
-        pass
-
-    @ouijaset_ignore.command(name="role")
-    async def ouijaset_ignore_role(self, ctx: commands.Context, role: discord.Role):
-        """Toggle a role to be ignored for all activity tracking and assignment."""
-        ignored_roles = await self.config.guild(ctx.guild).ignored_roles()
-        
-        if role.id in ignored_roles:
-            ignored_roles.remove(role.id)
-            await self.config.guild(ctx.guild).ignored_roles.set(ignored_roles)
-            await ctx.send(f"Role **{role.name}** is no longer ignored for activity tracking.")
-        else:
-            ignored_roles.append(role.id)
-            await self.config.guild(ctx.guild).ignored_roles.set(ignored_roles)
-            await ctx.send(f"Role **{role.name}** is now ignored for all activity tracking and assignment.")
-
-    @ouijaset_ignore.command(name="channel")
-    async def ouijaset_ignore_channel(self, ctx: commands.Context, channel: discord.TextChannel):
-        """Toggle a text channel to be ignored for message activity tracking."""
-        ignored_channels = await self.config.guild(ctx.guild).ignored_channels()
-        
-        if channel.id in ignored_channels:
-            ignored_channels.remove(channel.id)
-            await self.config.guild(ctx.guild).ignored_channels.set(ignored_channels)
-            await ctx.send(f"Channel **#{channel.name}** is no longer ignored for message activity tracking.")
-        else:
-            ignored_channels.append(channel.id)
-            await self.config.guild(ctx.guild).ignored_channels.set(ignored_channels)
-            await ctx.send(f"Channel **#{channel.name}** is now ignored for message activity tracking.")
-
-    # --- Notification Settings ---
-
-    @ouijaset.command(name="target_channel")
-    async def ouijaset_target_channel(self, ctx: commands.Context, channel: Union[discord.TextChannel, None] = None):
-        """
-        Set the channel where automated pokes/summons are sent. 
-        If no channel is provided, it clears the setting.
-        """
-        channel_id = channel.id if channel else None
-        await self.config.guild(ctx.guild).target_channel_id.set(channel_id)
-        if channel_id:
-            await ctx.send(f"Target channel for automated notifications set to **#{channel.name}**.")
-        else:
-            await ctx.send("Target channel for automated notifications cleared. Notifications will only be sent via DM (if possible).")
-
-    @ouijaset.command(name="allow_target_poke")
-    async def ouijaset_allow_target_poke(self, ctx: commands.Context, enable: bool):
-        """Toggle whether pokes/summons are allowed to be sent in the target channel if DM fails."""
-        await self.config.guild(ctx.guild).allow_pokes_in_target_channel.set(enable)
-        state = "enabled" if enable else "disabled"
-        await ctx.send(f"Sending notifications to the target channel (if DM fails) is now **{state}**.")
-
-    @ouijaset.command(name="poke_message")
-    async def ouijaset_poke_message(self, ctx: commands.Context, *, message: str):
-        """Set the custom message for 'poke'. Use {mention} and {days} placeholders."""
-        if not all(placeholder in message for placeholder in ["{mention}", "{days}"]):
-            return await ctx.send("Your message must include both `{mention}` and `{days}` placeholders.")
-        await self.config.guild(ctx.guild).poke_message.set(message)
-        await ctx.send("Custom **poke message** updated.")
-        
-    @ouijaset.command(name="summon_message")
-    async def ouijaset_summon_message(self, ctx: commands.Context, *, message: str):
-        """Set the custom message for 'summon'. Use {mention} and {days} placeholders."""
-        if not all(placeholder in message for placeholder in ["{mention}", "{days}"]):
-            return await ctx.send("Your message must include both `{mention}` and `{days}` placeholders.")
-        await self.config.guild(ctx.guild).summon_message.set(message)
-        await ctx.send("Custom **summon message** updated.")
-
-    @ouijaset.command(name="auto_poke")
-    async def ouijaset_auto_poke(self, ctx: commands.Context, enable: bool):
-        """Toggle the automatic daily checking for inactive members to poke/summon."""
-        await self.config.guild(ctx.guild).auto_poke_enabled.set(enable)
-        state = "enabled" if enable else "disabled"
-        await ctx.send(f"Automatic poking/summoning is now **{state}**.")
-
-    @ouijaset.command(name="check_interval")
-    async def ouijaset_check_interval(self, ctx: commands.Context, hours: int):
-        """Set how often (in hours) the bot performs the automatic check (min 1)."""
-        if hours < 1:
-            return await ctx.send("The interval must be at least 1 hour.")
-        await self.config.guild(ctx.guild).auto_check_interval_hours.set(hours)
-        await ctx.send(f"Automatic check interval set to **{hours}** hours.")
-        
-    @ouijaset.command(name="max_auto_pokes")
-    async def ouijaset_max_auto_pokes(self, ctx: commands.Context, count: int):
-        """Set the maximum number of members to poke/summon in a single automatic check (min 1)."""
-        if count < 1:
-            return await ctx.send("The maximum count must be at least 1.")
-        await self.config.guild(ctx.guild).max_auto_pokes.set(count)
-        await ctx.send(f"Maximum automatic pokes/summons per check set to **{count}**.")
-        
-    @ouijaset.command(name="track_non_message")
-    async def ouijaset_track_non_message(self, ctx: commands.Context, enable: bool):
-        """Toggle tracking of non-message activity (voice state, reactions) for last_seen."""
-        await self.config.guild(ctx.guild).track_non_message_activity.set(enable)
-        state = "enabled" if enable else "disabled"
-        await ctx.send(f"Tracking of non-message activity (voice, reactions) is now **{state}**.")
-
-
-    # --- Manual Activity Commands ---
-
-    @commands.command(name="lastseen")
-    @commands.guild_only()
-    async def lastseen(self, ctx: commands.Context, member: discord.Member = None):
-        """Shows the last recorded activity of a member."""
-        if member is None:
-            member = ctx.author
-            
-        last_seen = await self._get_last_seen(ctx.guild)
-        
-        user_id, inactivity_duration = await self._get_inactivity_info(member, last_seen)
-        
-        days_inactive = inactivity_duration.days
-        
-        # Determine the last time recorded
-        last_seen_ts = last_seen.get(user_id)
-        if last_seen_ts is None:
-            # Ensure member.joined_at is timezone-aware
-            joined_at = member.joined_at.replace(tzinfo=timezone.utc) if member.joined_at.tzinfo is None else member.joined_at
-            last_dt = joined_at
-            last_time_str = f"Since they joined the server ({last_dt.strftime('%Y-%m-%d %H:%M UTC')})"
-        else:
-            last_dt = datetime.fromtimestamp(last_seen_ts, tz=timezone.utc)
-            last_time_str = last_dt.strftime('%Y-%m-%d %H:%M UTC')
-
-        await ctx.send(
-            f"**{member.display_name}** was last active at: **{last_time_str}** "
-            f"({days_inactive} days inactive)."
-        )
-
-    @commands.command(name="poke")
-    @commands.guild_only()
-    @checks.mod_or_permissions(manage_messages=True)
-    async def poke(self, ctx: commands.Context, member: discord.Member):
-        """Manually poke an inactive member."""
-        settings = await self._get_guild_settings(ctx.guild)
-        last_seen = await self._get_last_seen(ctx.guild)
-        
+        """Tracks voice channel connection duration and updates last_seen if > 5 minutes."""
         if member.bot:
-            return await ctx.send("I can't poke bots.")
-            
-        user_id, inactivity_duration = await self._get_inactivity_info(member, last_seen)
-        days_inactive = inactivity_duration.days
-
-        if days_inactive < settings.poke_days:
-            return await ctx.send(
-                f"{member.display_name} is not inactive enough yet. They need to be inactive "
-                f"for at least **{settings.poke_days}** days (currently {days_inactive})."
-            )
-
-        sent = await self._send_notification(member, "poke", days_inactive, settings)
+            return
         
-        if sent:
-            # Update last_poked time
-            last_poked = await self._get_last_poked(ctx.guild)
-            last_poked[member.id] = datetime.now(timezone.utc).timestamp()
-            await self._set_last_poked(ctx.guild, last_poked)
-            await ctx.send(f"Successfully poked {member.mention} (inactive for {days_inactive} days).")
-        else:
-            # FIX: Used str.format() instead of f-string to avoid backslash error at the line break.
-            await ctx.send(
-                "Failed to poke {}. They may have DMs disabled and no target \n"
-                "channel is set or allowed."
-            .format(member.mention))
+        member_id = member.id
+        
+        if after.channel is not None and before.channel != after.channel:
+            if not after.self_mute and not after.self_deaf and not after.mute and not after.deaf:
+                self.voice_connect_times[member_id] = datetime.now(timezone.utc)
+        
+        if before.channel is not None and after.channel is None:
+            if member_id in self.voice_connect_times:
+                join_time = self.voice_connect_times.pop(member_id)
+                duration = datetime.now(timezone.utc) - join_time
+                
+                if duration >= timedelta(minutes=5):
+                    await self._update_last_seen(member.guild, member.id)
+                
+
+
+    # --- Poking/Summoning Logic ---
+    
+    async def _send_activity_message(self, ctx: commands.Context, member: discord.Member, message_text: str, gif_list: list[str]):
+        """
+        Sends the message text and the GIF URL as two separate messages 
+        to ensure the GIF unfurls properly.
+        """
+        
+        final_message = message_text.replace("{user_mention}", member.mention)
+        
+        await ctx.send(content=final_message)
+        
+        if gif_list:
+            gif_url = random.choice(gif_list)
+            await ctx.send(content=gif_url)
+
+
+    # --- User Commands ---
+
+    @commands.group(invoke_without_command=True, aliases=["ouija"])
+    async def ouijapoke(self, ctx: commands.Context):
+        """
+        Commands for OuijaPoke: check your status, or poke/summon inactive members.
+        
+        Use [p]poke or [p]summon to call these directly.
+        """
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
+    
+    @commands.command(name="poke")
+    async def poke(self, ctx: commands.Context):
+        """
+        Pokes a random member who has been inactive for the configured number of days.
+        (Equivalent to [p]ouijapoke poke)
+        """
+        try:
+            await self.ouijapoke_random(ctx)
+        finally:
+            if ctx.channel.permissions_for(ctx.me).manage_messages:
+                await ctx.message.delete()
+            else:
+                await ctx.send("I need the `Manage Messages` permission to delete your command message.", delete_after=10)
 
 
     @commands.command(name="summon")
-    @commands.guild_only()
-    @checks.mod_or_permissions(manage_messages=True)
-    async def summon(self, ctx: commands.Context, member: discord.Member):
-        """Manually summon a highly inactive member."""
-        settings = await self._get_guild_settings(ctx.guild)
-        last_seen = await self._get_last_seen(ctx.guild)
-        
-        if member.bot:
-            return await ctx.send("I can't summon bots.")
-            
-        user_id, inactivity_duration = await self._get_inactivity_info(member, last_seen)
-        days_inactive = inactivity_duration.days
+    async def summon(self, ctx: commands.Context):
+        """
+        Summons a random member who has been inactive for the configured number of days.
+        (Equivalent to [p]ouijapoke summon)
+        """
+        try:
+            await self.ouijasummon_random(ctx)
+        finally:
+            if ctx.channel.permissions_for(ctx.me).manage_messages:
+                await ctx.message.delete()
+            else:
+                await ctx.send("I need the `Manage Messages` permission to delete your command message.", delete_after=10)
 
-        if days_inactive < settings.summon_days:
-            return await ctx.send(
-                f"{member.display_name} is not inactive enough for a summon. They need to be inactive "
-                f"for at least **{settings.summon_days}** days (currently {days_inactive})."
+
+    @ouijapoke.command(name="check")
+    async def ouijapoke_check(self, ctx: commands.Context):
+        """Shows how many days it has been since you last sent a message."""
+        user_id = str(ctx.author.id)
+        data = await self.config.guild(ctx.guild).last_seen()
+        last_seen_dt_str = data.get(user_id)
+
+        try:
+            if not last_seen_dt_str:
+                return await ctx.send("I haven't recorded any activity for you yet! Say something now!")
+
+            last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
+            now_dt = datetime.now(timezone.utc)
+            
+            difference = now_dt - last_seen_dt
+            days = difference.days
+            
+            message = (
+                f"The Ouija Planchette last saw you move **{days} days** ago. "
+                f"(On {last_seen_dt.strftime('%Y-%m-%d %H:%M:%S UTC')})"
+            )
+            await ctx.send(message)
+        finally:
+            if ctx.channel.permissions_for(ctx.me).manage_messages:
+                await ctx.message.delete()
+
+
+    @ouijapoke.command(name="poke") 
+    async def ouijapoke_random(self, ctx: commands.Context):
+        """
+        Pokes a random member who has been inactive for the configured number of days, 
+        prioritizing those who haven't been poked before.
+        """
+        async with ctx.typing():
+            settings = await self._get_settings(ctx.guild)
+            
+            p1_members, p2_members = await self._get_eligible_members(ctx, settings.poke_days, "last_poked")
+            
+            member_to_poke = None
+            
+            if p1_members:
+                member_to_poke = random.choice(p1_members)
+            elif p2_members:
+                member_to_poke = random.choice(p2_members)
+            
+            if member_to_poke is None:
+                return await ctx.send(f"Everyone is active or has been recently poked! No one is eligible to be poked (needs >{settings.poke_days} days of inactivity).")
+
+            await self._set_last_action_time(ctx.guild, member_to_poke.id, "last_poked")
+
+            await self._send_activity_message(
+                ctx,
+                member_to_poke,
+                settings.poke_message, 
+                settings.poke_gifs,
+            )
+    
+    @ouijapoke.command(name="summon")
+    async def ouijasummon_random(self, ctx: commands.Context):
+        """
+        Summons a random member who has been inactive for the configured number of days,
+        prioritizing those who haven't been summoned before.
+        """
+        async with ctx.typing():
+            settings = await self._get_settings(ctx.guild)
+            
+            p1_members, p2_members = await self._get_eligible_members(ctx, settings.summon_days, "last_summoned")
+            
+            member_to_summon = None
+            
+            if p1_members:
+                member_to_summon = random.choice(p1_members)
+            elif p2_members:
+                member_to_summon = random.choice(p2_members)
+            
+            if member_to_summon is None:
+                return await ctx.send(f"The spirits are quiet! No one is eligible to be summoned (needs >{settings.summon_days} days of inactivity).")
+
+            await self._set_last_action_time(ctx.guild, member_to_summon.id, "last_summoned")
+
+            await self._send_activity_message(
+                ctx,
+                member_to_summon,
+                settings.summon_message, 
+                settings.summon_gifs, 
             )
 
-        sent = await self._send_notification(member, "summon", days_inactive, settings)
 
-        if sent:
-            # Update last_summoned time
-            last_summoned = await self._get_last_summoned(ctx.guild)
-            last_summoned[member.id] = datetime.now(timezone.utc).timestamp()
-            await self._set_last_summoned(ctx.guild, last_summoned)
-            await ctx.send(f"Successfully summoned {member.mention} (inactive for {days_inactive} days).")
+    # --- Admin Commands (Settings and Overrides) ---
+
+    @commands.group()
+    @checks.admin_or_permissions(manage_guild=True)
+    async def ouijaset(self, ctx: commands.Context):
+        """Manages the OuijaPoke settings."""
+        if ctx.invoked_subcommand is None:
+            settings = await self._get_settings(ctx.guild)
+            excluded_roles = await self.config.guild(ctx.guild).excluded_roles()
+            excluded_names = []
+            for role_id in excluded_roles:
+                role = ctx.guild.get_role(role_id)
+                if role:
+                    excluded_names.append(role.name)
+
+            
+            msg = (
+                "**OuijaPoke Settings**\n"
+                f"- **Poke Inactivity:** {settings.poke_days} days\n"
+                f"- **Summon Inactivity:** {settings.summon_days} days\n"
+                f"- **Poke Message:** `{settings.poke_message}`\n"
+                f"- **Summon Message:** `{settings.summon_message}`\n"
+                f"- **Poke GIFs:** {len(settings.poke_gifs)} stored\n"
+                f"- **Summon GIFs:** {len(settings.summon_gifs)} stored\n"
+                f"- **Excluded Roles:** {humanize_list(excluded_names) if excluded_names else 'None'}"
+            )
+            await ctx.send(msg)
+
+    # --- Days Settings ---
+
+    @ouijaset.command(name="pokedays")
+    async def ouijaset_pokedays(self, ctx: commands.Context, days: int):
+        """Sets the number of days a member must be inactive to be eligible for a 'poke'."""
+        if days < 1:
+            return await ctx.send("Days must be 1 or greater.")
+        settings = await self._get_settings(ctx.guild)
+        settings.poke_days = days
+        await self._set_settings(ctx.guild, settings)
+        await ctx.send(f"Members are now eligible to be poked after **{days}** days of inactivity.")
+
+    @ouijaset.command(name="summondays")
+    async def ouijaset_summondays(self, ctx: commands.Context, days: int):
+        """Sets the number of days a member must be inactive to be eligible for a 'summon'."""
+        if days < 1:
+            return await ctx.send("Days must be 1 or greater.")
+        settings = await self._get_settings(ctx.guild)
+        settings.summon_days = days
+        await self._set_settings(ctx.guild, settings)
+        await ctx.send(f"Members are now eligible to be summoned after **{days}** days of inactivity.")
+
+    # --- Message Settings ---
+    
+    @ouijaset.command(name="pokemessage")
+    async def ouijaset_pokemessage(self, ctx: commands.Context, *, message: str):
+        """
+        Sets the message used when a user is poked. 
+        
+        Use `{user_mention}` as a variable for the user mention.
+        """
+        if "{user_mention}" not in message:
+            return await ctx.send("The message must contain `{user_mention}` to mention the inactive user.")
+        settings = await self._get_settings(ctx.guild)
+        settings.poke_message = message
+        await self._set_settings(ctx.guild, settings)
+        await ctx.send(f"Poke message set to: `{message}`")
+        
+    @ouijaset.command(name="summonmessage")
+    async def ouijaset_summonmessage(self, ctx: commands.Context, *, message: str):
+        """
+        Sets the message used when a user is summoned. 
+        
+        Use `{user_mention}` as a variable for the user mention.
+        """
+        if "{user_mention}" not in message:
+            return await ctx.send("The message must contain `{user_mention}` to mention the inactive user.")
+        settings = await self._get_settings(ctx.guild)
+        settings.summon_message = message
+        await self._set_settings(ctx.guild, settings)
+        await ctx.send(f"Summon message set to: `{message}`")
+
+
+    # --- GIF Management Commands ---
+
+    @ouijaset.group(name="pokegifs", invoke_without_command=True)
+    async def ouijaset_pokegifs(self, ctx: commands.Context):
+        """
+        Manages the list of GIFs used for the 'poke' command.
+        
+        Use `[p]ouijaset pokegifs add <url>` or `[p]ouijaset pokegifs remove <url>`
+        """
+        settings = await self._get_settings(ctx.guild)
+        gifs = settings.poke_gifs
+        if not gifs:
+            msg = "There are currently no Poke GIFs configured."
         else:
-            # FIX: Used str.format() instead of f-string to avoid backslash error at the line break.
-            await ctx.send(
-                "Failed to summon {}. They may have DMs disabled and no target \n"
-                "channel is set or allowed."
-            .format(member.mention))
+            gif_list = "\n".join(f"`{i+1}.` <{g}>" for i, g in enumerate(gifs))
+            msg = f"**Current Poke GIFs ({len(gifs)} total):**\n{gif_list}"
+        
+        await ctx.send(msg)
+
+    @ouijaset_pokegifs.command(name="add")
+    async def pokegifs_add(self, ctx: commands.Context, url: str):
+        """Adds a new GIF URL to the poke list."""
+        if not self._is_valid_gif_url(url):
+            return await ctx.send("That doesn't look like a valid URL. Please ensure it's a link to an image/GIF, or a Tenor/GIPHY page link.")
+        
+        settings = await self._get_settings(ctx.guild)
+        if url in settings.poke_gifs:
+            return await ctx.send("That GIF is already in the list.")
+        
+        settings.poke_gifs.append(url)
+        await self._set_settings(ctx.guild, settings)
+        await ctx.send(f"Added new Poke GIF: <{url}>")
+
+    @ouijaset_pokegifs.command(name="remove")
+    async def pokegifs_remove(self, ctx: commands.Context, url: str):
+        """Removes a GIF URL from the poke list."""
+        settings = await self._get_settings(ctx.guild)
+        
+        try:
+            settings.poke_gifs.remove(url)
+            await self._set_settings(ctx.guild, settings)
+            await ctx.send(f"Removed Poke GIF: <{url}>")
+        except ValueError:
+            await ctx.send("That GIF URL was not found in the list.")
+
+
+    @ouijaset.group(name="summongifs", invoke_without_command=True)
+    async def ouijaset_summongifs(self, ctx: commands.Context):
+        """
+        Manages the list of GIFs used for the 'summon' command.
+        
+        Use `[p]ouijaset summongifs add <url>` or `[p]ouijaset summongifs remove <url>`
+        """
+        settings = await self._get_settings(ctx.guild)
+        gifs = settings.summon_gifs
+        if not gifs:
+            msg = "There are currently no Summon GIFs configured."
+        else:
+            gif_list = "\n".join(f"`{i+1}.` <{g}>" for i, g in enumerate(gifs))
+            msg = f"**Current Summon GIFs ({len(gifs)} total):**\n{gif_list}"
+        
+        await ctx.send(msg)
+
+    @ouijaset_summongifs.command(name="add")
+    async def summongifs_add(self, ctx: commands.Context, url: str):
+        """Adds a new GIF URL to the summon list."""
+        if not self._is_valid_gif_url(url):
+            return await ctx.send("That doesn't look like a valid URL. Please ensure it's a link to an image/GIF, or a Tenor/GIPHY page link.")
+        
+        settings = await self._get_settings(ctx.guild)
+        if url in settings.summon_gifs:
+            return await ctx.send("That GIF is already in the list.")
+        
+        settings.summon_gifs.append(url)
+        await self._set_settings(ctx.guild, settings)
+        await ctx.send(f"Added new Summon GIF: <{url}>")
+
+    @ouijaset_summongifs.command(name="remove")
+    async def summongifs_remove(self, ctx: commands.Context, url: str):
+        """Removes a GIF URL from the summon list."""
+        settings = await self._get_settings(ctx.guild)
+        
+        try:
+            settings.summon_gifs.remove(url)
+            await self._set_settings(ctx.guild, settings)
+            await ctx.send(f"Removed Summon GIF: <{url}>")
+        except ValueError:
+            await ctx.send("That GIF URL was not found in the list.")
+
+    # --- Eligible Members Display ---
+
+    @ouijaset.command(name="eligible")
+    async def ouijaset_eligible(self, ctx: commands.Context):
+        """Displays a list of all members currently eligible for being poked/summoned OR excluded from being so."""
+        
+        settings = await self._get_settings(ctx.guild)
+
+        async with ctx.typing():
+            eligible_members = await self._get_all_eligible_member_data(ctx)
+            excluded_eligible_members = await self._get_excluded_eligible_members(ctx)
+
+        # 1. Handle main eligible list
+        if eligible_members:
+            # Prepare content for display
+            entries = []
+            for i, member_data in enumerate(eligible_members):
+                entry = (
+                    f"**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)\n"
+                    f"  ➡️ Last Active: **{member_data['last_seen_days']} days ago**\n"
+                    f"  👀 Last Poked: {member_data['last_poked']}\n"
+                    f"  👻 Last Summoned: {member_data['last_summoned']}\n"
+                    f"  ✅ Eligible For: {member_data['eligible_for']}"
+                )
+                entries.append(entry)
+
+            # Use basic page separation for clarity
+            pages = []
+            MAX_CHARS = 1000
+            current_page = ""
             
-    # --- Debugging/Owner Commands ---
-
-    @ouijaset.command(name="forcedcheck")
-    @checks.is_owner()
-    async def ouijaset_forcedcheck(self, ctx: commands.Context):
-        """[BOT OWNER ONLY] Immediately runs a full inactivity check."""
-        await ctx.send("Initiating forced inactivity check. This may take a moment...")
-        settings = await self._get_guild_settings(ctx.guild)
-        last_seen = await self._get_last_seen(ctx.guild)
-        
-        # 1. Process Roles
-        await self._process_inactivity_roles(ctx.guild, settings, last_seen)
-        
-        # 2. Process Pokes/Summons
-        if settings.auto_poke_enabled:
-            await self._process_pokes_and_summons(ctx.guild, settings, last_seen)
+            for entry in entries:
+                if len(current_page) + len(entry) + 2 > MAX_CHARS:
+                    pages.append(current_page)
+                    current_page = entry + "\n"
+                else:
+                    current_page += entry + "\n"
+            if current_page:
+                pages.append(current_page)
             
-        self.last_check_times[ctx.guild.id] = datetime.now(timezone.utc).timestamp()
+            # Send the pages
+            for page_num, content in enumerate(pages):
+                embed = discord.Embed(
+                    title=f"👻 Active Eligible Members ({len(eligible_members)} Total)",
+                    description=f"Members below are eligible for action (Sorted by inactivity):\n\n{content}",
+                    color=discord.Color.dark_purple()
+                )
+                embed.set_footer(text=f"Page {page_num + 1}/{len(pages)} (Eligible) | Poke Days: {settings.poke_days}, Summon Days: {settings.summon_days}")
+                await ctx.send(embed=embed)
+        else:
+            await ctx.send("🎉 **No members are currently eligible** for poking or summoning based on activity alone.")
+
+        # 2. Handle excluded members list
+        if excluded_eligible_members:
+            excluded_entries = []
+            for i, member_data in enumerate(excluded_eligible_members):
+                entry = (
+                    f"**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)\n"
+                    f"  ➡️ Last Active: **{member_data['last_seen_days']} days ago**\n"
+                    f"  🚫 Excluded By: **{member_data['excluded_by']}**\n"
+                    f"  ⚠️ *Would be Eligible For: {member_data['eligible_for']}*"
+                )
+                excluded_entries.append(entry)
+
+            # Use basic page separation for clarity
+            excluded_pages = []
+            MAX_CHARS = 1000
+            current_page = ""
+            
+            for entry in excluded_entries:
+                if len(current_page) + len(entry) + 2 > MAX_CHARS:
+                    excluded_pages.append(current_page)
+                    current_page = entry + "\n"
+                else:
+                    current_page += entry + "\n"
+            if current_page:
+                excluded_pages.append(current_page)
+            
+            # Send the excluded pages
+            for page_num, content in enumerate(excluded_pages):
+                embed = discord.Embed(
+                    title=f"🛡️ Excluded Eligible Members ({len(excluded_eligible_members)} Total)",
+                    description=f"Members below are inactive enough, but **EXCLUDED** due to role:\n\n{content}",
+                    color=discord.Color.orange()
+                )
+                embed.set_footer(text=f"Page {page_num + 1}/{len(excluded_pages)} (Excluded) | Total Excluded: {len(excluded_eligible_members)}")
+                await ctx.send(embed=embed)
+        elif eligible_members:
+             # Only send this message if we sent the first embed, to keep the output clean
+             await ctx.send("✅ No members are currently excluded by role who would otherwise be eligible for action.")
+
+        elif not eligible_members and not excluded_eligible_members:
+            # If nothing was eligible *at all*, no message is needed here.
+            pass
+
+
+    # --- Last Seen All Command ---
+
+    @ouijaset.command(name="lastseen") # <--- Correction is here: ensures it's a subcommand of ouijaset
+    async def ouijaset_lastseen(self, ctx: commands.Context):
+        """Displays a list of every member's last recorded activity date, sorted by inactivity."""
         
-        await ctx.send("✅ Forced check complete. Check console for role assignment logs.")
+        async with ctx.typing():
+            last_seen_data = await self.config.guild(ctx.guild).last_seen()
+            
+            if not last_seen_data:
+                return await ctx.send("No activity has been recorded for any user yet.")
+            
+            activity_list = []
+            
+            for user_id_str, last_seen_dt_str in last_seen_data.items():
+                user_id = int(user_id_str)
+                member = ctx.guild.get_member(user_id)
+                
+                if member is None or member.bot:
+                    continue
+                
+                try:
+                    last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
+                    last_seen_diff = (datetime.now(timezone.utc) - last_seen_dt)
+                    
+                    activity_list.append({
+                        "member": member,
+                        "last_seen_dt": last_seen_dt,
+                        "last_seen_days": last_seen_diff.days
+                    })
+                except ValueError:
+                    # Skip invalid dates
+                    continue
+
+            # Sort by most inactive (highest last_seen_days)
+            activity_list.sort(key=lambda x: x['last_seen_days'], reverse=True)
+            
+            # Prepare content for display
+            entries = []
+            for i, data in enumerate(activity_list):
+                entry = (
+                    f"**{i+1}. {data['member'].display_name}** (`{data['member'].id}`)\n"
+                    f"  ➡️ Last Active: **{data['last_seen_days']} days ago** "
+                    f"({data['last_seen_dt'].strftime('%Y-%m-%d %H:%M UTC')})"
+                )
+                entries.append(entry)
+
+            # Use basic page separation for clarity
+            pages = []
+            MAX_CHARS = 1000
+            current_page = ""
+            
+            for entry in entries:
+                if len(current_page) + len(entry) + 2 > MAX_CHARS:
+                    pages.append(current_page)
+                    current_page = entry + "\n"
+                else:
+                    current_page += entry + "\n"
+            if current_page:
+                pages.append(current_page)
+            
+            # Send the pages
+            for page_num, content in enumerate(pages):
+                embed = discord.Embed(
+                    title=f"All User Activity Records ({len(activity_list)} Total)",
+                    description=f"Below is a list of all recorded users, sorted by inactivity (most inactive first):\n\n{content}",
+                    color=discord.Color.blue()
+                )
+                embed.set_footer(text=f"Page {page_num + 1}/{len(pages)}")
+                await ctx.send(embed=embed)
 
 
+    # --- Excluded Roles Management ---
+
+    @ouijaset.group(name="excludedroles", aliases=["exclrole"], invoke_without_command=True)
+    async def ouijaset_excludedroles(self, ctx: commands.Context):
+        """
+        Manages roles whose members are permanently excluded from being poked or summoned.
+        """
+        excluded_roles = await self.config.guild(ctx.guild).excluded_roles()
+        
+        if not excluded_roles:
+            return await ctx.send("No roles are currently excluded from poking/summoning.")
+        
+        role_names = []
+        for role_id in excluded_roles:
+            role = ctx.guild.get_role(role_id)
+            if role:
+                role_names.append(role.name)
+                
+        await ctx.send(
+            f"The following roles are **excluded** (members are ineligible):\n"
+            f"{humanize_list(role_names)}"
+        )
+
+    @ouijaset_excludedroles.command(name="add")
+    async def excludedroles_add(self, ctx: commands.Context, role: discord.Role):
+        """Adds a role to the exclusion list."""
+        async with self.config.guild(ctx.guild).excluded_roles() as excluded_roles:
+            if role.id in excluded_roles:
+                return await ctx.send(f"The role **{role.name}** is already excluded.")
+            excluded_roles.append(role.id)
+        
+        await ctx.send(f"Added role **{role.name}** to the excluded list. Members with this role will no longer be poked or summoned.")
+
+    @ouijaset_excludedroles.command(name="remove")
+    async def excludedroles_remove(self, ctx: commands.Context, role: discord.Role):
+        """Removes a role from the exclusion list."""
+        async with self.config.guild(ctx.guild).excluded_roles() as excluded_roles:
+            if role.id not in excluded_roles:
+                return await ctx.send(f"The role **{role.name}** was not found in the excluded list.")
+            excluded_roles.remove(role.id)
+            
+        await ctx.send(f"Removed role **{role.name}** from the excluded list. Members with this role may now be poked or summoned if they meet the inactivity criteria.")
+
+
+    # --- Last Seen Override Command ---
+
+    @ouijaset.command(name="override")
+    async def ouijaset_override(self, ctx: commands.Context, role: discord.Role, days_ago: int):
+        """
+        Overrides the last active date for all members of a given role.
+
+        Example: `[p]ouijaset override @Spirits 60` 
+        Sets everyone with the @Spirits role to last active 60 days ago.
+        """
+        if days_ago < 0:
+            return await ctx.send("The number of days must be 0 or greater.")
+        
+        async with ctx.typing():
+            
+            target_last_active_dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
+            target_last_active_dt_str = target_last_active_dt.isoformat()
+            
+            last_seen_data = await self.config.guild(ctx.guild).last_seen()
+            
+            updated_count = 0
+            
+            for member in role.members:
+                if member.bot:
+                    continue
+                
+                last_seen_data[str(member.id)] = target_last_active_dt_str
+                updated_count += 1
+                
+            await self.config.guild(ctx.guild).last_seen.set(last_seen_data)
+        
+        await ctx.send(
+            f"The Ouija spirits have whispered that **{updated_count}** members "
+            f"in the **{role.name}** role were last seen **{days_ago} days ago** "
+            f"({target_last_active_dt.strftime('%Y-%m-%d %H:%M:%S UTC')})."
+        )
+        
+    # --- Reset Activity Command ---
+    
     @ouijaset.command(name="resetactivity")
     @checks.is_owner() # Only bot owner should be able to run this destructive command
     async def ouijaset_resetactivity(self, ctx: commands.Context):
@@ -944,11 +916,8 @@ class Ouijapoke(commands.Cog):
             return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == 'yes'
 
         try:
-            # The uploaded file used TimeoutError, which is correct for standard Python.
-            # RedBot often uses asyncio.TimeoutError when in an async context, 
-            # but using the base Exception/Error class is usually safer here.
             await self.bot.wait_for('message', check=check, timeout=30.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return await ctx.send("Activity reset canceled.")
         
         # Perform the reset
@@ -960,3 +929,8 @@ class Ouijapoke(commands.Cog):
             "✅ **Activity tracking successfully reset.** "
             "All members are now considered 'new' and tracking will start with the next message they send."
         )
+
+# --- Red Setup Function ---
+
+async def setup(bot):
+    await bot.add_cog(OuijaPoke(bot))
