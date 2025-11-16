@@ -47,7 +47,9 @@ class OuijaPoke(commands.Cog):
             last_poked={}, # {user_id: "ISO_DATETIME_STRING"}
             last_summoned={}, # {user_id: "ISO_DATETIME_STRING"}
             excluded_roles=[], # [role_id, ...]
-            ouija_settings=OuijaSettings().model_dump()
+            ouija_settings=OuijaSettings().model_dump(),
+            # NEW: Stores {role_id: days_inactive}
+            inactive_awards={}, 
         )
         # In-memory tracker for voice channel connections
         self.voice_connect_times = {} # {member_id: datetime_object}
@@ -286,16 +288,91 @@ class OuijaPoke(commands.Cog):
         excluded_eligible_list.sort(key=lambda x: x['last_seen_days'], reverse=True)
         return excluded_eligible_list
 
+    # NEW UTILITY METHOD: Role Awarding Logic
+    async def _check_and_award_inactive_roles(self, guild: discord.Guild):
+        """
+        Checks all members against the configured inactive awards and applies/removes roles.
+        This is designed to be called after activity updates.
+        """
+        inactive_awards = await self.config.guild(guild).inactive_awards()
+        last_seen_data = await self.config.guild(guild).last_seen()
+
+        if not inactive_awards or not last_seen_data:
+            return
+
+        roles_to_check = {
+            guild.get_role(int(role_id)): days_inactive 
+            for role_id, days_inactive in inactive_awards.items() 
+            if guild.get_role(int(role_id)) is not None
+        }
+
+        if not roles_to_check:
+            return
+        
+        for member in guild.members:
+            if member.bot:
+                continue
+            
+            user_id_str = str(member.id)
+            last_seen_dt_str = last_seen_data.get(user_id_str)
+            
+            if not last_seen_dt_str:
+                # User has no recorded activity, treat as active for safety
+                last_seen_dt = datetime.now(timezone.utc) 
+            else:
+                try:
+                    last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
+
+            for role, days_inactive in roles_to_check.items():
+                cutoff_dt = self._get_inactivity_cutoff(days_inactive)
+                is_inactive = last_seen_dt < cutoff_dt
+                has_role = role in member.roles
+                
+                # Logic to apply/remove the role
+                if is_inactive and not has_role:
+                    # Member is inactive and doesn't have the role -> Add role
+                    try:
+                        await member.add_roles(role, reason=f"Inactive for >{days_inactive} days (OuijaPoke)")
+                    except discord.Forbidden:
+                        pass # Bot doesn't have permission
+                elif not is_inactive and has_role:
+                    # Member is now active (or was never inactive) and has the role -> Remove role
+                    try:
+                        await member.remove_roles(role, reason=f"Active again (last seen <{days_inactive} days ago) (OuijaPoke)")
+                    except discord.Forbidden:
+                        pass # Bot doesn't have permission
+
+
+    async def _send_activity_message(self, ctx: commands.Context, member: discord.Member, message_text: str, gif_list: list[str]):
+        """
+        Sends the message text and the GIF URL as two separate messages 
+        to ensure the GIF unfurls properly.
+        """
+        
+        final_message = message_text.replace("{user_mention}", member.mention)
+        
+        await ctx.send(content=final_message)
+        
+        if gif_list:
+            gif_url = random.choice(gif_list)
+            await ctx.send(content=gif_url)
+
 
     # --- Listeners (Event Handlers) ---
     
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Updates the last_seen time for any message sent."""
+        """Updates the last_seen time for any message sent and checks for inactive awards."""
         if message.guild is None or message.author.bot or message.webhook_id:
             return
         
+        # 1. Update last seen
         await self._update_last_seen(message.guild, message.author.id)
+        
+        # 2. Check and manage inactive award roles (important to do here as well)
+        await self._check_and_award_inactive_roles(message.guild)
     
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
@@ -326,7 +403,8 @@ class OuijaPoke(commands.Cog):
                 
                 if duration >= timedelta(minutes=5):
                     await self._update_last_seen(member.guild, member.id)
-                
+                    # Check and manage inactive award roles after a valid voice activity
+                    await self._check_and_award_inactive_roles(member.guild)
 
 
     # --- Poking/Summoning Logic ---
@@ -484,12 +562,22 @@ class OuijaPoke(commands.Cog):
         """Manages the OuijaPoke settings."""
         if ctx.invoked_subcommand is None:
             settings = await self._get_settings(ctx.guild)
-            excluded_roles = await self.config.guild(ctx.guild).excluded_roles()
+            data = await self.config.guild(ctx.guild).all()
+            excluded_roles = data["excluded_roles"]
+            inactive_awards = data["inactive_awards"] # NEW
+            
             excluded_names = []
             for role_id in excluded_roles:
                 role = ctx.guild.get_role(role_id)
                 if role:
                     excluded_names.append(role.name)
+            
+            award_names = []
+            for role_id_str, days in inactive_awards.items():
+                role = ctx.guild.get_role(int(role_id_str))
+                if role:
+                    award_names.append(f"@{role.name} (>={days} days)")
+
 
             
             msg = (
@@ -500,7 +588,8 @@ class OuijaPoke(commands.Cog):
                 f"- **Summon Message:** `{settings.summon_message}`\n"
                 f"- **Poke GIFs:** {len(settings.poke_gifs)} stored\n"
                 f"- **Summon GIFs:** {len(settings.summon_gifs)} stored\n"
-                f"- **Excluded Roles:** {humanize_list(excluded_names) if excluded_names else 'None'}"
+                f"- **Excluded Roles:** {humanize_list(excluded_names) if excluded_names else 'None'}\n"
+                f"- **Inactive Award Roles:** {humanize_list(award_names) if award_names else 'None'}"
             )
             await ctx.send(msg)
 
@@ -525,6 +614,51 @@ class OuijaPoke(commands.Cog):
         settings.summon_days = days
         await self._set_settings(ctx.guild, settings)
         await ctx.send(f"Members are now eligible to be summoned after **{days}** days of inactivity.")
+
+    # NEW INACTIVE AWARD COMMAND
+    @ouijaset.command(name="inactiveaward")
+    async def ouijaset_inactiveaward(self, ctx: commands.Context, role: discord.Role, days: int = -1):
+        """
+        Configures a role to be automatically given to members inactive for X days.
+        
+        Use `[p]ouijaset inactiveaward <role> <days>` to set/update.
+        Use `[p]ouijaset inactiveaward <role> 0` to remove the award role.
+        
+        - **<role>**: The role to give to inactive users.
+        - **<days>**: Minimum number of days inactive (must be > 0). Use 0 to remove.
+        """
+        role_id_str = str(role.id)
+        
+        if days < 0:
+            return await ctx.send("The number of days must be 0 or greater.")
+
+        async with self.config.guild(ctx.guild).inactive_awards() as inactive_awards:
+            if days == 0:
+                if role_id_str in inactive_awards:
+                    del inactive_awards[role_id_str]
+                    # Also check and remove the role from any member who currently has it.
+                    for member in role.members:
+                        if role in member.roles:
+                            try:
+                                await member.remove_roles(role, reason="Inactive award role removed by administrator (OuijaPoke)")
+                            except discord.Forbidden:
+                                pass # Bot doesn't have permission
+                    await ctx.send(f"Inactive award for role **{role.name}** removed.")
+                else:
+                    await ctx.send(f"Role **{role.name}** was not configured as an inactive award.")
+            else:
+                if days < 1:
+                    return await ctx.send("Inactivity days must be 1 or greater to set an award.")
+                
+                inactive_awards[role_id_str] = days
+                await ctx.send(
+                    f"The role **{role.name}** will now be automatically given to members "
+                    f"inactive for **{days} or more days**."
+                )
+                
+        # Immediately run the check to apply/remove roles for current members
+        await self._check_and_award_inactive_roles(ctx.guild)
+
 
     # --- Message Settings ---
     
@@ -894,6 +1028,9 @@ class OuijaPoke(commands.Cog):
             f"in the **{role.name}** role were last seen **{days_ago} days ago** "
             f"({target_last_active_dt.strftime('%Y-%m-%d %H:%M:%S UTC')})."
         )
+        
+        # After a mass override, re-check inactive roles
+        await self._check_and_award_inactive_roles(ctx.guild)
         
     # --- Reset Activity Command ---
     
