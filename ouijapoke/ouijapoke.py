@@ -66,7 +66,6 @@ class OuijaPoke(commands.Cog):
     async def _update_last_seen(self, guild: discord.Guild, user_id: int):
         """
         Updates the last_seen time for a user in the guild config.
-        Also removes them from eligibility tracking if they are now active.
         """
         user_id_str = str(user_id)
         current_time_utc = datetime.now(timezone.utc).isoformat()
@@ -75,12 +74,6 @@ class OuijaPoke(commands.Cog):
         data[user_id_str] = current_time_utc
         await self.config.guild(guild).last_seen.set(data)
         
-        # IMPROVEMENT: If a member becomes active, ensure they are not eligible for poke/summon 
-        # based on the current configuration. This check happens implicitly when we retrieve 
-        # eligible members, but we can potentially clear outdated poke/summon tracking here 
-        # if necessary (though simply relying on the eligibility check is safer).
-
-
     def _is_valid_gif_url(self, url: str) -> bool:
         """Simple check if the URL looks like a GIF link or page."""
         return re.match(r'^https?://[^\s/$.?#].[^\s]*\.(gif|webp|mp4|mov)(\?.*)?$', url, re.IGNORECASE) is not None or "tenor.com" in url or "giphy.com" in url
@@ -94,7 +87,6 @@ class OuijaPoke(commands.Cog):
         if not excluded_roles:
             return False
         
-        # Check if any of the member's role IDs are in the excluded list
         member_role_ids = {role.id for role in member.roles}
         excluded_role_ids = set(excluded_roles)
         
@@ -163,9 +155,9 @@ class OuijaPoke(commands.Cog):
         user_id_str = str(user_id)
         current_time_utc = datetime.now(timezone.utc).isoformat()
         
-        data = await self.config.guild(guild).get_attr(key)()
+        data = await self.config.guild().get_attr(key)()
         data[user_id_str] = current_time_utc
-        await self.config.guild(guild).get_attr(key).set(data)
+        await self.config.guild().get_attr(key).set(data)
         
 
     # --- Listeners (Event Handlers) ---
@@ -176,7 +168,6 @@ class OuijaPoke(commands.Cog):
         if message.guild is None or message.author.bot or message.webhook_id:
             return
         
-        # Use the new utility method to update last_seen
         await self._update_last_seen(message.guild, message.author.id)
     
     @commands.Cog.listener()
@@ -185,12 +176,10 @@ class OuijaPoke(commands.Cog):
         if member.bot:
             return
         
-        # Only set if they are not already in the tracking (e.g., first join)
         data = await self.config.guild(member.guild).last_seen()
         if str(member.id) not in data:
             await self._update_last_seen(member.guild, member.id)
 
-    # Voice activity listener
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         """Tracks voice channel connection duration and updates last_seen if > 5 minutes."""
@@ -210,7 +199,6 @@ class OuijaPoke(commands.Cog):
                 join_time = self.voice_connect_times.pop(member_id)
                 duration = datetime.now(timezone.utc) - join_time
                 
-                # Check if connection was 5 minutes or longer
                 if duration >= timedelta(minutes=5):
                     await self._update_last_seen(member.guild, member_id)
                 
@@ -226,13 +214,10 @@ class OuijaPoke(commands.Cog):
         
         final_message = message_text.replace("{user_mention}", member.mention)
         
-        # 1. Send the text message (including the mention)
         await ctx.send(content=final_message)
         
-        # 2. Conditionally send the GIF URL in a second message
         if gif_list:
             gif_url = random.choice(gif_list)
-            # The second message is just the URL, forcing Discord to unfurl it as the media
             await ctx.send(content=gif_url)
 
 
@@ -248,7 +233,6 @@ class OuijaPoke(commands.Cog):
         if ctx.invoked_subcommand is None:
             await ctx.send_help(ctx.command)
     
-    # NEW: Top-level command [p]poke
     @commands.command(name="poke")
     async def poke(self, ctx: commands.Context):
         """
@@ -256,17 +240,14 @@ class OuijaPoke(commands.Cog):
         (Equivalent to [p]ouijapoke poke)
         """
         try:
-            # Execute the logic from ouijapoke_random
             await self.ouijapoke_random(ctx)
         finally:
-            # Delete the user's message
             if ctx.channel.permissions_for(ctx.me).manage_messages:
                 await ctx.message.delete()
             else:
                 await ctx.send("I need the `Manage Messages` permission to delete your command message.", delete_after=10)
 
 
-    # NEW: Top-level command [p]summon
     @commands.command(name="summon")
     async def summon(self, ctx: commands.Context):
         """
@@ -274,10 +255,8 @@ class OuijaPoke(commands.Cog):
         (Equivalent to [p]ouijapoke summon)
         """
         try:
-            # Execute the logic from ouijasummon_random
             await self.ouijasummon_random(ctx)
         finally:
-            # Delete the user's message
             if ctx.channel.permissions_for(ctx.me).manage_messages:
                 await ctx.message.delete()
             else:
@@ -307,12 +286,10 @@ class OuijaPoke(commands.Cog):
             )
             await ctx.send(message)
         finally:
-            # Delete the user's message
             if ctx.channel.permissions_for(ctx.me).manage_messages:
                 await ctx.message.delete()
 
 
-    # Updated with priority selection and tracking
     @ouijapoke.command(name="poke") 
     async def ouijapoke_random(self, ctx: commands.Context):
         """
@@ -322,22 +299,18 @@ class OuijaPoke(commands.Cog):
         async with ctx.typing():
             settings = await self._get_settings(ctx.guild)
             
-            # Get members prioritized by never being poked
             p1_members, p2_members = await self._get_eligible_members(ctx, settings.poke_days, "last_poked")
             
             member_to_poke = None
             
             if p1_members:
-                # Priority 1: Pick a user never poked before
                 member_to_poke = random.choice(p1_members)
             elif p2_members:
-                # Priority 2: Pick the user who was poked least recently (P2 is already sorted by oldest date)
-                member_to_poke = random.choice(p2_members) # Random choice among P2 members
+                member_to_poke = random.choice(p2_members)
             
             if member_to_poke is None:
                 return await ctx.send(f"Everyone is active or has been recently poked! No one is eligible to be poked (needs >{settings.poke_days} days of inactivity).")
 
-            # Update last poked time
             await self._set_last_action_time(ctx.guild, member_to_poke.id, "last_poked")
 
             await self._send_activity_message(
@@ -347,7 +320,6 @@ class OuijaPoke(commands.Cog):
                 settings.poke_gifs,
             )
     
-    # Updated with priority selection and tracking
     @ouijapoke.command(name="summon")
     async def ouijasummon_random(self, ctx: commands.Context):
         """
@@ -357,22 +329,18 @@ class OuijaPoke(commands.Cog):
         async with ctx.typing():
             settings = await self._get_settings(ctx.guild)
             
-            # Get members prioritized by never being summoned
             p1_members, p2_members = await self._get_eligible_members(ctx, settings.summon_days, "last_summoned")
             
             member_to_summon = None
             
             if p1_members:
-                # Priority 1: Pick a user never summoned before
                 member_to_summon = random.choice(p1_members)
             elif p2_members:
-                # Priority 2: Pick the user who was summoned least recently (P2 is already sorted by oldest date)
-                member_to_summon = random.choice(p2_members) # Random choice among P2 members
+                member_to_summon = random.choice(p2_members)
             
             if member_to_summon is None:
                 return await ctx.send(f"The spirits are quiet! No one is eligible to be summoned (needs >{settings.summon_days} days of inactivity).")
 
-            # Update last summoned time
             await self._set_last_action_time(ctx.guild, member_to_summon.id, "last_summoned")
 
             await self._send_activity_message(
@@ -464,9 +432,94 @@ class OuijaPoke(commands.Cog):
         await ctx.send(f"Summon message set to: `{message}`")
 
 
-    # --- GIF Management Commands (omitted for brevity, assume they are present) ---
-    
-    # ... GIF commands are here ...
+    # --- GIF Management Commands ---
+
+    @ouijaset.group(name="pokegifs", invoke_without_command=True)
+    async def ouijaset_pokegifs(self, ctx: commands.Context):
+        """
+        Manages the list of GIFs used for the 'poke' command.
+        
+        Use `[p]ouijaset pokegifs add <url>` or `[p]ouijaset pokegifs remove <url>`
+        """
+        settings = await self._get_settings(ctx.guild)
+        gifs = settings.poke_gifs
+        if not gifs:
+            msg = "There are currently no Poke GIFs configured."
+        else:
+            gif_list = "\n".join(f"`{i+1}.` <{g}>" for i, g in enumerate(gifs))
+            msg = f"**Current Poke GIFs ({len(gifs)} total):**\n{gif_list}"
+        
+        await ctx.send(msg)
+
+    @ouijaset_pokegifs.command(name="add")
+    async def pokegifs_add(self, ctx: commands.Context, url: str):
+        """Adds a new GIF URL to the poke list."""
+        if not self._is_valid_gif_url(url):
+            return await ctx.send("That doesn't look like a valid URL. Please ensure it's a link to an image/GIF, or a Tenor/GIPHY page link.")
+        
+        settings = await self._get_settings(ctx.guild)
+        if url in settings.poke_gifs:
+            return await ctx.send("That GIF is already in the list.")
+        
+        settings.poke_gifs.append(url)
+        await self._set_settings(ctx.guild, settings)
+        await ctx.send(f"Added new Poke GIF: <{url}>")
+
+    @ouijaset_pokegifs.command(name="remove")
+    async def pokegifs_remove(self, ctx: commands.Context, url: str):
+        """Removes a GIF URL from the poke list."""
+        settings = await self._get_settings(ctx.guild)
+        
+        try:
+            settings.poke_gifs.remove(url)
+            await self._set_settings(ctx.guild, settings)
+            await ctx.send(f"Removed Poke GIF: <{url}>")
+        except ValueError:
+            await ctx.send("That GIF URL was not found in the list.")
+
+
+    @ouijaset.group(name="summongifs", invoke_without_command=True)
+    async def ouijaset_summongifs(self, ctx: commands.Context):
+        """
+        Manages the list of GIFs used for the 'summon' command.
+        
+        Use `[p]ouijaset summongifs add <url>` or `[p]ouijaset summongifs remove <url>`
+        """
+        settings = await self._get_settings(ctx.guild)
+        gifs = settings.summon_gifs
+        if not gifs:
+            msg = "There are currently no Summon GIFs configured."
+        else:
+            gif_list = "\n".join(f"`{i+1}.` <{g}>" for i, g in enumerate(gifs))
+            msg = f"**Current Summon GIFs ({len(gifs)} total):**\n{gif_list}"
+        
+        await ctx.send(msg)
+
+    @ouijaset_summongifs.command(name="add")
+    async def summongifs_add(self, ctx: commands.Context, url: str):
+        """Adds a new GIF URL to the summon list."""
+        if not self._is_valid_gif_url(url):
+            return await ctx.send("That doesn't look like a valid URL. Please ensure it's a link to an image/GIF, or a Tenor/GIPHY page link.")
+        
+        settings = await self._get_settings(ctx.guild)
+        if url in settings.summon_gifs:
+            return await ctx.send("That GIF is already in the list.")
+        
+        settings.summon_gifs.append(url)
+        await self._set_settings(ctx.guild, settings)
+        await ctx.send(f"Added new Summon GIF: <{url}>")
+
+    @ouijaset_summongifs.command(name="remove")
+    async def summongifs_remove(self, ctx: commands.Context, url: str):
+        """Removes a GIF URL from the summon list."""
+        settings = await self._get_settings(ctx.guild)
+        
+        try:
+            settings.summon_gifs.remove(url)
+            await self._set_settings(ctx.guild, settings)
+            await ctx.send(f"Removed Summon GIF: <{url}>")
+        except ValueError:
+            await ctx.send("That GIF URL was not found in the list.")
 
 
     # --- Excluded Roles Management ---
@@ -551,44 +604,6 @@ class OuijaPoke(commands.Cog):
         )
 
 # --- Red Setup Function ---
-
-# GIF commands should be re-inserted here if they were removed in your copy!
-
-# Example of omitted GIF commands (you should ensure these are restored in the final file):
-class OuijaPoke(commands.Cog):
-    # ... all methods before ouijaset ...
-    
-    @ouijaset.group(name="pokegifs", invoke_without_command=True)
-    async def ouijaset_pokegifs(self, ctx: commands.Context):
-        # ... logic ...
-        pass
-    
-    @ouijaset_pokegifs.command(name="add")
-    async def pokegifs_add(self, ctx: commands.Context, url: str):
-        # ... logic ...
-        pass
-        
-    @ouijaset_pokegifs.command(name="remove")
-    async def pokegifs_remove(self, ctx: commands.Context, url: str):
-        # ... logic ...
-        pass
-        
-    @ouijaset.group(name="summongifs", invoke_without_command=True)
-    async def ouijaset_summongifs(self, ctx: commands.Context):
-        # ... logic ...
-        pass
-        
-    @ouijaset_summongifs.command(name="add")
-    async def summongifs_add(self, ctx: commands.Context, url: str):
-        # ... logic ...
-        pass
-        
-    @ouijaset_summongifs.command(name="remove")
-    async def summongifs_remove(self, ctx: commands.Context, url: str):
-        # ... logic ...
-        pass
-        
-    # ... all methods after summongifs_remove ...
 
 async def setup(bot):
     await bot.add_cog(OuijaPoke(bot))
