@@ -91,6 +91,15 @@ class OuijaPoke(commands.Cog):
         excluded_role_ids = set(excluded_roles)
         
         return bool(member_role_ids.intersection(excluded_role_ids))
+    
+    def _get_excluded_role_names(self, member: discord.Member, excluded_roles: List[int]) -> List[str]:
+        """Returns the names of the roles that are causing the exclusion."""
+        excluded_names = []
+        excluded_role_ids = set(excluded_roles)
+        for role in member.roles:
+            if role.id in excluded_role_ids:
+                excluded_names.append(role.name)
+        return excluded_names
 
     async def _get_eligible_members(self, ctx: commands.Context, days_inactive: int, last_action_key: str) -> Tuple[List[discord.Member], List[discord.Member]]:
         """
@@ -114,7 +123,7 @@ class OuijaPoke(commands.Cog):
             user_id = int(user_id_str)
             member = guild.get_member(user_id)
             
-            # Basic checks: Member exists, is not a bot, and is not excluded by role
+            # Skip if member doesn't exist, is a bot, or is excluded by role
             if member is None or member.bot or self._is_excluded(member, excluded_roles):
                 continue
 
@@ -159,9 +168,22 @@ class OuijaPoke(commands.Cog):
         data[user_id_str] = current_time_utc
         await self.config.guild(guild).get_attr(key).set(data)
 
+    def _format_date_diff(self, dt_str: Union[str, None]) -> str:
+        """Helper function for formatting ISO dates into 'X days ago' or 'Never'."""
+        if dt_str:
+            try:
+                dt = datetime.fromisoformat(dt_str).replace(tzinfo=timezone.utc)
+                diff = datetime.now(timezone.utc) - dt
+                return f"{diff.days} days ago"
+            except ValueError:
+                return "Invalid Date"
+        return "Never"
+
     async def _get_all_eligible_member_data(self, ctx: commands.Context) -> List[dict]:
         """
         Retrieves comprehensive data for all members who meet EITHER the poke or summon inactivity criteria.
+        
+        Does NOT include role-excluded members.
         """
         guild = ctx.guild
         data = await self.config.guild(guild).all()
@@ -198,34 +220,75 @@ class OuijaPoke(commands.Cog):
                 last_poked_str = last_poked_data.get(user_id_str)
                 last_summoned_str = last_summoned_data.get(user_id_str)
                 
-                # Helper function for formatting dates
-                def format_date(dt_str):
-                    if dt_str:
-                        try:
-                            dt = datetime.fromisoformat(dt_str).replace(tzinfo=timezone.utc)
-                            # Return days ago
-                            diff = datetime.now(timezone.utc) - dt
-                            return f"{diff.days} days ago"
-                        except ValueError:
-                            return "Invalid Date"
-                    return "Never"
-                
                 last_seen_diff = (datetime.now(timezone.utc) - last_seen_dt).days
                 
                 eligible_list.append({
                     "member": member,
                     "last_seen_days": last_seen_diff,
-                    "last_poked": format_date(last_poked_str),
-                    "last_summoned": format_date(last_summoned_str),
+                    "last_poked": self._format_date_diff(last_poked_str),
+                    "last_summoned": self._format_date_diff(last_summoned_str),
                     "eligible_for": ("Poke" if is_poke_eligible else "") + (" & Summon" if is_poke_eligible and is_summon_eligible else "Summon" if is_summon_eligible else "")
                 })
 
         # Sort by most inactive (highest last_seen_days)
         eligible_list.sort(key=lambda x: x['last_seen_days'], reverse=True)
         return eligible_list
+    
+    async def _get_excluded_eligible_members(self, ctx: commands.Context) -> List[dict]:
+        """
+        Retrieves data for members who are eligible by activity but excluded by role.
+        """
+        guild = ctx.guild
+        data = await self.config.guild(guild).all()
         
+        settings = OuijaSettings(**data["ouija_settings"])
+        last_seen_data = data["last_seen"]
+        excluded_roles = data["excluded_roles"]
+        
+        poke_cutoff = self._get_inactivity_cutoff(settings.poke_days)
+        summon_cutoff = self._get_inactivity_cutoff(settings.summon_days)
+        
+        excluded_eligible_list = []
+        
+        for user_id_str, last_seen_dt_str in last_seen_data.items():
+            user_id = int(user_id_str)
+            member = guild.get_member(user_id)
+            
+            if member is None or member.bot:
+                continue
+            
+            # Check if excluded by role
+            if not self._is_excluded(member, excluded_roles):
+                continue
+            
+            try:
+                last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+
+            is_poke_eligible = last_seen_dt < poke_cutoff
+            is_summon_eligible = last_seen_dt < summon_cutoff
+            
+            # Member must be inactive enough for at least one action
+            if is_poke_eligible or is_summon_eligible:
+                
+                last_seen_diff = (datetime.now(timezone.utc) - last_seen_dt).days
+                excluded_names = self._get_excluded_role_names(member, excluded_roles)
+                
+                excluded_eligible_list.append({
+                    "member": member,
+                    "last_seen_days": last_seen_diff,
+                    "eligible_for": ("Poke" if is_poke_eligible else "") + (" & Summon" if is_poke_eligible and is_summon_eligible else "Summon" if is_summon_eligible else ""),
+                    "excluded_by": humanize_list([f"@{name}" for name in excluded_names])
+                })
+
+        # Sort by most inactive (highest last_seen_days)
+        excluded_eligible_list.sort(key=lambda x: x['last_seen_days'], reverse=True)
+        return excluded_eligible_list
+
 
     # --- Listeners (Event Handlers) ---
+    # ... (on_message, on_member_join, on_voice_state_update are unchanged)
     
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -253,12 +316,10 @@ class OuijaPoke(commands.Cog):
         
         member_id = member.id
         
-        # CASE 1: Joined a channel (or moved channels)
         if after.channel is not None and before.channel != after.channel:
             if not after.self_mute and not after.self_deaf and not after.mute and not after.deaf:
                 self.voice_connect_times[member_id] = datetime.now(timezone.utc)
         
-        # CASE 2: Left a channel (or moved from one to none)
         if before.channel is not None and after.channel is None:
             if member_id in self.voice_connect_times:
                 join_time = self.voice_connect_times.pop(member_id)
@@ -590,54 +651,96 @@ class OuijaPoke(commands.Cog):
 
     @ouijaset.command(name="eligible")
     async def ouijaset_eligible(self, ctx: commands.Context):
-        """Displays a list of all members currently eligible for being poked or summoned."""
+        """Displays a list of all members currently eligible for being poked/summoned OR excluded from being so."""
         
-        # We need settings for the footer information
         settings = await self._get_settings(ctx.guild)
 
         async with ctx.typing():
             eligible_members = await self._get_all_eligible_member_data(ctx)
+            excluded_eligible_members = await self._get_excluded_eligible_members(ctx)
 
-        if not eligible_members:
-            return await ctx.send("🎉 **No members are currently eligible** for poking or summoning based on the configured inactivity days.")
+        # 1. Handle main eligible list
+        if eligible_members:
+            # Prepare content for display
+            entries = []
+            for i, member_data in enumerate(eligible_members):
+                entry = (
+                    f"**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)\n"
+                    f"  ➡️ Last Active: **{member_data['last_seen_days']} days ago**\n"
+                    f"  👀 Last Poked: {member_data['last_poked']}\n"
+                    f"  👻 Last Summoned: {member_data['last_summoned']}\n"
+                    f"  ✅ Eligible For: {member_data['eligible_for']}"
+                )
+                entries.append(entry)
+
+            # Use basic page separation for clarity
+            pages = []
+            MAX_CHARS = 1000
+            current_page = ""
             
-        
-        # Prepare content for display
-        entries = []
-        for i, member_data in enumerate(eligible_members):
-            entry = (
-                f"**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)\n"
-                f"  ➡️ Last Active: **{member_data['last_seen_days']} days ago**\n"
-                f"  👀 Last Poked: {member_data['last_poked']}\n"
-                f"  👻 Last Summoned: {member_data['last_summoned']}\n"
-                f"  ✅ Eligible For: {member_data['eligible_for']}"
-            )
-            entries.append(entry)
-
-        # Use basic page separation for clarity
-        pages = []
-        MAX_CHARS = 1000  # Safe limit for an embed description block
-        current_page = ""
-        
-        for entry in entries:
-            # Check if adding the next entry exceeds the limit
-            if len(current_page) + len(entry) + 2 > MAX_CHARS:
+            for entry in entries:
+                if len(current_page) + len(entry) + 2 > MAX_CHARS:
+                    pages.append(current_page)
+                    current_page = entry + "\n"
+                else:
+                    current_page += entry + "\n"
+            if current_page:
                 pages.append(current_page)
-                current_page = entry + "\n"
-            else:
-                current_page += entry + "\n"
-        if current_page:
-            pages.append(current_page)
-        
-        # Send the pages
-        for page_num, content in enumerate(pages):
-            embed = discord.Embed(
-                title=f"OuijaPoke Eligible Members ({len(eligible_members)} Total)",
-                description=f"Below are members inactive enough for action (Sorted by inactivity).\n\n{content}",
-                color=discord.Color.dark_purple()
-            )
-            embed.set_footer(text=f"Page {page_num + 1}/{len(pages)} | Poke Days: {settings.poke_days}, Summon Days: {settings.summon_days}")
-            await ctx.send(embed=embed)
+            
+            # Send the pages
+            for page_num, content in enumerate(pages):
+                embed = discord.Embed(
+                    title=f"👻 Active Eligible Members ({len(eligible_members)} Total)",
+                    description=f"Members below are eligible for action (Sorted by inactivity):\n\n{content}",
+                    color=discord.Color.dark_purple()
+                )
+                embed.set_footer(text=f"Page {page_num + 1}/{len(pages)} (Eligible) | Poke Days: {settings.poke_days}, Summon Days: {settings.summon_days}")
+                await ctx.send(embed=embed)
+        else:
+            await ctx.send("🎉 **No members are currently eligible** for poking or summoning based on activity alone.")
+
+        # 2. Handle excluded members list
+        if excluded_eligible_members:
+            excluded_entries = []
+            for i, member_data in enumerate(excluded_eligible_members):
+                entry = (
+                    f"**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)\n"
+                    f"  ➡️ Last Active: **{member_data['last_seen_days']} days ago**\n"
+                    f"  🚫 Excluded By: **{member_data['excluded_by']}**\n"
+                    f"  ⚠️ *Would be Eligible For: {member_data['eligible_for']}*"
+                )
+                excluded_entries.append(entry)
+
+            # Use basic page separation for clarity
+            excluded_pages = []
+            MAX_CHARS = 1000
+            current_page = ""
+            
+            for entry in excluded_entries:
+                if len(current_page) + len(entry) + 2 > MAX_CHARS:
+                    excluded_pages.append(current_page)
+                    current_page = entry + "\n"
+                else:
+                    current_page += entry + "\n"
+            if current_page:
+                excluded_pages.append(current_page)
+            
+            # Send the excluded pages
+            for page_num, content in enumerate(excluded_pages):
+                embed = discord.Embed(
+                    title=f"🛡️ Excluded Eligible Members ({len(excluded_eligible_members)} Total)",
+                    description=f"Members below are inactive enough, but **EXCLUDED** due to role:\n\n{content}",
+                    color=discord.Color.orange()
+                )
+                embed.set_footer(text=f"Page {page_num + 1}/{len(excluded_pages)} (Excluded) | Total Excluded: {len(excluded_eligible_members)}")
+                await ctx.send(embed=embed)
+        elif eligible_members:
+             # Only send this message if we sent the first embed, to keep the output clean
+             await ctx.send("✅ No members are currently excluded by role who would otherwise be eligible for action.")
+
+        elif not eligible_members and not excluded_eligible_members:
+            # If nothing was eligible *at all*, no message is needed here.
+            pass
 
 
     # --- Excluded Roles Management ---
