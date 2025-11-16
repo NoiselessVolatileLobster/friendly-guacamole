@@ -11,6 +11,7 @@ from typing import Union, List, Tuple, Dict, Any
 try:
     from pydantic import BaseModel, Field, conint, conlist
 except ImportError:
+    # Define simple placeholders if Pydantic isn't available
     BaseModel = object
     Field = lambda *args, **kwargs: None
     conint = lambda **kwargs: int
@@ -109,12 +110,9 @@ class Ouijapoke(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         # Initialize the config with the new schema definition
-        # Use an empty dictionary as the default to allow Red's Config to migrate old data safely
         self.config = Config.get_conf(self, identifier=140120250425, force_registration=True)
         
         # Default settings are stored in a format compatible with Red's Config structure
-        # We'll use the pydantic model for validation and internal representation,
-        # but the actual config storage needs to reflect the field structure.
         self.default_guild_settings = {
             "poke_days": 30,
             "summon_days": 60,
@@ -132,7 +130,7 @@ class Ouijapoke(commands.Cog):
             "allow_pokes_in_target_channel": True,
             "quiet_role_assignment": False,
             
-            # Internal tracking data (not part of OuijaSettings Pydantic model)
+            # Internal tracking data
             "last_seen": {},  # {user_id: timestamp_float}
             "last_poked": {}, # {user_id: timestamp_float}
             "last_summoned": {}, # {user_id: timestamp_float}
@@ -140,8 +138,6 @@ class Ouijapoke(commands.Cog):
         
         self.config.register_guild(**self.default_guild_settings)
         self.last_check_times = {} # {guild_id: timestamp_float}
-        
-        self.activity_cache = {} # {guild_id: {user_id: last_seen_dt}} for quick access
         
         # Task for periodic activity checks
         self.bg_task = self.bot.loop.create_task(self.auto_check_loop())
@@ -155,8 +151,12 @@ class Ouijapoke(commands.Cog):
     # --- Utility Methods ---
 
     def _get_guild_data_path(self, guild_id: int) -> str:
-        """Helper to get the base path for a guild's artifact data."""
-        appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        """
+        Helper to get the base path for a guild's artifact data, using the 
+        Firebase artifact ID structure.
+        """
+        # FIX: Replaced JavaScript syntax with Python-safe lookup using globals().get()
+        appId = globals().get('__app_id', 'default-app-id')
         # We store data under /artifacts/{appId}/public/data/ouijapoke/{guildId}
         # This is a good place for multi-user/multi-admin cog data.
         return f"artifacts/{appId}/public/data/ouijapoke/{guild_id}"
@@ -164,24 +164,29 @@ class Ouijapoke(commands.Cog):
     async def _get_guild_settings(self, guild: discord.Guild) -> OuijaSettings:
         """Retrieves and validates guild settings using the Pydantic schema."""
         raw_settings = await self.config.guild(guild).all()
-        # Filter out internal tracking data for Pydantic validation if necessary
-        # However, since we define default_guild_settings to match, this should be fine.
         
         # We only want the settings part for the Pydantic model
-        settings_keys = OuijaSettings.__fields__.keys()
+        # Using a safer way to get fields for Pydantic v1 or v2 compatibility
+        settings_keys = list(OuijaSettings.__annotations__.keys()) if hasattr(OuijaSettings, '__annotations__') else list(OuijaSettings.__dict__.get('__fields__', {}).keys())
         settings_data = {k: v for k, v in raw_settings.items() if k in settings_keys}
 
         try:
             # Pydantic will validate types and apply defaults for missing fields
-            return OuijaSettings(**settings_data)
+            # Use model_validate if Pydantic v2 is present, otherwise direct instantiation
+            if hasattr(OuijaSettings, 'model_validate'):
+                return OuijaSettings.model_validate(settings_data)
+            else:
+                return OuijaSettings(**settings_data)
         except Exception as e:
             print(f"Error validating OuijaSettings for guild {guild.id}: {e}")
-            # Fallback to defaults or raise a more appropriate error
-            return OuijaSettings() # Returns a model with all defaults
+            # Fallback to defaults
+            return OuijaSettings() 
             
     async def _get_last_seen(self, guild: discord.Guild) -> Dict[int, float]:
         """Retrieves the raw last_seen dictionary."""
-        return await self.config.guild(guild).last_seen()
+        # Ensure the keys are converted back to ints if stored as strings (common Config behavior)
+        raw_data = await self.config.guild(guild).last_seen()
+        return {int(k): v for k, v in raw_data.items()}
 
     async def _set_last_seen(self, guild: discord.Guild, data: Dict[int, float]):
         """Sets the raw last_seen dictionary."""
@@ -189,7 +194,8 @@ class Ouijapoke(commands.Cog):
         
     async def _get_last_poked(self, guild: discord.Guild) -> Dict[int, float]:
         """Retrieves the raw last_poked dictionary."""
-        return await self.config.guild(guild).last_poked()
+        raw_data = await self.config.guild(guild).last_poked()
+        return {int(k): v for k, v in raw_data.items()}
 
     async def _set_last_poked(self, guild: discord.Guild, data: Dict[int, float]):
         """Sets the raw last_poked dictionary."""
@@ -197,7 +203,8 @@ class Ouijapoke(commands.Cog):
 
     async def _get_last_summoned(self, guild: discord.Guild) -> Dict[int, float]:
         """Retrieves the raw last_summoned dictionary."""
-        return await self.config.guild(guild).last_summoned()
+        raw_data = await self.config.guild(guild).last_summoned()
+        return {int(k): v for k, v in raw_data.items()}
 
     async def _set_last_summoned(self, guild: discord.Guild, data: Dict[int, float]):
         """Sets the raw last_summoned dictionary."""
@@ -219,9 +226,8 @@ class Ouijapoke(commands.Cog):
         # Check if the member has an ignored role
         member = message.author
         if isinstance(member, discord.Member):
-            for role in member.roles:
-                if role.id in settings.ignored_roles:
-                    return
+            if any(role.id in settings.ignored_roles for role in member.roles):
+                return
 
         timestamp = message.created_at.timestamp()
         
@@ -246,9 +252,8 @@ class Ouijapoke(commands.Cog):
             return
 
         # Check if the member has an ignored role
-        for role in user.roles:
-            if role.id in settings.ignored_roles:
-                return
+        if any(role.id in settings.ignored_roles for role in user.roles):
+            return
 
         # Use the reaction time as the timestamp
         timestamp = datetime.now(timezone.utc).timestamp()
@@ -273,9 +278,8 @@ class Ouijapoke(commands.Cog):
         # If the user joins or leaves a voice channel
         if before.channel != after.channel:
             # Check if the member has an ignored role
-            for role in member.roles:
-                if role.id in settings.ignored_roles:
-                    return
+            if any(role.id in settings.ignored_roles for role in member.roles):
+                return
 
             # Use the current time as the timestamp
             timestamp = datetime.now(timezone.utc).timestamp()
@@ -299,7 +303,9 @@ class Ouijapoke(commands.Cog):
         last_seen_ts = last_seen.get(user_id)
         if last_seen_ts is None:
             # If never seen, assume activity started when they joined the guild
-            last_seen_dt = member.joined_at.replace(tzinfo=timezone.utc)
+            # Ensure member.joined_at is timezone-aware
+            joined_at = member.joined_at.replace(tzinfo=timezone.utc) if member.joined_at.tzinfo is None else member.joined_at
+            last_seen_dt = joined_at
         else:
             last_seen_dt = datetime.fromtimestamp(last_seen_ts, tz=timezone.utc)
 
@@ -312,6 +318,7 @@ class Ouijapoke(commands.Cog):
         if not settings.inactivity_roles and not settings.auto_unassign:
             return
 
+        # Sort from longest required days to shortest
         inactivity_roles = sorted(settings.inactivity_roles, key=lambda x: x.days, reverse=True)
         all_role_ids = {r.role_id for r in inactivity_roles}
 
@@ -347,6 +354,8 @@ class Ouijapoke(commands.Cog):
                         log_messages.append(f"✅ Assigned **{target_role.name}** to {member.display_name} ({days_inactive} days inactive).")
                 except discord.Forbidden:
                     log_messages.append(f"⚠️ Failed to assign **{target_role.name}** to {member.display_name} (Missing Permissions).")
+                except discord.HTTPException as e:
+                    log_messages.append(f"⚠️ Failed to assign **{target_role.name}** to {member.display_name}: {e}")
             
             # 3. Remove other/outdated inactivity roles
             roles_to_remove = []
@@ -354,27 +363,35 @@ class Ouijapoke(commands.Cog):
             # Check for roles that should be removed because they are lower than the new target
             for role_id in current_inactivity_roles:
                 if target_role and role_id != target_role.id:
-                    roles_to_remove.append(guild.get_role(role_id))
+                    role_to_remove = guild.get_role(role_id)
+                    if role_to_remove:
+                        roles_to_remove.append(role_to_remove)
 
             # Check for roles that should be removed due to new activity (auto_unassign)
             if settings.auto_unassign and not target_role and current_inactivity_roles:
                  # Member is now active enough not to need any inactivity role
                 for role_id in current_inactivity_roles:
-                    roles_to_remove.append(guild.get_role(role_id))
+                    role_to_remove = guild.get_role(role_id)
+                    if role_to_remove:
+                        roles_to_remove.append(role_to_remove)
             
             # Perform removal
-            for role in [r for r in roles_to_remove if r is not None]:
-                if role in member.roles:
-                    try:
-                        await member.remove_roles(role, reason="Activity detected or better inactivity role assigned.")
-                        if not settings.quiet_role_assignment:
-                            log_messages.append(f"❌ Removed **{role.name}** from {member.display_name}.")
-                    except discord.Forbidden:
-                        log_messages.append(f"⚠️ Failed to remove **{role.name}** from {member.display_name} (Missing Permissions).")
+            # Use a set to handle duplicate roles that might have been added to roles_to_remove
+            unique_roles_to_remove = {r for r in roles_to_remove if r is not None and r in member.roles}
+
+            for role in unique_roles_to_remove:
+                try:
+                    await member.remove_roles(role, reason="Activity detected or better inactivity role assigned.")
+                    if not settings.quiet_role_assignment:
+                        log_messages.append(f"❌ Removed **{role.name}** from {member.display_name}.")
+                except discord.Forbidden:
+                    log_messages.append(f"⚠️ Failed to remove **{role.name}** from {member.display_name} (Missing Permissions).")
+                except discord.HTTPException as e:
+                    log_messages.append(f"⚠️ Failed to remove **{role.name}** from {member.display_name}: {e}")
 
         # Log results to the console
         if log_messages:
-            print(f"Ouijapoke Role Assignment Log for {guild.name}:")
+            print(f"Ouijapoke Role Assignment Log for {guild.name} ({len(log_messages)} actions):")
             for msg in log_messages:
                 print(msg)
 
@@ -387,20 +404,24 @@ class Ouijapoke(commands.Cog):
         message = message_template.format(mention=member.mention, days=days_inactive)
 
         # 1. Try to DM
+        dm_sent = False
         try:
             await member.send(
                 f"👻 **Ouijapoke Alert** from {member.guild.name}:\n"
                 f"{message}"
             )
-            return True
-        except (discord.Forbidden, discord.HTTPException) as e:
-            # If DM fails, try the target channel (if allowed)
+            dm_sent = True
+        except (discord.Forbidden, discord.HTTPException):
+            # DM failed, try channel fallback
             pass
+
+        if dm_sent:
+            return True
 
         # 2. Try target channel
         if settings.target_channel_id and settings.allow_pokes_in_target_channel:
             target_channel = member.guild.get_channel(settings.target_channel_id)
-            if target_channel:
+            if target_channel and isinstance(target_channel, discord.TextChannel):
                 try:
                     await target_channel.send(message)
                     return True
@@ -445,8 +466,9 @@ class Ouijapoke(commands.Cog):
                 last_summon_ts = last_summoned.get(user_id, 0)
                 last_seen_ts = last_seen.get(user_id, 0)
 
-                if last_summon_ts < last_seen_ts:
-                    # They've been active since the last summon, so they are eligible for a new one
+                # Use a small buffer (e.g., 5 seconds) to handle near-simultaneous updates
+                if last_summon_ts < last_seen_ts + 5:
+                    # They've been active since the last summon, or never summoned
                     members_to_summon.append((member, inactivity_duration.days))
 
             # Check for pokes
@@ -457,8 +479,9 @@ class Ouijapoke(commands.Cog):
                 last_notification_ts = max(last_poke_ts, last_summon_ts)
                 last_seen_ts = last_seen.get(user_id, 0)
 
-                if last_notification_ts < last_seen_ts:
-                    # They've been active since the last poke/summon, so they are eligible for a new poke
+                # Use a small buffer (e.g., 5 seconds) to handle near-simultaneous updates
+                if last_notification_ts < last_seen_ts + 5:
+                    # They've been active since the last poke/summon, or never notified
                     members_to_poke.append((member, inactivity_duration.days))
 
 
@@ -486,7 +509,7 @@ class Ouijapoke(commands.Cog):
             if total_pokes_done >= settings.max_auto_pokes:
                 break
             
-            # Re-check to ensure they weren't just summoned
+            # Re-check to ensure they weren't just summoned in this batch
             if member.id in last_summoned:
                 continue
 
@@ -496,7 +519,7 @@ class Ouijapoke(commands.Cog):
                 total_pokes_done += 1
 
         # Save updated tracking data
-        if total_pokes_done > 0:
+        if total_pokes_done > 0 or members_to_summon or members_to_poke:
             await self._set_last_poked(guild, last_poked)
             await self._set_last_summoned(guild, last_summoned)
             print(f"Ouijapoke: Completed auto-check for {guild.name}. Notified {total_pokes_done} members.")
@@ -513,6 +536,10 @@ class Ouijapoke(commands.Cog):
             try:
                 # Iterate over all guilds the bot is in
                 for guild in self.bot.guilds:
+                    # Use guild.unavailable check to skip if Discord is having issues
+                    if guild.unavailable:
+                        continue
+                        
                     settings = await self._get_guild_settings(guild)
                     
                     if not settings.auto_poke_enabled and not settings.inactivity_roles:
@@ -536,9 +563,7 @@ class Ouijapoke(commands.Cog):
                         # Update last check time
                         self.last_check_times[guild.id] = now_ts
                     
-                # Wait for the shortest interval configured across all guilds, minimum 1 hour
-                # For simplicity, we'll just wait a fixed amount of time (e.g., 1 hour or the shortest configured)
-                # We'll use a fixed 30-minute sleep for this loop to be responsive but not spam config reads
+                # Wait for a fixed 30-minute sleep interval
                 await asyncio.sleep(1800) 
 
             except asyncio.CancelledError:
@@ -670,7 +695,7 @@ class Ouijapoke(commands.Cog):
         """Toggle quiet mode for role assignment/removal (prevents console logging)."""
         await self.config.guild(ctx.guild).quiet_role_assignment.set(enable)
         state = "enabled" if enable else "disabled"
-        await ctx.send(f"Quiet mode for role assignment/removal is now **{state}**. (Log messages will{' not' if enable else ''} be sent to the console.)")
+        await ctx.send(f"Quiet mode for role assignment/removal is now **{state}**.")
 
     # --- Ignore Lists ---
 
@@ -794,7 +819,9 @@ class Ouijapoke(commands.Cog):
         # Determine the last time recorded
         last_seen_ts = last_seen.get(user_id)
         if last_seen_ts is None:
-            last_dt = member.joined_at.replace(tzinfo=timezone.utc)
+            # Ensure member.joined_at is timezone-aware
+            joined_at = member.joined_at.replace(tzinfo=timezone.utc) if member.joined_at.tzinfo is None else member.joined_at
+            last_dt = joined_at
             last_time_str = f"Since they joined the server ({last_dt.strftime('%Y-%m-%d %H:%M UTC')})"
         else:
             last_dt = datetime.fromtimestamp(last_seen_ts, tz=timezone.utc)
@@ -834,10 +861,12 @@ class Ouijapoke(commands.Cog):
             await self._set_last_poked(ctx.guild, last_poked)
             await ctx.send(f"Successfully poked {member.mention} (inactive for {days_inactive} days).")
         else:
+            # FIX: Used str.format() instead of f-string to avoid backslash error at the line break.
             await ctx.send(
-                f"Failed to poke {member.mention}. They may have DMs disabled and no target "
-                f"channel is set or allowed."
-            )
+                "Failed to poke {}. They may have DMs disabled and no target \n"
+                "channel is set or allowed."
+            .format(member.mention))
+
 
     @commands.command(name="summon")
     @commands.guild_only()
@@ -868,10 +897,11 @@ class Ouijapoke(commands.Cog):
             await self._set_last_summoned(ctx.guild, last_summoned)
             await ctx.send(f"Successfully summoned {member.mention} (inactive for {days_inactive} days).")
         else:
+            # FIX: Used str.format() instead of f-string to avoid backslash error at the line break.
             await ctx.send(
-                f"Failed to summon {member.mention}. They may have DMs disabled and no target "
-                f"channel is set or allowed."
-            )
+                "Failed to summon {}. They may have DMs disabled and no target \n"
+                "channel is set or allowed."
+            .format(member.mention))
             
     # --- Debugging/Owner Commands ---
 
@@ -914,6 +944,9 @@ class Ouijapoke(commands.Cog):
             return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == 'yes'
 
         try:
+            # The uploaded file used TimeoutError, which is correct for standard Python.
+            # RedBot often uses asyncio.TimeoutError when in an async context, 
+            # but using the base Exception/Error class is usually safer here.
             await self.bot.wait_for('message', check=check, timeout=30.0)
         except asyncio.TimeoutError:
             return await ctx.send("Activity reset canceled.")
@@ -927,85 +960,3 @@ class Ouijapoke(commands.Cog):
             "✅ **Activity tracking successfully reset.** "
             "All members are now considered 'new' and tracking will start with the next message they send."
         )
-
-    # The problematic code was found near line 728 in the context of the error:
-    # File "{HOME}/.local/share/Red-DiscordBot/data/robotito/cogs/CogManager/cogs/ouijapoke/ouijapoke.py", line 728
-    # )
-    # ^
-    # SyntaxError: f-string expression part cannot include a backslash
-    
-    # Original line 728, which was the closing parenthesis of the f-string:
-    # f"Failed to poke {member.mention}. They may have DMs disabled and no target \nchannel is set or allowed."
-
-    # The fix is to use str.format() or simple concatenation to break the line, 
-    # since Red's command responses often allow multi-line text.
-    @commands.command(name="poke")
-    @commands.guild_only()
-    @checks.mod_or_permissions(manage_messages=True)
-    async def poke(self, ctx: commands.Context, member: discord.Member):
-        """Manually poke an inactive member."""
-        settings = await self._get_guild_settings(ctx.guild)
-        last_seen = await self._get_last_seen(ctx.guild)
-        
-        if member.bot:
-            return await ctx.send("I can't poke bots.")
-            
-        user_id, inactivity_duration = await self._get_inactivity_info(member, last_seen)
-        days_inactive = inactivity_duration.days
-
-        if days_inactive < settings.poke_days:
-            return await ctx.send(
-                f"{member.display_name} is not inactive enough yet. They need to be inactive "
-                f"for at least **{settings.poke_days}** days (currently {days_inactive})."
-            )
-
-        sent = await self._send_notification(member, "poke", days_inactive, settings)
-        
-        if sent:
-            # Update last_poked time
-            last_poked = await self._get_last_poked(ctx.guild)
-            last_poked[member.id] = datetime.now(timezone.utc).timestamp()
-            await self._set_last_poked(ctx.guild, last_poked)
-            await ctx.send(f"Successfully poked {member.mention} (inactive for {days_inactive} days).")
-        else:
-            # FIX: Used str.format() instead of f-string to avoid backslash error at the line break.
-            await ctx.send(
-                "Failed to poke {}. They may have DMs disabled and no target \n"
-                "channel is set or allowed."
-            .format(member.mention)) # Original f-string was f"Failed to poke {member.mention}. They may have DMs disabled and no target \nchannel is set or allowed."
-
-
-    @commands.command(name="summon")
-    @commands.guild_only()
-    @checks.mod_or_permissions(manage_messages=True)
-    async def summon(self, ctx: commands.Context, member: discord.Member):
-        """Manually summon a highly inactive member."""
-        settings = await self._get_guild_settings(ctx.guild)
-        last_seen = await self._get_last_seen(ctx.guild)
-        
-        if member.bot:
-            return await ctx.send("I can't summon bots.")
-            
-        user_id, inactivity_duration = await self._get_inactivity_info(member, last_seen)
-        days_inactive = inactivity_duration.days
-
-        if days_inactive < settings.summon_days:
-            return await ctx.send(
-                f"{member.display_name} is not inactive enough for a summon. They need to be inactive "
-                f"for at least **{settings.summon_days}** days (currently {days_inactive})."
-            )
-
-        sent = await self._send_notification(member, "summon", days_inactive, settings)
-
-        if sent:
-            # Update last_summoned time
-            last_summoned = await self._get_last_summoned(ctx.guild)
-            last_summoned[member.id] = datetime.now(timezone.utc).timestamp()
-            await self._set_last_summoned(ctx.guild, last_summoned)
-            await ctx.send(f"Successfully summoned {member.mention} (inactive for {days_inactive} days).")
-        else:
-            # FIX: Used str.format() instead of f-string to avoid backslash error at the line break.
-            await ctx.send(
-                "Failed to summon {}. They may have DMs disabled and no target \n"
-                "channel is set or allowed."
-            .format(member.mention)) # Original f-string was f"Failed to summon {member.mention}. They may have DMs disabled and no target \nchannel is set or allowed."
