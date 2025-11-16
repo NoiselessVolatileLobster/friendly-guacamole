@@ -905,7 +905,6 @@ class OuijaPoke(commands.Cog):
 
         # 1. Handle main eligible list
         if eligible_members:
-            # Prepare content for display
             entries = []
             for i, member_data in enumerate(eligible_members):
                 entry = (
@@ -917,7 +916,7 @@ class OuijaPoke(commands.Cog):
                 )
                 entries.append(entry)
 
-            # Use basic page separation for clarity
+            # --- Pagination Logic ---
             pages = []
             MAX_CHARS = 1000
             current_page = ""
@@ -955,7 +954,7 @@ class OuijaPoke(commands.Cog):
                 )
                 excluded_entries.append(entry)
 
-            # Use basic page separation for clarity
+            # --- Pagination Logic ---
             excluded_pages = []
             MAX_CHARS = 1000
             current_page = ""
