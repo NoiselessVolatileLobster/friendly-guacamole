@@ -2,29 +2,38 @@ import discord
 from redbot.core import Config, commands, checks
 from redbot.core.utils.chat_formatting import humanize_list
 from datetime import datetime, timedelta, timezone
-# REMOVED: from redbot.core.tasks import loop 
-import asyncio # New import for sleeping in the task
+import asyncio
 import random
 import re
-from typing import Union, List, Tuple
+from typing import Union, List, Tuple, Dict, Any
 
 # Pydantic is used for structured configuration in modern Red cogs
 try:
-    from pydantic import BaseModel, Field
+    from pydantic import BaseModel, Field, conint, conlist
 except ImportError:
     BaseModel = object
     Field = lambda *args, **kwargs: None
+    conint = lambda **kwargs: int
+    conlist = lambda *args, **kwargs: list
+
 
 # --- Configuration Schema (Settings) ---
 
+class InactivityRolePair(BaseModel):
+    """Schema for a single role and its required inactivity days."""
+    role_id: int = Field(description="The ID of the role to assign.")
+    days: conint(ge=1) = Field(description="Minimum days of inactivity required to assign this role.")
+
 class OuijaSettings(BaseModel):
     """Schema for guild configuration settings."""
-    poke_days: int = Field(default=30, ge=1, description="Days a member must be inactive to be eligible for a poke.")
-    summon_days: int = Field(default=60, ge=1, description="Days a member must be inactive to be eligible for a summon.")
+    poke_days: conint(ge=1) = Field(default=30, description="Days a member must be inactive to be eligible for a poke.")
+    summon_days: conint(ge=1) = Field(default=60, description="Days a member must be inactive to be eligible for a summon.")
     
-    # INACTIVITY ROLE FIELDS
-    inactivity_role_id: Union[int, None] = Field(default=None, description="The ID of the role to assign to inactive members.")
-    inactivity_role_days: int = Field(default=50, ge=1, description="Days a member must be inactive to receive the inactivity role.")
+    # UPDATED: List of role/day pairings for automated assignment
+    inactivity_roles: conlist(item_type=InactivityRolePair, min_length=0) = Field(
+        default=[],
+        description="List of roles to assign based on inactivity days."
+    )
 
     poke_message: str = Field(
         default="Hey {user_mention}, the Ouija Board feels your presence. Come say hello!",
@@ -305,16 +314,25 @@ class OuijaPoke(commands.Cog):
         if message.guild is None or message.author.bot or message.webhook_id:
             return
         
-        # When a member sends a message, remove the inactivity role if they have it
+        # When a member sends a message, remove ALL inactivity roles if they have any
         settings = await self._get_settings(message.guild)
-        role_id = settings.inactivity_role_id
-        if role_id:
+        member = message.author
+        
+        # Get all configured inactivity role IDs
+        inactivity_role_ids = {pair.role_id for pair in settings.inactivity_roles}
+        member_role_ids = {role.id for role in member.roles}
+        
+        roles_to_remove = []
+        for role_id in inactivity_role_ids.intersection(member_role_ids):
             role = message.guild.get_role(role_id)
-            if role and role in message.author.roles:
-                try:
-                    await message.author.remove_roles(role, reason="OuijaPoke: Member became active.")
-                except discord.HTTPException:
-                    pass
+            if role:
+                roles_to_remove.append(role)
+
+        if roles_to_remove:
+            try:
+                await member.remove_roles(*roles_to_remove, reason="OuijaPoke: Member became active.")
+            except discord.HTTPException:
+                pass
 
         await self._update_last_seen(message.guild, message.author.id)
     
@@ -336,31 +354,38 @@ class OuijaPoke(commands.Cog):
         
         member_id = member.id
         
+        # Handle connection start/move
         if after.channel is not None and before.channel != after.channel:
             if not after.self_mute and not after.self_deaf and not after.mute and not after.deaf:
                 self.voice_connect_times[member_id] = datetime.now(timezone.utc)
         
+        # Handle disconnection
         if before.channel is not None and after.channel is None:
             if member_id in self.voice_connect_times:
                 join_time = self.voice_connect_times.pop(member_id)
                 duration = datetime.now(timezone.utc) - join_time
                 
                 if duration >= timedelta(minutes=5):
-                    # Also remove inactivity role if they were in VC long enough
+                    # Remove ALL inactivity roles if they were in VC long enough
                     settings = await self._get_settings(member.guild)
-                    role_id = settings.inactivity_role_id
-                    if role_id:
-                        role = member.guild.get_role(role_id)
-                        if role and role in member.roles:
-                            try:
-                                await member.remove_roles(role, reason="OuijaPoke: Member became active (voice).")
-                            except discord.HTTPException:
-                                pass
+                    member_role_ids = {role.id for role in member.roles}
+                    roles_to_remove = []
+                    
+                    for pair in settings.inactivity_roles:
+                        role = member.guild.get_role(pair.role_id)
+                        if role and role.id in member_role_ids:
+                            roles_to_remove.append(role)
+                            
+                    if roles_to_remove:
+                        try:
+                            await member.remove_roles(*roles_to_remove, reason="OuijaPoke: Member became active (voice).")
+                        except discord.HTTPException:
+                            pass
                                 
                     await self._update_last_seen(member.guild, member.id)
 
 
-    # --- DPy Native Background Task for Inactivity Role (REPLACED LOOP) ---
+    # --- DPy Native Background Task for Inactivity Role ---
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -378,10 +403,9 @@ class OuijaPoke(commands.Cog):
             print(f"OuijaPoke Inactivity Role Task failed: {e}") 
         
     async def _inactivity_role_task(self):
-        """The main periodic task to check and assign the inactivity role."""
+        """The main periodic task to check and assign the inactivity role based on all configured pairings."""
         
-        # Wait a short while to allow all guilds to be processed upon startup
-        await asyncio.sleep(60) 
+        await asyncio.sleep(60) # Wait a short while to allow all guilds to be processed upon startup
         
         # Run the task indefinitely while the bot is ready
         while self.bot.is_ready():
@@ -394,24 +418,15 @@ class OuijaPoke(commands.Cog):
                     continue
 
                 settings = await self._get_settings(guild)
-                role_id = settings.inactivity_role_id
-                days = settings.inactivity_role_days
-
-                # Skip if role or days are not configured
-                if role_id is None or days <= 0:
+                # Ensure the settings object is fresh
+                if not settings.inactivity_roles:
                     continue
 
-                inactivity_role = guild.get_role(role_id)
-                if inactivity_role is None:
-                    # Clear invalid role ID from config
-                    settings.inactivity_role_id = None
-                    await self._set_settings(guild, settings)
-                    continue
-
-                cutoff_dt = self._get_inactivity_cutoff(days)
+                # Fetch data once per guild to save API calls
                 last_seen_data = await self.config.guild(guild).last_seen()
                 excluded_roles = await self.config.guild(guild).excluded_roles()
 
+                # Process every member who has activity recorded
                 for user_id_str, last_seen_dt_str in last_seen_data.items():
                     user_id = int(user_id_str)
                     member = guild.get_member(user_id)
@@ -419,38 +434,49 @@ class OuijaPoke(commands.Cog):
                     if member is None or member.bot:
                         continue
                     
-                    # Check for exclusion role (don't apply inactivity role if member is excluded)
+                    # Skip members in excluded roles
                     if self._is_excluded(member, excluded_roles):
-                        # Also ensure they don't have the inactivity role if they are excluded
-                        if inactivity_role in member.roles:
-                            try:
-                                await member.remove_roles(inactivity_role, reason="OuijaPoke: Member is in an excluded role.")
-                            except discord.HTTPException:
-                                pass # Silently fail if permissions are an issue
                         continue
 
                     try:
                         last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
                     except ValueError:
                         continue
-
-                    # 1. Check if eligible for the role (inactive enough)
-                    if last_seen_dt < cutoff_dt:
-                        if inactivity_role not in member.roles:
-                            try:
-                                await member.add_roles(inactivity_role, reason=f"OuijaPoke: Inactive for >{days} days.")
-                            except discord.HTTPException:
-                                pass # Silently fail if permissions are an issue
                     
-                    # 2. Check if active again (should lose the role)
-                    # This check is actually already handled efficiently in on_message/on_voice_state_update,
-                    # but leaving it here ensures cleanup for users missed by events.
-                    else: 
-                        if inactivity_role in member.roles:
-                            try:
-                                await member.remove_roles(inactivity_role, reason=f"OuijaPoke: Member has become active again.")
-                            except discord.HTTPException:
-                                pass # Silently fail if permissions are an issue
+                    # Determine the member's current level of inactivity (in days)
+                    inactivity_days = (datetime.now(timezone.utc) - last_seen_dt).days
+                    
+                    # Collect roles to add and roles to remove
+                    roles_to_add: List[discord.Role] = []
+                    roles_to_remove: List[discord.Role] = []
+                    
+                    for pair in settings.inactivity_roles:
+                        role = guild.get_role(pair.role_id)
+                        if role is None:
+                            # Skip if role doesn't exist anymore
+                            continue
+                        
+                        is_active_enough = inactivity_days < pair.days
+                        has_role = role in member.roles
+                        
+                        if is_active_enough:
+                            # Member is NOT inactive enough: should not have the role
+                            if has_role:
+                                roles_to_remove.append(role)
+                        else:
+                            # Member IS inactive enough: SHOULD have the role
+                            if not has_role:
+                                roles_to_add.append(role)
+
+                    # Execute role changes
+                    try:
+                        if roles_to_add:
+                            await member.add_roles(*roles_to_add, reason=f"OuijaPoke: Inactive for {inactivity_days} days.")
+                        if roles_to_remove:
+                            await member.remove_roles(*roles_to_remove, reason="OuijaPoke: Became active or no longer meets threshold.")
+                    except discord.HTTPException:
+                        # Log or handle permission errors silently
+                        pass
 
 
     def cog_unload(self):
@@ -609,7 +635,7 @@ class OuijaPoke(commands.Cog):
 
     # --- Admin Commands (Settings and Overrides) ---
 
-    @commands.group()
+    @commands.group(invoke_without_command=True)
     @checks.admin_or_permissions(manage_guild=True)
     async def ouijaset(self, ctx: commands.Context):
         """Manages the OuijaPoke settings."""
@@ -623,14 +649,17 @@ class OuijaPoke(commands.Cog):
                 if role:
                     excluded_names.append(role.name)
 
-            inactivity_role = ctx.guild.get_role(settings.inactivity_role_id) if settings.inactivity_role_id else None
+            inactivity_pairs_text = []
+            for pair in settings.inactivity_roles:
+                role = ctx.guild.get_role(pair.role_id)
+                role_name = role.name if role else f"Unknown Role ID ({pair.role_id})"
+                inactivity_pairs_text.append(f"• **@{role_name}** after **{pair.days}** days")
             
             msg = (
                 "**OuijaPoke Settings**\n"
                 f"- **Poke Inactivity:** {settings.poke_days} days\n"
                 f"- **Summon Inactivity:** {settings.summon_days} days\n"
-                f"- **Inactivity Role:** {inactivity_role.name if inactivity_role else 'None'}\n"
-                f"- **Inactivity Days:** {settings.inactivity_role_days} days\n"
+                f"- **Inactivity Roles:**\n" + ("\n".join(inactivity_pairs_text) if inactivity_pairs_text else "  *None configured.*") + "\n"
                 f"- **Poke Message:** `{settings.poke_message}`\n"
                 f"- **Summon Message:** `{settings.summon_message}`\n"
                 f"- **Poke GIFs:** {len(settings.poke_gifs)} stored\n"
@@ -638,7 +667,7 @@ class OuijaPoke(commands.Cog):
                 f"- **Excluded Roles:** {humanize_list(excluded_names) if excluded_names else 'None'}"
             )
             await ctx.send(msg)
-
+    
     # --- Days Settings ---
 
     @ouijaset.command(name="pokedays")
@@ -661,52 +690,86 @@ class OuijaPoke(commands.Cog):
         await self._set_settings(ctx.guild, settings)
         await ctx.send(f"Members are now eligible to be summoned after **{days}** days of inactivity.")
 
-    # --- Inactivity Role Settings ---
+    # --- Inactivity Role Settings (UPDATED GROUP) ---
     
-    @ouijaset.command(name="inactivityrole")
-    async def ouijaset_inactivityrole(self, ctx: commands.Context, role: Union[discord.Role, str]):
+    @ouijaset.group(name="inactivityrole", aliases=["inactiverole"], invoke_without_command=True)
+    async def ouijaset_inactivityrole(self, ctx: commands.Context):
         """
-        Sets the role that will be automatically assigned to members who exceed the inactivity day threshold.
+        Manages the list of roles automatically assigned to members who exceed an inactivity threshold.
         
-        Use `clear` as the role argument to disable this feature.
+        Use `[p]ouijaset inactivityrole add <role> <days>` to add a new pairing.
         """
         settings = await self._get_settings(ctx.guild)
         
-        if isinstance(role, str) and role.lower() == "clear":
-            settings.inactivity_role_id = None
-            await self._set_settings(ctx.guild, settings)
-            return await ctx.send("Inactivity role assignment has been **cleared/disabled**.")
+        if not settings.inactivity_roles:
+            return await ctx.send("No inactivity roles are currently configured. Use `[p]ouijaset inactivityrole add <role> <days>` to set one up.")
 
-        if isinstance(role, discord.Role):
-            if role.is_default():
-                return await ctx.send("The `@everyone` role cannot be set as the inactivity role.")
+        # Display the list of configured roles
+        inactivity_pairs_text = []
+        for pair in settings.inactivity_roles:
+            role = ctx.guild.get_role(pair.role_id)
+            role_name = role.name if role else f"Unknown Role ID ({pair.role_id})"
+            inactivity_pairs_text.append(f"• **@{role_name}** after **{pair.days}** days")
             
-            # Check bot's role hierarchy
-            if role >= ctx.guild.me.top_role:
-                return await ctx.send(f"My highest role is too low. The **{role.name}** role must be below my highest role in the server's role list for me to assign it.")
-            
-            settings.inactivity_role_id = role.id
-            await self._set_settings(ctx.guild, settings)
-            await ctx.send(f"The inactivity role has been set to **{role.name}**. Members inactive for >{settings.inactivity_role_days} days will receive this role.")
-        else:
-            await ctx.send("Please provide a valid role name or mention, or use `clear`.")
+        await ctx.send(
+            "**Configured Inactivity Roles:**\n"
+            f"{'\n'.join(inactivity_pairs_text)}\n\n"
+            "The background task will manage these roles every 12 hours."
+        )
 
-    @ouijaset.command(name="inactivitydays")
-    async def ouijaset_inactivitydays(self, ctx: commands.Context, days: int):
-        """Sets the number of days of inactivity required to be assigned the inactivity role."""
+    @ouijaset_inactivityrole.command(name="add")
+    async def inactivityrole_add(self, ctx: commands.Context, role: discord.Role, days: int):
+        """
+        Adds a role and the required days of inactivity to the list.
+        
+        The role will be assigned after the member has been inactive for the specified days.
+        """
         if days < 1:
             return await ctx.send("Days must be 1 or greater.")
+            
+        if role.is_default():
+            return await ctx.send("The `@everyone` role cannot be set.")
         
+        if role >= ctx.guild.me.top_role:
+            return await ctx.send(f"My highest role is too low. The **{role.name}** role must be below my highest role in the server's role list for me to assign it.")
+
         settings = await self._get_settings(ctx.guild)
-        settings.inactivity_role_days = days
+        
+        # Check if this role is already configured
+        for pair in settings.inactivity_roles:
+            if pair.role_id == role.id:
+                return await ctx.send(f"The role **{role.name}** is already configured for **{pair.days}** days. Use `remove` first if you need to change the day count.")
+
+        # Add the new pair
+        new_pair = InactivityRolePair(role_id=role.id, days=days)
+        settings.inactivity_roles.append(new_pair)
+        
+        # Sort by days, so the shorter inactivity roles are checked first (though not strictly necessary)
+        settings.inactivity_roles.sort(key=lambda x: x.days)
+        
         await self._set_settings(ctx.guild, settings)
+        await ctx.send(f"Added role **{role.name}**: It will be assigned after **{days}** days of inactivity.")
+
+    @ouijaset_inactivityrole.command(name="remove")
+    async def inactivityrole_remove(self, ctx: commands.Context, role: discord.Role):
+        """
+        Removes a role from the automated inactivity role list.
+        """
+        settings = await self._get_settings(ctx.guild)
         
-        role = ctx.guild.get_role(settings.inactivity_role_id)
+        initial_length = len(settings.inactivity_roles)
         
-        if role:
-            await ctx.send(f"The inactivity role threshold is now **{days}** days. Members inactive for this long will be assigned the **{role.name}** role by the background task.")
-        else:
-            await ctx.send(f"The inactivity role threshold is now **{days}** days, but no inactivity role is currently configured. Use `[p]ouijaset inactivityrole <role>` to set one.")
+        # Filter out the role to be removed
+        settings.inactivity_roles = [
+            pair for pair in settings.inactivity_roles if pair.role_id != role.id
+        ]
+        
+        if len(settings.inactivity_roles) == initial_length:
+            return await ctx.send(f"The role **{role.name}** was not found in the configured inactivity list.")
+            
+        await self._set_settings(ctx.guild, settings)
+        await ctx.send(f"Removed role **{role.name}** from the inactivity role list. The background task will remove this role from all members the next time it runs.")
+
 
     # --- Message Settings ---
     
