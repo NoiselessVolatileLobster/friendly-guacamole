@@ -288,7 +288,6 @@ class OuijaPoke(commands.Cog):
 
 
     # --- Listeners (Event Handlers) ---
-    # ... (on_message, on_member_join, on_voice_state_update are unchanged)
     
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -822,6 +821,41 @@ class OuijaPoke(commands.Cog):
             f"The Ouija spirits have whispered that **{updated_count}** members "
             f"in the **{role.name}** role were last seen **{days_ago} days ago** "
             f"({target_last_active_dt.strftime('%Y-%m-%d %H:%M:%S UTC')})."
+        )
+        
+    # --- Reset Activity Command ---
+    
+    @ouijaset.command(name="resetactivity")
+    @checks.is_owner() # Only bot owner should be able to run this destructive command
+    async def ouijaset_resetactivity(self, ctx: commands.Context):
+        """
+        [BOT OWNER ONLY] Wipes all last activity, last poked, and last summoned records for this guild. 
+        
+        This will effectively start activity tracking from scratch.
+        """
+        
+        await ctx.send(
+            "⚠️ **WARNING!** This command will wipe **ALL** historical activity "
+            "tracking data (`last_seen`, `last_poked`, `last_summoned`) for this guild. "
+            "Are you sure you want to proceed? Type `yes` to confirm."
+        )
+
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == 'yes'
+
+        try:
+            await self.bot.wait_for('message', check=check, timeout=30.0)
+        except TimeoutError:
+            return await ctx.send("Activity reset canceled.")
+        
+        # Perform the reset
+        await self.config.guild(ctx.guild).last_seen.set({})
+        await self.config.guild(ctx.guild).last_poked.set({})
+        await self.config.guild(ctx.guild).last_summoned.set({})
+        
+        await ctx.send(
+            "✅ **Activity tracking successfully reset.** "
+            "All members are now considered 'new' and tracking will start with the next message they send."
         )
 
 # --- Red Setup Function ---
