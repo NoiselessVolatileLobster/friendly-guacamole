@@ -158,6 +158,71 @@ class OuijaPoke(commands.Cog):
         data = await self.config.guild(guild).get_attr(key)()
         data[user_id_str] = current_time_utc
         await self.config.guild(guild).get_attr(key).set(data)
+
+    async def _get_all_eligible_member_data(self, ctx: commands.Context) -> List[dict]:
+        """
+        Retrieves comprehensive data for all members who meet EITHER the poke or summon inactivity criteria.
+        """
+        guild = ctx.guild
+        data = await self.config.guild(guild).all()
+        
+        settings = OuijaSettings(**data["ouija_settings"])
+        last_seen_data = data["last_seen"]
+        last_poked_data = data["last_poked"]
+        last_summoned_data = data["last_summoned"]
+        excluded_roles = data["excluded_roles"]
+        
+        poke_cutoff = self._get_inactivity_cutoff(settings.poke_days)
+        summon_cutoff = self._get_inactivity_cutoff(settings.summon_days)
+        
+        eligible_list = []
+        
+        for user_id_str, last_seen_dt_str in last_seen_data.items():
+            user_id = int(user_id_str)
+            member = guild.get_member(user_id)
+            
+            if member is None or member.bot or self._is_excluded(member, excluded_roles):
+                continue
+            
+            try:
+                last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+
+            is_poke_eligible = last_seen_dt < poke_cutoff
+            is_summon_eligible = last_seen_dt < summon_cutoff
+            
+            # Member must be eligible for at least one action
+            if is_poke_eligible or is_summon_eligible:
+                
+                last_poked_str = last_poked_data.get(user_id_str)
+                last_summoned_str = last_summoned_data.get(user_id_str)
+                
+                # Helper function for formatting dates
+                def format_date(dt_str):
+                    if dt_str:
+                        try:
+                            dt = datetime.fromisoformat(dt_str).replace(tzinfo=timezone.utc)
+                            # Return days ago
+                            diff = datetime.now(timezone.utc) - dt
+                            return f"{diff.days} days ago"
+                        except ValueError:
+                            return "Invalid Date"
+                    return "Never"
+                
+                last_seen_diff = (datetime.now(timezone.utc) - last_seen_dt).days
+                
+                eligible_list.append({
+                    "member": member,
+                    "last_seen_days": last_seen_diff,
+                    "last_poked": format_date(last_poked_str),
+                    "last_summoned": format_date(last_summoned_str),
+                    "eligible_for": ("Poke" if is_poke_eligible else "") + (" & Summon" if is_poke_eligible and is_summon_eligible else "Summon" if is_summon_eligible else "")
+                })
+
+        # Sort by most inactive (highest last_seen_days)
+        eligible_list.sort(key=lambda x: x['last_seen_days'], reverse=True)
+        return eligible_list
         
 
     # --- Listeners (Event Handlers) ---
@@ -200,7 +265,7 @@ class OuijaPoke(commands.Cog):
                 duration = datetime.now(timezone.utc) - join_time
                 
                 if duration >= timedelta(minutes=5):
-                    await self._update_last_seen(member.guild, member_id)
+                    await self._update_last_seen(member.guild, member.id)
                 
 
 
@@ -359,7 +424,7 @@ class OuijaPoke(commands.Cog):
         """Manages the OuijaPoke settings."""
         if ctx.invoked_subcommand is None:
             settings = await self._get_settings(ctx.guild)
-            excluded_roles = await self.config.guild().excluded_roles()
+            excluded_roles = await self.config.guild(ctx.guild).excluded_roles()
             excluded_names = []
             for role_id in excluded_roles:
                 role = ctx.guild.get_role(role_id)
@@ -521,6 +586,59 @@ class OuijaPoke(commands.Cog):
         except ValueError:
             await ctx.send("That GIF URL was not found in the list.")
 
+    # --- Eligible Members Display ---
+
+    @ouijaset.command(name="eligible")
+    async def ouijaset_eligible(self, ctx: commands.Context):
+        """Displays a list of all members currently eligible for being poked or summoned."""
+        
+        # We need settings for the footer information
+        settings = await self._get_settings(ctx.guild)
+
+        async with ctx.typing():
+            eligible_members = await self._get_all_eligible_member_data(ctx)
+
+        if not eligible_members:
+            return await ctx.send("🎉 **No members are currently eligible** for poking or summoning based on the configured inactivity days.")
+            
+        
+        # Prepare content for display
+        entries = []
+        for i, member_data in enumerate(eligible_members):
+            entry = (
+                f"**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)\n"
+                f"  ➡️ Last Active: **{member_data['last_seen_days']} days ago**\n"
+                f"  👀 Last Poked: {member_data['last_poked']}\n"
+                f"  👻 Last Summoned: {member_data['last_summoned']}\n"
+                f"  ✅ Eligible For: {member_data['eligible_for']}"
+            )
+            entries.append(entry)
+
+        # Use basic page separation for clarity
+        pages = []
+        MAX_CHARS = 1000  # Safe limit for an embed description block
+        current_page = ""
+        
+        for entry in entries:
+            # Check if adding the next entry exceeds the limit
+            if len(current_page) + len(entry) + 2 > MAX_CHARS:
+                pages.append(current_page)
+                current_page = entry + "\n"
+            else:
+                current_page += entry + "\n"
+        if current_page:
+            pages.append(current_page)
+        
+        # Send the pages
+        for page_num, content in enumerate(pages):
+            embed = discord.Embed(
+                title=f"OuijaPoke Eligible Members ({len(eligible_members)} Total)",
+                description=f"Below are members inactive enough for action (Sorted by inactivity).\n\n{content}",
+                color=discord.Color.dark_purple()
+            )
+            embed.set_footer(text=f"Page {page_num + 1}/{len(pages)} | Poke Days: {settings.poke_days}, Summon Days: {settings.summon_days}")
+            await ctx.send(embed=embed)
+
 
     # --- Excluded Roles Management ---
 
@@ -529,7 +647,6 @@ class OuijaPoke(commands.Cog):
         """
         Manages roles whose members are permanently excluded from being poked or summoned.
         """
-        # FIX: Pass ctx.guild to config.guild()
         excluded_roles = await self.config.guild(ctx.guild).excluded_roles()
         
         if not excluded_roles:
@@ -549,7 +666,6 @@ class OuijaPoke(commands.Cog):
     @ouijaset_excludedroles.command(name="add")
     async def excludedroles_add(self, ctx: commands.Context, role: discord.Role):
         """Adds a role to the exclusion list."""
-        # FIX: Pass ctx.guild to config.guild()
         async with self.config.guild(ctx.guild).excluded_roles() as excluded_roles:
             if role.id in excluded_roles:
                 return await ctx.send(f"The role **{role.name}** is already excluded.")
@@ -560,7 +676,6 @@ class OuijaPoke(commands.Cog):
     @ouijaset_excludedroles.command(name="remove")
     async def excludedroles_remove(self, ctx: commands.Context, role: discord.Role):
         """Removes a role from the exclusion list."""
-        # FIX: Pass ctx.guild to config.guild()
         async with self.config.guild(ctx.guild).excluded_roles() as excluded_roles:
             if role.id not in excluded_roles:
                 return await ctx.send(f"The role **{role.name}** was not found in the excluded list.")
@@ -587,7 +702,7 @@ class OuijaPoke(commands.Cog):
             target_last_active_dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
             target_last_active_dt_str = target_last_active_dt.isoformat()
             
-            last_seen_data = await self.config.guild().last_seen()
+            last_seen_data = await self.config.guild(ctx.guild).last_seen()
             
             updated_count = 0
             
@@ -598,7 +713,7 @@ class OuijaPoke(commands.Cog):
                 last_seen_data[str(member.id)] = target_last_active_dt_str
                 updated_count += 1
                 
-            await self.config.guild().last_seen.set(last_seen_data)
+            await self.config.guild(ctx.guild).last_seen.set(last_seen_data)
         
         await ctx.send(
             f"The Ouija spirits have whispered that **{updated_count}** members "
