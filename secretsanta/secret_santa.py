@@ -198,12 +198,10 @@ class SecretSanta(commands.Cog):
         await self.config.ss_open.set(False) 
         
         # 2. Clear the message/channel IDs so the bot forgets the old embed location.
+        # This prevents the view from being re-added in on_ready after restart.
         async with self.config.embed_data() as embed_data:
             embed_data["channel_id"] = None
             embed_data["message_id"] = None
-        
-        # 3. Remove the persistent view listener from the bot's state
-        self.bot.remove_view("secret_santa_signup_button")
         
         await ctx.send(
             "✅ All Secret Santa event data (sign-ups, matches) has been **cleared**.\n"
@@ -441,8 +439,7 @@ class SecretSanta(commands.Cog):
     async def ss_reset(self, ctx: commands.Context):
         """DANGEROUS: Fully resets all Secret Santa data (signups, matches, config)."""
         await self.config.clear_all_global()
-        # Remove the persistent view so it doesn't get re-added on restart
-        self.bot.remove_view("secret_santa_signup_button")
+        # The bot will no longer add the persistent view because the config is cleared.
         await ctx.send("⚠️ All Secret Santa data has been completely **RESET**. You will need to use `[p]secretsanta setup` again.")
 
 
