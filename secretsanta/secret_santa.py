@@ -31,6 +31,17 @@ class SecretSantaModal(discord.ui.Modal, title="Secret Santa Sign-Up"):
         self.cog = cog
 
     async def on_submit(self, interaction: discord.Interaction):
+        user_id_str = str(interaction.user.id)
+        
+        # 1. Check if user is already signed up
+        current_signups = await self.cog.config.signups()
+        if user_id_str in current_signups:
+            await interaction.response.send_message(
+                "🎁 You are already signed up for Secret Santa! No need to sign up again.", 
+                ephemeral=True
+            )
+            return
+
         # Basic validation
         if self.confirmation.value.upper() != "YES":
             await interaction.response.send_message(
@@ -39,7 +50,6 @@ class SecretSantaModal(discord.ui.Modal, title="Secret Santa Sign-Up"):
             )
             return
 
-        user_id = interaction.user.id
         country = self.country.value.strip()
 
         # Check if sign-ups are open
@@ -53,7 +63,7 @@ class SecretSantaModal(discord.ui.Modal, title="Secret Santa Sign-Up"):
         # Record the sign-up
         async with self.cog.config.signups() as signups:
             # Store the User ID as a string key because JSON keys must be strings
-            signups[str(user_id)] = {"country": country, "username": str(interaction.user)}
+            signups[user_id_str] = {"country": country, "username": str(interaction.user)}
         
         await interaction.response.send_message(
             f"✅ You have successfully signed up for Secret Santa! Country: **{country}**", 
