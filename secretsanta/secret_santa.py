@@ -79,7 +79,8 @@ class SecretSantaModal(discord.ui.Modal, title="Secret Santa Sign-Up"):
 
         # 4. Send the final ephemeral response
         await interaction.response.send_message(
-            f"✅ You have successfully signed up for Secret Santa! Country: **{country}**. Your wishlist was recorded."
+            f"✅ You have successfully signed up for Secret Santa! Country: **{country}**."
+            f"\nYour Wishlist: **<{wishlist}>** was recorded." # Confirmation message includes the URL
             f"{dm_status_message}",
             ephemeral=True
         )
@@ -407,7 +408,7 @@ class SecretSanta(commands.Cog):
                         f"🎉 **Your Secret Santa Recipient!** 🎉\n\n"
                         f"Your recipient is **{recipient_username}**.\n"
                         f"Their location is **{recipient_country}**.\n"
-                        f"Their Wishlist: {recipient_wishlist}\n\n" # Added Wishlist link
+                        f"Their Wishlist: <{recipient_wishlist}>\n\n" # DM now includes the wishlist in angle brackets for better linking
                         "It is important that this is kept a secret! Happy gifting!"
                     )
                     dm_success_count += 1
