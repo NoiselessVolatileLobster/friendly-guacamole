@@ -184,6 +184,86 @@ class SecretSanta(commands.Cog):
             "Users can now sign up when registration is open (use `[p]secretsanta open`)."
         )
 
+    @ss.command(name="clear")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def ss_clear_data(self, ctx: commands.Context):
+        """
+        Clears all sign-ups, matches, and DM confirmations, and forgets the embed location.
+        The embed content is retained, but a new setup is required to post the sign-up embed again.
+        """
+        # 1. Clear all dynamic event data
+        await self.config.signups.set({})
+        await self.config.matches.set({})
+        await self.config.dm_confirm.set({})
+        await self.config.ss_open.set(False) 
+        
+        # 2. Clear the message/channel IDs so the bot forgets the old embed location.
+        async with self.config.embed_data() as embed_data:
+            embed_data["channel_id"] = None
+            embed_data["message_id"] = None
+        
+        # 3. Remove the persistent view listener from the bot's state
+        self.bot.remove_view("secret_santa_signup_button")
+        
+        await ctx.send(
+            "✅ All Secret Santa event data (sign-ups, matches) has been **cleared**.\n"
+            "The location of the sign-up embed has been **forgotten**. You must run "
+            "`[p]secretsanta setup` to post a new sign-up message."
+        )
+
+    @ss.command(name="redraw")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def ss_redraw_embed(self, ctx: commands.Context):
+        """Redraws the Secret Santa sign-up embed and button in the configured channel."""
+        
+        embed_data = await self.config.embed_data()
+        channel_id = embed_data["channel_id"]
+        old_message_id = embed_data["message_id"]
+
+        if not channel_id:
+            return await ctx.send("❌ Setup is incomplete. Please run `[p]secretsanta setup` first.")
+
+        channel = self.bot.get_channel(channel_id)
+        if not channel:
+            return await ctx.send("❌ The configured channel no longer exists. Please run `[p]secretsanta setup` to set a new channel.")
+            
+        # 1. Try to delete the old message
+        if old_message_id:
+            try:
+                old_message = await channel.fetch_message(old_message_id)
+                await old_message.delete()
+            except (discord.NotFound, discord.Forbidden):
+                # Message already gone or bot can't delete it, which is fine
+                pass
+
+        # 2. Rebuild the embed
+        embed = discord.Embed(
+            title=embed_data["title"], 
+            description=embed_data["description"], 
+            color=await ctx.embed_color()
+        )
+        if embed_data["image"]:
+            embed.set_image(url=embed_data["image"])
+        
+        # 3. Post the new message with the persistent View
+        view = SantaButtonView(self)
+        try:
+            message = await channel.send(embed=embed, view=view)
+        except discord.Forbidden:
+            return await ctx.send(f"❌ I don't have permission to send messages in {channel.mention}.")
+            
+        # 4. Update the config with the new message ID
+        embed_data["message_id"] = message.id
+        await self.config.embed_data.set(embed_data)
+        
+        # 5. Add the persistent view (important for interactions on the new message)
+        self.bot.add_view(view)
+
+        await ctx.send(
+            f"✅ Secret Santa sign-up message successfully redrawn in {channel.mention}. "
+            f"The new message ID (`{message.id}`) has been stored."
+        )
+
     @ss.command(name="open")
     @commands.admin_or_permissions(manage_guild=True)
     async def ss_open_signup(self, ctx: commands.Context):
