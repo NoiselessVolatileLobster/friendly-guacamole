@@ -67,10 +67,12 @@ class SecretSantaModal(discord.ui.Modal, title="Secret Santa Sign-Up"):
         # 3. Attempt to send confirmation DM and determine status message
         dm_status_message = ""
         try:
+            # --- START: Change for Sign-Up Confirmation DM ---
             await user.send(
-                "Thank you for signing up for Secret Santa! "
+                f"Thank you for signing up for Secret Santa! We have recorded your Amazon Wishlist: <{wishlist}>. "
                 "You will receive your match's details once the sign-up period closes."
             )
+            # --- END: Change for Sign-Up Confirmation DM ---
             dm_status_message = "\n\n**DM Status:** You should be getting a confirmation message in your Direct Messages right now."
         except discord.Forbidden:
             dm_status_message = "\n\n**DM Status:** Uh-oh. I couldn't send you a Direct Message. Please check your privacy settings to ensure I can contact you when matching occurs."
@@ -408,7 +410,7 @@ class SecretSanta(commands.Cog):
                         f"🎉 **Your Secret Santa Recipient!** 🎉\n\n"
                         f"Your recipient is **{recipient_username}**.\n"
                         f"Their location is **{recipient_country}**.\n"
-                        f"Their Wishlist: <{recipient_wishlist}>\n\n" # DM now includes the wishlist in angle brackets for better linking
+                        f"Their Wishlist: <{recipient_wishlist}>\n\n" # Uses <URL> format for clickability
                         "It is important that this is kept a secret! Happy gifting!"
                     )
                     dm_success_count += 1
