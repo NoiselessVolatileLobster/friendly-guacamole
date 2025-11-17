@@ -19,11 +19,12 @@ class SecretSantaModal(discord.ui.Modal, title="Secret Santa Sign-Up"):
         style=discord.TextStyle.short,
     )
 
-    confirmation = discord.ui.TextInput(
-        label="Type 'YES' to confirm sign-up",
-        placeholder="This confirms you understand the commitment.",
-        max_length=5,
+    wishlist_url = discord.ui.TextInput(
+        label="Please paste your Amazon Wishlist here",
+        placeholder="Enter a full URL (e.g., https://www.amazon.com/hz/wishlist/...)",
+        max_length=500,
         style=discord.TextStyle.short,
+        required=True, # Wishlist is mandatory for participation
     )
     
     def __init__(self, cog: "SecretSanta") -> None:
@@ -32,6 +33,7 @@ class SecretSantaModal(discord.ui.Modal, title="Secret Santa Sign-Up"):
 
     async def on_submit(self, interaction: discord.Interaction):
         user_id_str = str(interaction.user.id)
+        user = interaction.user # Get the user object for DM attempt
         
         # 1. Check if user is already signed up
         current_signups = await self.cog.config.signups()
@@ -42,15 +44,8 @@ class SecretSantaModal(discord.ui.Modal, title="Secret Santa Sign-Up"):
             )
             return
 
-        # Basic validation
-        if self.confirmation.value.upper() != "YES":
-            await interaction.response.send_message(
-                "❌ You must type 'YES' to confirm your understanding and sign up.", 
-                ephemeral=True
-            )
-            return
-
         country = self.country.value.strip()
+        wishlist = self.wishlist_url.value.strip() # Extract the wishlist URL
 
         # Check if sign-ups are open
         if not await self.cog.config.ss_open():
@@ -60,13 +55,32 @@ class SecretSantaModal(discord.ui.Modal, title="Secret Santa Sign-Up"):
             )
             return
 
-        # Record the sign-up
+        # 2. Record the sign-up
         async with self.cog.config.signups() as signups:
-            # Store the User ID as a string key because JSON keys must be strings
-            signups[user_id_str] = {"country": country, "username": str(interaction.user)}
+            # Store the User ID as a string key
+            signups[user_id_str] = {
+                "country": country, 
+                "username": str(user),
+                "wishlist": wishlist # Store the wishlist URL
+            }
         
+        # 3. Attempt to send confirmation DM and determine status message
+        dm_status_message = ""
+        try:
+            await user.send(
+                "Thank you for signing up for Secret Santa! "
+                "You will receive your match's details once the sign-up period closes."
+            )
+            dm_status_message = "\n\n**DM Status:** You should be getting a confirmation message in your Direct Messages right now."
+        except discord.Forbidden:
+            dm_status_message = "\n\n**DM Status:** Uh-oh. I couldn't send you a Direct Message. Please check your privacy settings to ensure I can contact you when matching occurs."
+        except Exception:
+            dm_status_message = "\n\n**DM Status:** Uh-oh. I couldn't send you a Direct Message."
+
+        # 4. Send the final ephemeral response
         await interaction.response.send_message(
-            f"✅ You have successfully signed up for Secret Santa! Country: **{country}**", 
+            f"✅ You have successfully signed up for Secret Santa! Country: **{country}**. Your wishlist was recorded."
+            f"{dm_status_message}",
             ephemeral=True
         )
 
@@ -116,7 +130,7 @@ class SecretSanta(commands.Cog):
                 "message_id": None,
             },
             "ss_open": False,  # Is the sign-up period open?
-            "signups": {},     # {user_id_str: {"country": "...", "username": "..."}}
+            "signups": {},     # {user_id_str: {"country": "...", "username": "...", "wishlist": "..."}}
             "matches": {},     # {santa_user_id_str: recipient_user_id_str}
             "dm_confirm": {},  # {santa_user_id_str: True/False}
         }
@@ -385,13 +399,15 @@ class SecretSanta(commands.Cog):
             recipient_info = signups.get(recipient_id_str, {})
             recipient_username = recipient_info.get("username", f"Unknown User (ID: {recipient_id_str})")
             recipient_country = recipient_info.get("country", "Unknown")
+            recipient_wishlist = recipient_info.get("wishlist", "No wishlist URL provided.")
             
             if santa:
                 try:
                     await santa.send(
                         f"🎉 **Your Secret Santa Recipient!** 🎉\n\n"
                         f"Your recipient is **{recipient_username}**.\n"
-                        f"Their location is **{recipient_country}**.\n\n"
+                        f"Their location is **{recipient_country}**.\n"
+                        f"Their Wishlist: {recipient_wishlist}\n\n" # Added Wishlist link
                         "It is important that this is kept a secret! Happy gifting!"
                     )
                     dm_success_count += 1
@@ -437,9 +453,13 @@ class SecretSanta(commands.Cog):
             # DM Status
             dm_status = "SUCCESS" if dm_confirm.get(santa_id_str) else "FAILED"
             
+            # Wishlist Preview
+            wishlist_preview = recipient_info.get('wishlist', 'N/A')[:40] + '...'
+            
             output.append(
                 f"{santa_name} (Country: {santa_info.get('country', 'N/A')}) "
-                f"--> {recipient_name} (Country: {recipient_info.get('country', 'N/A')}) [DM: {dm_status}]"
+                f"--> {recipient_name} (Country: {recipient_info.get('country', 'N/A')}) [DM: {dm_status}]\n"
+                f"    Recipient Wishlist: {wishlist_preview}"
             )
             
         await ctx.send(box('\n'.join(output), lang="css"))
