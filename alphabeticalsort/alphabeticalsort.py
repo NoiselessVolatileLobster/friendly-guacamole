@@ -105,6 +105,6 @@ class AlphabeticalSort(commands.Cog):
             await ctx.send(f"❌ An error occurred while communicating with Discord: {e}")
 
 # Standard Red-DiscordBot setup function
-def setup(bot):
+async def setup(bot):
     """Entry point for the cog."""
-    bot.add_cog(AlphabeticalSort(bot))
+    await bot.add_cog(AlphabeticalSort(bot))
