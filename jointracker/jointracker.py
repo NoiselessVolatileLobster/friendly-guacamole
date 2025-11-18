@@ -76,8 +76,16 @@ class JoinTracker(commands.Cog):
                 role_mention = ""
                 if role_id:
                     role = guild.get_role(role_id)
-                    # Use role mention if role exists, otherwise use a fallback string
-                    role_mention = role.mention if role else "the specified role"
+                    
+                    if role:
+                        # Role exists: use the proper mention
+                        role_mention = role.mention
+                    else:
+                        # Role is missing: Fallback to the raw mention string format 
+                        # This ensures the template variable {role} is replaced with a mention
+                        # string, which is necessary for Discord to parse it correctly, 
+                        # even if the role was deleted.
+                        role_mention = f"<@&{role_id}>"
 
                 if is_first_join:
                     # Case A: First Time Join
