@@ -118,9 +118,19 @@ class JoinTracker(commands.Cog):
                             f"Welcome back, {member.mention}! This is your {rejoin_count + 1} time "
                             f"joining the server. (Error formatting custom rejoin message.)"
                         )
+                
+                # --- NEW: Define AllowedMentions ---
+                # Explicitly allow user mentions and the specific role mention.
+                # We use 'everyone=False' to ensure we don't accidentally ping everyone 
+                # if the user includes '@everyone' in their message template.
+                allowed_mentions = discord.AllowedMentions(
+                    users=True, 
+                    roles=True,
+                    everyone=False,
+                )
 
-                # Send the customized message
-                await channel.send(formatted_message)
+                # Send the customized message with explicit allowed mentions
+                await channel.send(formatted_message, allowed_mentions=allowed_mentions)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
