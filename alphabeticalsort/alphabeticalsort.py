@@ -21,42 +21,77 @@ class AlphabeticalSort(commands.Cog):
         and asks for confirmation before applying.
         """
         
-        current_channels = category.channels
+        # Gather channels by type (Discord sorts these groups independently)
+        # We use isinstance to be safe across different discord.py versions
+        text_channels = [c for c in category.channels if isinstance(c, discord.TextChannel)]
+        voice_channels = [c for c in category.channels if isinstance(c, discord.VoiceChannel)]
+        stage_channels = [c for c in category.channels if isinstance(c, discord.StageChannel)]
         
-        if not current_channels:
+        all_channels = text_channels + voice_channels + stage_channels
+        
+        if not all_channels:
             return await ctx.send(f"The category **{category.name}** has no channels to sort.")
 
-        # 1. Arrange them alphabetically
-        sorted_channels = sorted(current_channels, key=lambda c: c.name.lower())
+        # Helper function to calculate updates for a specific list of channels
+        def get_sort_updates(channels):
+            if not channels:
+                return [], []
+            
+            # 1. Current state
+            # We need the positions to ensure we stay within the category's "block"
+            existing_positions = sorted([c.position for c in channels])
+            
+            # 2. Desired state (Alphabetical)
+            sorted_channels = sorted(channels, key=lambda c: c.name.lower())
+            
+            updates = {} # Map channel -> new_position
+            changes_log = []
+            
+            for i, channel in enumerate(sorted_channels):
+                # Assign the i-th alphabetical channel to the i-th available position
+                new_pos = existing_positions[i]
+                
+                if channel.position != new_pos:
+                    updates[channel] = new_pos
+                    # Log visual change (using index for friendliness, though strictly positions might skip numbers)
+                    changes_log.append(f"• {channel.name}")
 
-        # 2. Determine and display changes
-        changes = []
-        old_order = [c.name for c in current_channels]
-        new_order = [c.name for c in sorted_channels]
+            return updates, changes_log
+
+        # Calculate updates for each group
+        text_updates, text_log = get_sort_updates(text_channels)
+        voice_updates, voice_log = get_sort_updates(voice_channels)
+        stage_updates, stage_log = get_sort_updates(stage_channels)
         
-        if old_order == new_order:
+        # Combine all updates
+        master_updates = {**text_updates, **voice_updates, **stage_updates}
+        
+        if not master_updates:
             return await ctx.send(f"Channels in **{category.name}** are already in alphabetical order.")
 
-        # Generate the list of changes for confirmation
-        for old_index, channel in enumerate(current_channels):
-            new_index = sorted_channels.index(channel)
-            
-            if old_index != new_index:
-                old_pos_name = old_order[old_index]
-                new_pos_name = new_order[new_index]
-                changes.append("• `{}` (Current Pos: {}) -> Moves to Pos: {} (`{}`)".format(
-                    old_pos_name, 
-                    old_index + 1, 
-                    new_index + 1, 
-                    new_pos_name
-                ))
+        # 3. Create the confirmation message
+        # We'll just show a summary of count or a simple list to keep it readable
+        log_lines = []
+        if text_log:
+            log_lines.append("--- Text Channels Reordered ---")
+            log_lines.extend(text_log)
+        if voice_log:
+            log_lines.append("\n--- Voice Channels Reordered ---")
+            log_lines.extend(voice_log)
+        if stage_log:
+            log_lines.append("\n--- Stage Channels Reordered ---")
+            log_lines.extend(stage_log)
 
-        # 3. Create the confirmation message using str.format()
-        changes_box = box('\n'.join(changes), lang='diff')
+        # Truncate log if it's too long for Discord
+        log_text = '\n'.join(log_lines)
+        if len(log_text) > 1000:
+             log_text = log_text[:1000] + "\n... (and more)"
+
+        changes_box = box(log_text, lang='diff')
         
         confirmation_template = (
             "### Channel Reordering Confirmation for **{category_name}**\n\n"
-            "The following channels will be reordered alphabetically:\n"
+            "The following channels will be moved to new positions to ensure alphabetical order:\n"
             "{changes_box}\n\n"
             "React with ✅ to apply these changes or ❌ to cancel."
         )
@@ -66,15 +101,12 @@ class AlphabeticalSort(commands.Cog):
             changes_box=changes_box
         )
         
-        # 4. Confirmation using Reactions (Manually implemented)
+        # 4. Confirmation using Reactions
         msg = await ctx.send(confirmation_msg)
-        
-        # Add reactions for Yes/No
         start_adding_reactions(msg, ReactionPredicate.YES_OR_NO_EMOJIS)
         
         pred = ReactionPredicate.yes_or_no(msg, ctx.author)
         try:
-            # Wait for a reaction (timeout 60 seconds)
             await ctx.bot.wait_for("reaction_add", check=pred, timeout=60)
         except asyncio.TimeoutError:
             await msg.delete()
@@ -85,20 +117,16 @@ class AlphabeticalSort(commands.Cog):
             return await ctx.send("Channel reordering cancelled.")
 
         # 5. Apply the changes
-        
-        new_positions = []
-        for index, channel in enumerate(sorted_channels):
-            new_positions.append({"id": channel.id, "position": index})
-
         try:
-            # Clean up the confirmation message
             await msg.delete()
+            progress_msg = await ctx.send("🔄 Applying sorting changes... (This may take a moment due to Discord rate limits)")
             
-            await category.edit(
-                reason=f"Alphabetical sort requested by {ctx.author.name} ({ctx.author.id})",
-                channel_positions=new_positions
-            )
-            await ctx.send(f"✅ Successfully reordered all {len(sorted_channels)} channels in **{category.name}** alphabetically.")
+            # Bulk update positions
+            # This is much more efficient and correct than looping edits
+            await ctx.guild.edit_channel_positions(master_updates)
+            
+            await progress_msg.edit(content=f"✅ Successfully sorted channels in **{category.name}**.")
+            
         except discord.Forbidden:
             await ctx.send("❌ I do not have permission to manage channels in this category.")
         except discord.HTTPException as e:
