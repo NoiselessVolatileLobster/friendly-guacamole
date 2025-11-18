@@ -22,7 +22,6 @@ class AlphabeticalSort(commands.Cog):
         """
         
         # Gather channels by type (Discord sorts these groups independently)
-        # We use isinstance to be safe across different discord.py versions
         text_channels = [c for c in category.channels if isinstance(c, discord.TextChannel)]
         voice_channels = [c for c in category.channels if isinstance(c, discord.VoiceChannel)]
         stage_channels = [c for c in category.channels if isinstance(c, discord.StageChannel)]
@@ -35,7 +34,6 @@ class AlphabeticalSort(commands.Cog):
         # Helper function to calculate updates for a specific list of channels
         def get_sort_updates(channels):
             if not channels:
-                # FIXED: Return an empty dict {} for updates, not an empty list []
                 return {}, []
             
             # 1. Current state
@@ -118,12 +116,18 @@ class AlphabeticalSort(commands.Cog):
         # 5. Apply the changes
         try:
             await msg.delete()
-            progress_msg = await ctx.send("🔄 Applying sorting changes... (This may take a moment due to Discord rate limits)")
+            progress_msg = await ctx.send("🔄 Applying sorting changes... (This may take a few moments due to Discord rate limits)")
             
-            # Bulk update positions
-            await ctx.guild.edit_channel_positions(master_updates)
-            
-            await progress_msg.edit(content=f"✅ Successfully sorted channels in **{category.name}**.")
+            # Iterate and apply updates individually
+            # This replaces the removed edit_channel_positions method
+            count = 0
+            for channel, new_pos in master_updates.items():
+                await channel.edit(position=new_pos, reason=f"Alphabetical sort requested by {ctx.author.name}")
+                count += 1
+                # We don't strictly need to sleep as discord.py handles rate limits, 
+                # but complex moves can sometimes glitch if rushed.
+                
+            await progress_msg.edit(content=f"✅ Successfully sorted {count} channels in **{category.name}**.")
             
         except discord.Forbidden:
             await ctx.send("❌ I do not have permission to manage channels in this category.")
