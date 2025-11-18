@@ -24,8 +24,10 @@ class AlphabeticalSort(commands.Cog):
         if not current_channels:
             return await ctx.send(f"The category **{category.name}** has no channels to sort.")
 
+        # 1. Arrange them alphabetically
         sorted_channels = sorted(current_channels, key=lambda c: c.name.lower())
 
+        # 2. Determine and display changes
         changes = []
         old_order = [c.name for c in current_channels]
         new_order = [c.name for c in sorted_channels]
@@ -33,21 +35,39 @@ class AlphabeticalSort(commands.Cog):
         if old_order == new_order:
             return await ctx.send(f"Channels in **{category.name}** are already in alphabetical order.")
 
+        # Generate the list of changes for confirmation
         for old_index, channel in enumerate(current_channels):
             new_index = sorted_channels.index(channel)
             
             if old_index != new_index:
                 old_pos_name = old_order[old_index]
                 new_pos_name = new_order[new_index]
-                changes.append(f"• `{old_pos_name}` (Current Pos: {old_index + 1}) -> Moves to Pos: {new_index + 1} (`{new_pos_name}`)")
+                changes.append("• `{}` (Current Pos: {}) -> Moves to Pos: {} (`{}`)".format(
+                    old_pos_name, 
+                    old_index + 1, 
+                    new_index + 1, 
+                    new_pos_name
+                ))
 
-        confirmation_msg = (
-            f"### Channel Reordering Confirmation for **{category.name}**\n\n"
+        # 3. Create the confirmation message using str.format()
+        
+        # Prepare the boxed content (list of changes) separately
+        changes_box = box('\n'.join(changes), lang='diff')
+        
+        # Build the final message using str.format()
+        confirmation_template = (
+            "### Channel Reordering Confirmation for **{category_name}**\n\n"
             "The following channels will be reordered alphabetically:\n"
-            f"{box('\\n'.join(changes), lang='diff')}\n"
+            "{changes_box}\n"
             "Do you want to apply these changes?"
         )
+
+        confirmation_msg = confirmation_template.format(
+            category_name=category.name,
+            changes_box=changes_box
+        )
         
+        # 4. Confirmation and Application
         if not await confirm(ctx, confirmation_msg):
             return await ctx.send("Channel reordering cancelled.")
 
