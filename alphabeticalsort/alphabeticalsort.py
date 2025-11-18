@@ -1,5 +1,6 @@
 import discord
 import asyncio
+import re
 from redbot.core import commands
 from redbot.core.utils.chat_formatting import box
 from redbot.core.utils.predicates import ReactionPredicate
@@ -41,7 +42,10 @@ class AlphabeticalSort(commands.Cog):
             existing_positions = sorted([c.position for c in channels])
             
             # 2. Desired state (Alphabetical)
-            sorted_channels = sorted(channels, key=lambda c: c.name.lower())
+            # Use Regex to strip leading non-alphanumeric characters (emojis, symbols, etc.)
+            # ^ matches start of string
+            # [^a-z0-9]+ matches one or more characters that are NOT a-z or 0-9
+            sorted_channels = sorted(channels, key=lambda c: re.sub(r'^[^a-z0-9]+', '', c.name.lower()))
             
             updates = {} # Map channel -> new_position
             changes_log = []
