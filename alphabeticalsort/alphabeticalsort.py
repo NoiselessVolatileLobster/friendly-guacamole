@@ -35,7 +35,8 @@ class AlphabeticalSort(commands.Cog):
         # Helper function to calculate updates for a specific list of channels
         def get_sort_updates(channels):
             if not channels:
-                return [], []
+                # FIXED: Return an empty dict {} for updates, not an empty list []
+                return {}, []
             
             # 1. Current state
             # We need the positions to ensure we stay within the category's "block"
@@ -53,7 +54,6 @@ class AlphabeticalSort(commands.Cog):
                 
                 if channel.position != new_pos:
                     updates[channel] = new_pos
-                    # Log visual change (using index for friendliness, though strictly positions might skip numbers)
                     changes_log.append(f"• {channel.name}")
 
             return updates, changes_log
@@ -70,7 +70,6 @@ class AlphabeticalSort(commands.Cog):
             return await ctx.send(f"Channels in **{category.name}** are already in alphabetical order.")
 
         # 3. Create the confirmation message
-        # We'll just show a summary of count or a simple list to keep it readable
         log_lines = []
         if text_log:
             log_lines.append("--- Text Channels Reordered ---")
@@ -122,7 +121,6 @@ class AlphabeticalSort(commands.Cog):
             progress_msg = await ctx.send("🔄 Applying sorting changes... (This may take a moment due to Discord rate limits)")
             
             # Bulk update positions
-            # This is much more efficient and correct than looping edits
             await ctx.guild.edit_channel_positions(master_updates)
             
             await progress_msg.edit(content=f"✅ Successfully sorted channels in **{category.name}**.")
