@@ -11,7 +11,8 @@ class AboutMe(commands.Cog):
         
         default_guild = {
             "role_targets": {}, 
-            "role_buddies": {}  
+            "role_buddies": {},
+            "location_roles": {}
         }
         self.config.register_guild(**default_guild)
 
@@ -28,23 +29,46 @@ class AboutMe(commands.Cog):
         days_in_server = delta.days
         date_str = joined_at.strftime("%B %d, %Y")
 
-        # --- 2. Build Embed ---
-        # The title is changed to reflect the specific user being viewed
+        # --- 2. Location Role Check (Moved Up & Modified to append to description) ---
+        location_roles_config = await self.config.guild(ctx.guild).location_roles()
+        location_parts = []
+        
+        # Check all configured location roles
+        for role_id_str, emoji in location_roles_config.items():
+            role_id = int(role_id_str)
+            location_role = ctx.guild.get_role(role_id)
+            
+            # Check if the member has this role
+            if location_role and location_role in member.roles:
+                # Store the output as "Emoji RoleName"
+                location_parts.append(f"{emoji} **{location_role.name}**")
+
+        location_output = ""
+        if location_parts:
+            # Format the location output string to include the header
+            # Roles are joined by comma, making it a concise line in the description
+            location_output = (
+                f"\n**Location:** {', '.join(location_parts)}"
+            )
+
+        # --- 3. Build Embed ---
+        # The Location output is appended directly to the main description text
+        base_description = f"Joined on {date_str}.\nThat was **{days_in_server}** days ago!"
+        
         embed = discord.Embed(
             title=f"About {member.display_name} in {ctx.guild.name}",
-            description=f"Joined on {date_str}.\nThat was **{days_in_server}** days ago!",
+            description=base_description + location_output,
             color=await ctx.embed_color()
         )
         embed.set_thumbnail(url=member.display_avatar.url)
         
-        # Hardcoded line
+        # Hardcoded link appended last
         embed.description += (
             f"\n\n---\n"
             f"Don't forget to visit <id:customize> to request more roles!"
         )
 
-
-        # --- 3. Check Role Progress ---
+        # --- 4. Role Progress Check ---
         role_targets = await self.config.guild(ctx.guild).role_targets()
         role_buddies = await self.config.guild(ctx.guild).role_buddies()
         progress_lines = []
@@ -70,22 +94,18 @@ class AboutMe(commands.Cog):
             # C. Decide whether to display this path status
             mention = base_role.mention 
             
-            # Only display if the user is actively involved (has the base role) OR has completed the path (has the buddy role)
             if not has_base_role and not has_buddy_role:
                 continue 
 
             # --- Status Logic Flow ---
             if days_in_server < target_days:
-                # Time not met.
                 if has_buddy_role:
                     progress_lines.append(f"{mention}: Locked 🔒 - Days not met")
                 elif has_base_role:
-                    # Standard countdown
                     remaining = target_days - days_in_server
                     progress_lines.append(f"{mention}: **{remaining}** days remaining to unlock")
             
             else:
-                # Time requirement met.
                 if has_buddy_role:
                     progress_lines.append(f"{mention}: Unlocked ✅")
                 elif has_base_role:
@@ -98,10 +118,10 @@ class AboutMe(commands.Cog):
                 inline=False
             )
 
-        return embed # Return the embed object
+        return embed
 
     # ------------------------------------------------------------------
-    # NEW COMMAND: [p]about @user
+    # USER COMMANDS
     # ------------------------------------------------------------------
 
     @commands.command()
@@ -112,10 +132,6 @@ class AboutMe(commands.Cog):
         if embed:
             await ctx.send(embed=embed)
 
-    # ------------------------------------------------------------------
-    # ORIGINAL COMMAND: [p]aboutme
-    # ------------------------------------------------------------------
-
     @commands.command()
     @commands.guild_only()
     async def aboutme(self, ctx):
@@ -124,7 +140,9 @@ class AboutMe(commands.Cog):
         if embed:
             await ctx.send(embed=embed)
             
-    # --- Configuration Commands (Unchanged) ---
+    # ------------------------------------------------------------------
+    # ADMIN COMMANDS
+    # ------------------------------------------------------------------
 
     @commands.group()
     @commands.guild_only()
@@ -132,6 +150,66 @@ class AboutMe(commands.Cog):
     async def aboutmeset(self, ctx):
         """Settings for the AboutMe cog."""
         pass
+
+    # ------------------------------------------------------------------
+    # Location Role Management
+    # ------------------------------------------------------------------
+
+    @aboutmeset.group(name="locations")
+    async def aboutmeset_locations(self, ctx):
+        """Manage location roles and their corresponding emojis."""
+        pass
+
+    @aboutmeset_locations.command(name="add")
+    async def locations_add(self, ctx, role: discord.Role, emoji: str):
+        """
+        Add a location role and associate an emoji with it.
+        Usage: [p]aboutmeset locations add @US-West 🇺🇸
+        """
+        async with self.config.guild(ctx.guild).location_roles() as locations:
+            role_id_str = str(role.id)
+            locations[role_id_str] = emoji
+            
+        await ctx.send(f"Configured **{role.name}** as a location role with emoji: {emoji}")
+
+    @aboutmeset_locations.command(name="remove")
+    async def locations_remove(self, ctx, role: discord.Role):
+        """
+        Remove a location role from tracking.
+        Usage: [p]aboutmeset locations remove @US-West
+        """
+        async with self.config.guild(ctx.guild).location_roles() as locations:
+            role_id_str = str(role.id)
+            if role_id_str in locations:
+                del locations[role_id_str]
+                await ctx.send(f"Removed **{role.name}** from location role tracking.")
+            else:
+                await ctx.send(f"**{role.name}** is not currently tracked as a location role.")
+
+    @aboutmeset_locations.command(name="list")
+    async def locations_list(self, ctx):
+        """List all configured location roles and their emojis."""
+        locations = await self.config.guild(ctx.guild).location_roles()
+        
+        if not locations:
+            return await ctx.send("No location roles are currently configured.")
+
+        lines = []
+        for role_id_str, emoji in locations.items():
+            role = ctx.guild.get_role(int(role_id_str))
+            role_name = role.mention if role else f"Deleted-Role-{role_id_str}"
+            lines.append(f"{emoji} {role_name}")
+
+        embed = discord.Embed(
+            title="Configured Location Roles",
+            description="\n".join(lines),
+            color=await ctx.embed_color()
+        )
+        await ctx.send(embed=embed)
+
+    # ------------------------------------------------------------------
+    # Existing Role Progress Management (Unchanged)
+    # ------------------------------------------------------------------
 
     @aboutmeset.group(name="roles")
     async def aboutmeset_roles(self, ctx):
