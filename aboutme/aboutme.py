@@ -12,7 +12,8 @@ class AboutMe(commands.Cog):
         default_guild = {
             "role_targets": {}, 
             "role_buddies": {},
-            "location_roles": {}
+            "location_roles": {},
+            "dm_status_roles": {} # NEW: { "role_id": "emoji_string" }
         }
         self.config.register_guild(**default_guild)
 
@@ -29,7 +30,7 @@ class AboutMe(commands.Cog):
         days_in_server = delta.days
         date_str = joined_at.strftime("%B %d, %Y")
 
-        # --- 2. Location Role Check ---
+        # --- 2a. Location Role Check ---
         location_roles_config = await self.config.guild(ctx.guild).location_roles()
         location_parts = []
         
@@ -44,8 +45,22 @@ class AboutMe(commands.Cog):
         if location_parts:
             location_output = f"\n**Location:** {', '.join(location_parts)}"
 
+        # --- 2b. DM Status Role Check (NEW) ---
+        dm_status_config = await self.config.guild(ctx.guild).dm_status_roles()
+        dm_status_parts = []
+
+        for role_id_str, emoji in dm_status_config.items():
+            role_id = int(role_id_str)
+            dm_role = ctx.guild.get_role(role_id)
+
+            if dm_role and dm_role in member.roles:
+                dm_status_parts.append(f"{emoji} **{dm_role.name}**")
+
+        dm_status_output = ""
+        if dm_status_parts:
+            dm_status_output = f"\n**DM Status:** {', '.join(dm_status_parts)}"
+
         # --- 3. Role Progress Calculation ---
-        # We calculate this BEFORE creating the embed so we can add it to the description
         role_targets = await self.config.guild(ctx.guild).role_targets()
         role_buddies = await self.config.guild(ctx.guild).role_buddies()
         progress_lines = []
@@ -81,10 +96,9 @@ class AboutMe(commands.Cog):
                 elif has_base_role:
                     progress_lines.append(f"{mention}: Level up to unlock!")
 
-        # Format Role Progress for the description
+        # Format Role Progress
         role_progress_output = ""
         if progress_lines:
-            # We use \n\n to create spacing and bold the header to make it look like a field
             role_progress_output = "\n\n**Role Progress**\n" + "\n".join(progress_lines)
 
         # --- 4. Build Final Description ---
@@ -95,8 +109,8 @@ class AboutMe(commands.Cog):
             f"Don't forget to visit <id:customize> to request more roles!"
         )
 
-        # Combine all parts into one description string
-        final_description = base_description + location_output + role_progress_output + footer_link
+        # Combine all parts: Base -> Location -> DM Status -> Progress -> Link
+        final_description = base_description + location_output + dm_status_output + role_progress_output + footer_link
 
         embed = discord.Embed(
             title=f"About {member.display_name} in {ctx.guild.name}",
@@ -189,6 +203,62 @@ class AboutMe(commands.Cog):
 
         embed = discord.Embed(
             title="Configured Location Roles",
+            description="\n".join(lines),
+            color=await ctx.embed_color()
+        )
+        await ctx.send(embed=embed)
+
+    # ------------------------------------------------------------------
+    # NEW: DM Status Role Management
+    # ------------------------------------------------------------------
+
+    @aboutmeset.group(name="dmstatus")
+    async def aboutmeset_dmstatus(self, ctx):
+        """Manage DM Status roles and their corresponding emojis."""
+        pass
+
+    @aboutmeset_dmstatus.command(name="add")
+    async def dmstatus_add(self, ctx, role: discord.Role, emoji: str):
+        """
+        Add a DM Status role and associate an emoji with it.
+        Usage: [p]aboutmeset dmstatus add @DMsOpen 🟢
+        """
+        async with self.config.guild(ctx.guild).dm_status_roles() as statuses:
+            role_id_str = str(role.id)
+            statuses[role_id_str] = emoji
+            
+        await ctx.send(f"Configured **{role.name}** as a DM Status role with emoji: {emoji}")
+
+    @aboutmeset_dmstatus.command(name="remove")
+    async def dmstatus_remove(self, ctx, role: discord.Role):
+        """
+        Remove a DM Status role from tracking.
+        Usage: [p]aboutmeset dmstatus remove @DMsOpen
+        """
+        async with self.config.guild(ctx.guild).dm_status_roles() as statuses:
+            role_id_str = str(role.id)
+            if role_id_str in statuses:
+                del statuses[role_id_str]
+                await ctx.send(f"Removed **{role.name}** from DM Status role tracking.")
+            else:
+                await ctx.send(f"**{role.name}** is not currently tracked as a DM Status role.")
+
+    @aboutmeset_dmstatus.command(name="list")
+    async def dmstatus_list(self, ctx):
+        """List all configured DM Status roles and their emojis."""
+        statuses = await self.config.guild(ctx.guild).dm_status_roles()
+        
+        if not statuses:
+            return await ctx.send("No DM Status roles are currently configured.")
+
+        lines = []
+        for role_id_str, emoji in statuses.items():
+            role = ctx.guild.get_role(int(role_id_str))
+            role_name = role.mention if role else f"Deleted-Role-{role_id_str}"
+            lines.append(f"{emoji} {role_name}")
+
+        embed = discord.Embed(
+            title="Configured DM Status Roles",
             description="\n".join(lines),
             color=await ctx.embed_color()
         )
