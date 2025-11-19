@@ -67,7 +67,7 @@ class AboutMe(commands.Cog):
         if progress_lines:
             # Join all lines with a newline character
             embed.add_field(
-                name="Role Progress", 
+                name="Channel Unlock Progress", 
                 value="\n".join(progress_lines), 
                 inline=False
             )
