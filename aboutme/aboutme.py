@@ -204,11 +204,11 @@ class AboutMe(commands.Cog):
 
         # LevelUp level should be checked on the user's command
         if self.bot.get_cog("LevelUp"):
-        levelup = self.bot.get_cog("LevelUp")
-        level = "TBD"
-        if ctx.guild.id in levelup.data:
-            levelup.init_user(ctx.guild.id, str(ctx.author.id))
-            level = levelup.data[ctx.guild.id]["users"][str(ctx.author.id)]["level"]
+            levelup = self.bot.get_cog("LevelUp")
+            level = "TBD"
+            if ctx.guild.id in levelup.data:
+                levelup.init_user(ctx.guild.id, str(ctx.author.id))
+                level = levelup.data[ctx.guild.id]["users"][str(ctx.author.id)]["level"]
 
         embed = await self._process_member_status(ctx, ctx.author, level)
         # embed = await self._process_member_status(ctx, ctx.author)
