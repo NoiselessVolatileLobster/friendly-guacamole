@@ -28,8 +28,8 @@ class AboutMe(commands.Cog):
 
         if self.bot.get_cog("LevelUp"):
             levelup = self.bot.get_cog("LevelUp")
-            if message.guild.id in levelup.data:
-                levelup.init_user(message.guild.id, str(interaction.user.id))
+            if ctx.guild.id in levelup.data:
+                levelup.init_user(ctx.guild.id, str(interaction.user.id))
                 level = levelup.data[message.guild.id]["users"][str(interaction.user.id)]["level"]
         
         # Join Date
