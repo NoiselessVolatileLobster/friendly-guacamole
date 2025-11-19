@@ -27,6 +27,10 @@ class AboutMe(commands.Cog):
         # Attempt to get LevelUp level
         if self.bot.get_cog("LevelUp"):
             levelup = self.bot.get_cog("LevelUp")
+            if ctx.guild.id in levelup.data:
+                levelup.init_user(ctx.guild.id, str(ctx.author.id))
+                level = levelup.data[ctx.guild.id]["users"][str(ctx.author.id)]["level"]
+
         
         # Join Date
 
@@ -41,7 +45,7 @@ class AboutMe(commands.Cog):
         date_str = joined_at.strftime("%B %d, %Y")
         
         # Formatting Change 1: Single line join date
-        base_description = f"Joined on {date_str} ({days_in_server} days ago)"
+        base_description = f"Level {level} | Joined on {date_str} ({days_in_server} days ago)"
 
         # --- 2a. Location Role Check ---
         location_roles_config = await self.config.guild(ctx.guild).location_roles()
