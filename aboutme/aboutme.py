@@ -64,19 +64,24 @@ class AboutMe(commands.Cog):
 
                 # --- Logic Flow ---
                 if days_in_server < target_days:
-                    # Case 1: Not enough time yet
-                    remaining = target_days - days_in_server
-                    progress_lines.append(
-                        f"{role.mention}: **{remaining}** days remaining to unlock"
-                    )
+                    # Time not met. Two possibilities:
+                    if has_buddy_role:
+                        # NEW: User has reward role, but hasn't met the time requirement yet.
+                        progress_lines.append(f"{role.mention}: Locked 🔒 - Days not met")
+                    else:
+                        # Standard countdown
+                        remaining = target_days - days_in_server
+                        progress_lines.append(
+                            f"{role.mention}: **{remaining}** days remaining to unlock"
+                        )
                 
                 else:
-                    # Case 2: Time requirement met
+                    # Time requirement met. Two possibilities:
                     if has_buddy_role:
-                        # Time met + Has Reward Role = Complete
+                        # Time met + Has Reward Role = Unlocked
                         progress_lines.append(f"{role.mention}: Unlocked ✅")
                     else:
-                        # Time met + Missing Reward Role = Prompt to level up
+                        # Time met + Missing Reward Role = Ready for promotion
                         progress_lines.append(f"{role.mention}: Level up to unlock!")
         
         if progress_lines:
@@ -88,7 +93,7 @@ class AboutMe(commands.Cog):
 
         await ctx.send(embed=embed)
 
-    # --- Configuration Commands ---
+    # --- Configuration Commands (Unchanged) ---
 
     @commands.group()
     @commands.guild_only()
