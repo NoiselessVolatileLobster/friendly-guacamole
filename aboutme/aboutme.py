@@ -15,15 +15,11 @@ class AboutMe(commands.Cog):
         }
         self.config.register_guild(**default_guild)
 
-    @commands.command()
-    @commands.guild_only()
-    async def aboutme(self, ctx):
-        """Check how long you have been in this server and see role progress."""
-        
-        member = ctx.author
+    async def _process_member_status(self, ctx, member: discord.Member):
+        """Helper function to generate the member status embed."""
         
         if member.joined_at is None:
-            return await ctx.send("I couldn't determine when you joined this server.")
+            return await ctx.send("I couldn't determine when that member joined this server.")
 
         # --- 1. Time Calculation ---
         now = datetime.now(timezone.utc)
@@ -33,14 +29,15 @@ class AboutMe(commands.Cog):
         date_str = joined_at.strftime("%B %d, %Y")
 
         # --- 2. Build Embed ---
+        # The title is changed to reflect the specific user being viewed
         embed = discord.Embed(
-            title=ctx.guild.name,
+            title=f"About {member.display_name} in {ctx.guild.name}",
             description=f"Joined on {date_str}.\nThat was **{days_in_server}** days ago!",
             color=await ctx.embed_color()
         )
         embed.set_thumbnail(url=member.display_avatar.url)
         
-        # Line added with hardcoded placeholder <id:customize>
+        # Hardcoded line
         embed.description += (
             f"\n\n---\n"
             f"Don't forget to visit <id:customize> to request more roles!"
@@ -81,7 +78,6 @@ class AboutMe(commands.Cog):
             if days_in_server < target_days:
                 # Time not met.
                 if has_buddy_role:
-                    # User has reward role, but hasn't met the time requirement yet.
                     progress_lines.append(f"{mention}: Locked 🔒 - Days not met")
                 elif has_base_role:
                     # Standard countdown
@@ -91,10 +87,8 @@ class AboutMe(commands.Cog):
             else:
                 # Time requirement met.
                 if has_buddy_role:
-                    # Time met + Has ANY Reward Role = Unlocked (SUCCESS!)
                     progress_lines.append(f"{mention}: Unlocked ✅")
                 elif has_base_role:
-                    # Time met + Missing ALL Reward Roles = Ready for promotion
                     progress_lines.append(f"{mention}: Level up to unlock!")
 
         if progress_lines:
@@ -104,8 +98,32 @@ class AboutMe(commands.Cog):
                 inline=False
             )
 
-        await ctx.send(embed=embed)
+        return embed # Return the embed object
 
+    # ------------------------------------------------------------------
+    # NEW COMMAND: [p]about @user
+    # ------------------------------------------------------------------
+
+    @commands.command()
+    @commands.guild_only()
+    async def about(self, ctx, member: discord.Member):
+        """Check how long a specific user has been in this server and see their role progress."""
+        embed = await self._process_member_status(ctx, member)
+        if embed:
+            await ctx.send(embed=embed)
+
+    # ------------------------------------------------------------------
+    # ORIGINAL COMMAND: [p]aboutme
+    # ------------------------------------------------------------------
+
+    @commands.command()
+    @commands.guild_only()
+    async def aboutme(self, ctx):
+        """Check how long you have been in this server and see role progress."""
+        embed = await self._process_member_status(ctx, ctx.author)
+        if embed:
+            await ctx.send(embed=embed)
+            
     # --- Configuration Commands (Unchanged) ---
 
     @commands.group()
