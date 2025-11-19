@@ -210,7 +210,7 @@ class AboutMe(commands.Cog):
 
         # embed = await self._process_member_status(ctx, ctx.author, level)
         
-        embed = await self._process_member_status(ctx, ctx.author, level)
+        embed = await self._process_member_status(ctx, ctx.author)
         if embed:
             await ctx.send(embed=embed)
             
