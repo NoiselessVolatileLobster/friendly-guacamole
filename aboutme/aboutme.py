@@ -2,12 +2,6 @@ import discord
 from redbot.core import commands, Config
 from datetime import datetime, timezone
 
-# --- ⚠️ IMPORTANT: USER CONFIGURATION REQUIRED ⚠️ ---
-# Replace '999999999999999999' below with the actual Channel ID you want to link to.
-# This should be the channel where users request roles.
-CUSTOMIZE_CHANNEL_ID = 999999999999999999 
-# -----------------------------------------------------
-
 class AboutMe(commands.Cog):
     """A cog to show how long you have been in the server and track role progress."""
 
@@ -46,54 +40,63 @@ class AboutMe(commands.Cog):
         )
         embed.set_thumbnail(url=member.display_avatar.url)
         
-        # New line added to the Description 
-        # (It uses the Discord channel mention format: <#ID>)
+        # Line added with hardcoded placeholder <id:customize>
         embed.description += (
-                f"\n\n---\n"
-                f"Don't forget to visit <id:customize> to request more roles!"
-            )
+            f"\n\n---\n"
+            f"Don't forget to visit <id:customize> to request more roles!"
+        )
 
 
         # --- 3. Check Role Progress ---
         role_targets = await self.config.guild(ctx.guild).role_targets()
         role_buddies = await self.config.guild(ctx.guild).role_buddies()
-        
         progress_lines = []
 
-        # Iterate through the user's current roles
-        for role in member.roles:
-            role_id_str = str(role.id)
+        # Iterate through all CONFIGURED base roles
+        for base_id_str, target_days in role_targets.items():
             
-            # Only process if this role is tracked in our config
-            if role_id_str in role_targets:
-                target_days = role_targets[role_id_str]
-                
-                # Check if there is a linked "Buddy Role" for this base role
-                buddy_role_ids = role_buddies.get(role_id_str, [])
-                has_buddy_role = False
-                
-                for b_id_str in buddy_role_ids:
-                    buddy_role_obj = ctx.guild.get_role(int(b_id_str))
-                    if buddy_role_obj and buddy_role_obj in member.roles:
-                        has_buddy_role = True
-                        break 
+            base_role = ctx.guild.get_role(int(base_id_str))
+            if not base_role: continue
 
-                # --- Status Logic Flow ---
-                if days_in_server < target_days:
-                    if has_buddy_role:
-                        progress_lines.append(f"{role.mention}: Locked 🔒 - Days not met")
-                    else:
-                        remaining = target_days - days_in_server
-                        progress_lines.append(
-                            f"{role.mention}: **{remaining}** days remaining to unlock"
-                        )
-                
-                else:
-                    if has_buddy_role:
-                        progress_lines.append(f"{role.mention}: Unlocked ✅")
-                    else:
-                        progress_lines.append(f"{role.mention}: Level up to unlock!")
-        
+            # A. Check possession of the Base Role
+            has_base_role = base_role in member.roles
+            
+            # B. Check possession of any Buddy Role
+            buddy_role_ids = role_buddies.get(base_id_str, [])
+            has_buddy_role = False
+            for b_id_str in buddy_role_ids:
+                buddy_role_obj = ctx.guild.get_role(int(b_id_str))
+                if buddy_role_obj and buddy_role_obj in member.roles:
+                    has_buddy_role = True
+                    break 
+
+            # C. Decide whether to display this path status
+            mention = base_role.mention 
+            
+            # Only display if the user is actively involved (has the base role) OR has completed the path (has the buddy role)
+            if not has_base_role and not has_buddy_role:
+                continue 
+
+            # --- Status Logic Flow ---
+            if days_in_server < target_days:
+                # Time not met.
+                if has_buddy_role:
+                    # User has reward role, but hasn't met the time requirement yet.
+                    progress_lines.append(f"{mention}: Locked 🔒 - Days not met")
+                elif has_base_role:
+                    # Standard countdown
+                    remaining = target_days - days_in_server
+                    progress_lines.append(f"{mention}: **{remaining}** days remaining to unlock")
+            
+            else:
+                # Time requirement met.
+                if has_buddy_role:
+                    # Time met + Has ANY Reward Role = Unlocked (SUCCESS!)
+                    progress_lines.append(f"{mention}: Unlocked ✅")
+                elif has_base_role:
+                    # Time met + Missing ALL Reward Roles = Ready for promotion
+                    progress_lines.append(f"{mention}: Level up to unlock!")
+
         if progress_lines:
             embed.add_field(
                 name="Role Progress", 
