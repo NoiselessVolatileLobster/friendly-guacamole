@@ -41,7 +41,7 @@ class AboutMe(commands.Cog):
             location_role = ctx.guild.get_role(role_id)
             
             if location_role and location_role in member.roles:
-                location_parts.append(f"{emoji} **{location_role.name}**")
+                location_parts.append(f"{emoji} {location_role.name}")
 
         location_output = ""
         if location_parts:
@@ -56,7 +56,7 @@ class AboutMe(commands.Cog):
             dm_role = ctx.guild.get_role(role_id)
 
             if dm_role and dm_role in member.roles:
-                dm_status_parts.append(f"{emoji} **{dm_role.name}**")
+                dm_status_parts.append(f"{emoji} {dm_role.name}")
 
         dm_status_output = ""
         if dm_status_parts:
@@ -70,7 +70,7 @@ class AboutMe(commands.Cog):
             # Config stores IDs as integers in the list, but let's handle potential strings safely
             award_role = ctx.guild.get_role(int(role_id))
             if award_role and award_role in member.roles:
-                award_parts.append(f"**{award_role.name}**")
+                award_parts.append(f"{award_role.name}")
 
         award_output = ""
         if award_parts:
@@ -83,7 +83,7 @@ class AboutMe(commands.Cog):
         for role_id in helper_roles_config:
             helper_role = ctx.guild.get_role(int(role_id))
             if helper_role and helper_role in member.roles:
-                helper_parts.append(f"**{helper_role.name}**")
+                helper_parts.append(f"{helper_role.name}")
 
         helper_output = ""
         if helper_parts:
@@ -134,11 +134,6 @@ class AboutMe(commands.Cog):
         # --- 4. Build Final Description ---
         base_description = f"Joined on {date_str}.\nThat was **{days_in_server}** days ago!"
         
-        footer_link = (
-            f"\n\n---\n"
-            f"Don't forget to visit <id:customize> to request more roles!"
-        )
-
         # Combine all parts
         final_description = (
             base_description + 
@@ -146,8 +141,7 @@ class AboutMe(commands.Cog):
             dm_status_output + 
             award_output + 
             helper_output + 
-            role_progress_output + 
-            footer_link
+            role_progress_output
         )
 
         embed = discord.Embed(
