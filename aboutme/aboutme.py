@@ -24,7 +24,7 @@ class AboutMe(commands.Cog):
     async def _process_member_status(self, ctx, member: discord.Member):
         """Helper function to generate the member status embed."""
         
-        LevelUp level
+        # LevelUp level
 
         if self.bot.get_cog("LevelUp"):
             level = "TBD"
