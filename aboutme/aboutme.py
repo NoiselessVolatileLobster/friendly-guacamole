@@ -23,8 +23,8 @@ class AboutMe(commands.Cog):
         }
         self.config.register_guild(**default_guild)
 
-    # async def _process_member_status(self, ctx, member: discord.Member, level):
-    async def _process_member_status(self, ctx, member: discord.Member):
+    async def _process_member_status(self, ctx, member: discord.Member, level):
+    # async def _process_member_status(self, ctx, member: discord.Member):
         """Helper function to generate the member status embed."""
         
         # Join Date
@@ -40,8 +40,8 @@ class AboutMe(commands.Cog):
         date_str = joined_at.strftime("%B %d, %Y")
         
         # Formatting Change 1: Single line join date
-        # base_description = f"Level {level} | Joined on {date_str} ({days_in_server} days ago)"
-        base_description = f"Joined on {date_str} ({days_in_server} days ago)"
+        base_description = f"Level {level} | Joined on {date_str} ({days_in_server} days ago)"
+        # base_description = f"Joined on {date_str} ({days_in_server} days ago)"
 
         # --- 2a. Location Role Check ---
         location_roles_config = await self.config.guild(ctx.guild).location_roles()
@@ -203,16 +203,16 @@ class AboutMe(commands.Cog):
         """Check how long you have been in this server and see role progress."""
 
         # LevelUp level should be checked on the user's command
-        # if self.bot.get_cog("LevelUp"):
+        if self.bot.get_cog("LevelUp"):
         
-        #levelup = self.bot.get_cog("LevelUp")
-        #    level = "TBD"
-        #    if ctx.guild.id in levelup.data:
-        #        levelup.init_user(ctx.guild.id, str(ctx.author.id))
-        #        level = levelup.data[ctx.guild.id]["users"][str(ctx.author.id)]["level"]
+        levelup = self.bot.get_cog("LevelUp")
+            level = "TBD"
+            if ctx.guild.id in levelup.data:
+                levelup.init_user(ctx.guild.id, str(ctx.author.id))
+                level = levelup.data[ctx.guild.id]["users"][str(ctx.author.id)]["level"]
 
-        #embed = await self._process_member_status(ctx, ctx.author, level)
-        embed = await self._process_member_status(ctx, ctx.author)
+        embed = await self._process_member_status(ctx, ctx.author, level)
+        # embed = await self._process_member_status(ctx, ctx.author)
         if embed:
             await ctx.send(embed=embed)
             
