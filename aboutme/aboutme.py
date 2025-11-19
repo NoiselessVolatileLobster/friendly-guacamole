@@ -26,7 +26,7 @@ class AboutMe(commands.Cog):
         
         # Attempt to get LevelUp level
         if self.bot.get_cog("LevelUp"):
-            levelup = self.bot.get_cog(LevelUp)
+            levelup = self.bot.get_cog("LevelUp")
         
         # Join Date
 
