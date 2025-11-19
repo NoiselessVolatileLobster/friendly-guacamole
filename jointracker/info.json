@@ -1,9 +1,8 @@
 {
-    "name": "friendly-guacamole",
-    "author": ["friendly-guacamole"],
-    "short": "Friendly guacamole.",
-    "description": "Doing this so I can learn. You should not use these on your server.",
-    "install_msg": "I am learning. Please don't use these!",
-    "requirements": [],
-    "tags": []
-  }
+    "author": "NoiselessVolatileLobster",
+    "version": "0.0.1",
+    "min_bot_version": "3.5.0",
+    "description": "Welcome new members and keep track of how many times they've been here before",
+    "short": "Hello darkness, my old friend",
+    "tags": ["utility", "userinfo"]
+}

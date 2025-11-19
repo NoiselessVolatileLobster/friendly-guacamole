@@ -1,0 +1,8 @@
+{
+    "author": "NoiselessVolatileLobster",
+    "version": "0.0.1",
+    "min_bot_version": "3.5.0",
+    "description": "Allows users to sign up for Secret Santa (entering their name, location, and wishlist), then matches them up.",
+    "short": "Gifts for you and me!",
+    "tags": ["utility", "userinfo"]
+}

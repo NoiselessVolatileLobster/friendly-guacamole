@@ -2,7 +2,7 @@
     "author": "NoiselessVolatileLobster",
     "version": "0.0.1",
     "min_bot_version": "3.5.0",
-    "description": "Say things as the bot",
-    "short": "Say things as the bot",
+    "description": "Shows where server members are located, based on their location roles",
+    "short": "Show where your members are",
     "tags": ["utility", "userinfo"]
 }

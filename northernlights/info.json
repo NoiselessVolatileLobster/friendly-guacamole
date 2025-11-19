@@ -2,7 +2,7 @@
     "author": "NoiselessVolatileLobster",
     "version": "0.0.1",
     "min_bot_version": "3.5.0",
-    "description": "Say things as the bot",
-    "short": "Say things as the bot",
+    "description": "Post the latest aurora forecast image",
+    "short": "Pretty lights in the sky",
     "tags": ["utility", "userinfo"]
 }
