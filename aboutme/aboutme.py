@@ -6,7 +6,7 @@ class AboutMe(commands.Cog):
     """A cog to show how long you have been in the server and track role progress."""
 
     def __init__(self, bot):
-        self.bot = bot
+        self.bot: Red = cog.bot
         self.config = Config.get_conf(self, identifier=9876543210, force_registration=True)
 
         default_guild = {
