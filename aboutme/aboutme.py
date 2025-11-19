@@ -50,7 +50,7 @@ class AboutMe(commands.Cog):
             )
 
         # --- 3. Build Embed ---
-        # Description includes join date and location, but NOT the hardcoded link.
+        # Base description includes join date and location.
         base_description = f"Joined on {date_str}.\nThat was **{days_in_server}** days ago!"
         
         embed = discord.Embed(
@@ -60,8 +60,11 @@ class AboutMe(commands.Cog):
         )
         embed.set_thumbnail(url=member.display_avatar.url)
         
-        # Move the hardcoded line to the footer (NEW LOCATION)
-        embed.set_footer(text="Don't forget to visit <id:customize> to request more roles!")
+        # Restore the hardcoded line to the end of the description (User's correction)
+        embed.description += (
+            f"\n\n---\n"
+            f"Don't forget to visit <id:customize> to request more roles!"
+        )
 
         # --- 4. Role Progress Check ---
         role_targets = await self.config.guild(ctx.guild).role_targets()
