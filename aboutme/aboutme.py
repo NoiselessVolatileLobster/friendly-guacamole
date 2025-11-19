@@ -10,8 +10,9 @@ class AboutMe(commands.Cog):
         self.config = Config.get_conf(self, identifier=9876543210, force_registration=True)
         
         default_guild = {
-            "role_targets": {}, # { "role_id": days_int }
-            "role_buddies": {}  # { "role_id": "buddy_role_id" }
+            "role_targets": {}, 
+            # Updated: role_buddies value is now a list of role IDs (strings)
+            "role_buddies": {}  
         }
         self.config.register_guild(**default_guild)
 
@@ -54,19 +55,22 @@ class AboutMe(commands.Cog):
             if role_id_str in role_targets:
                 target_days = role_targets[role_id_str]
                 
-                # Check if there is a linked "Buddy Role" for this base role
-                buddy_role_id = role_buddies.get(role_id_str)
+                # --- NEW LOGIC: Check for ANY buddy role in the list ---
+                buddy_role_ids = role_buddies.get(role_id_str, [])
                 has_buddy_role = False
-                if buddy_role_id:
-                    # Check if the user actually holds this buddy role
-                    if ctx.guild.get_role(int(buddy_role_id)) in member.roles:
+                
+                for b_id_str in buddy_role_ids:
+                    buddy_role_obj = ctx.guild.get_role(int(b_id_str))
+                    # Check if the buddy role exists AND if the member has it
+                    if buddy_role_obj and buddy_role_obj in member.roles:
                         has_buddy_role = True
+                        break # Found one match, success!
 
-                # --- Logic Flow ---
+                # --- Status Logic Flow ---
                 if days_in_server < target_days:
                     # Time not met. Two possibilities:
                     if has_buddy_role:
-                        # NEW: User has reward role, but hasn't met the time requirement yet.
+                        # User has reward role, but hasn't met the time requirement yet.
                         progress_lines.append(f"{role.mention}: Locked 🔒 - Days not met")
                     else:
                         # Standard countdown
@@ -78,10 +82,10 @@ class AboutMe(commands.Cog):
                 else:
                     # Time requirement met. Two possibilities:
                     if has_buddy_role:
-                        # Time met + Has Reward Role = Unlocked
+                        # Time met + Has ANY Reward Role = Unlocked
                         progress_lines.append(f"{role.mention}: Unlocked ✅")
                     else:
-                        # Time met + Missing Reward Role = Ready for promotion
+                        # Time met + Missing ALL Reward Roles = Ready for promotion
                         progress_lines.append(f"{role.mention}: Level up to unlock!")
         
         if progress_lines:
@@ -93,7 +97,7 @@ class AboutMe(commands.Cog):
 
         await ctx.send(embed=embed)
 
-    # --- Configuration Commands (Unchanged) ---
+    # --- Configuration Commands ---
 
     @commands.group()
     @commands.guild_only()
@@ -124,35 +128,53 @@ class AboutMe(commands.Cog):
     @aboutmeset_roles.command(name="link")
     async def roles_link(self, ctx, base_role: discord.Role, buddy_role: discord.Role):
         """
-        Link a reward (buddy) role to a base role.
+        Link a reward (buddy) role to a base role. Can be used multiple times.
         Usage: [p]aboutmeset roles link @BaseRole @RewardRole
         """
+        base_id = str(base_role.id)
+        buddy_id = str(buddy_role.id)
+
         # Ensure the base role actually has a target set first
         targets = await self.config.guild(ctx.guild).role_targets()
-        if str(base_role.id) not in targets:
+        if base_id not in targets:
             return await ctx.send(f"**{base_role.name}** is not configured yet. Use `[p]aboutmeset roles add` first.")
 
         async with self.config.guild(ctx.guild).role_buddies() as buddies:
-            buddies[str(base_role.id)] = str(buddy_role.id)
+            if base_id not in buddies:
+                buddies[base_id] = []
             
-        await ctx.send(f"Linked! Users with **{base_role.name}** need **{buddy_role.name}** to unlock the goal.")
+            if buddy_id in buddies[base_id]:
+                return await ctx.send(f"**{buddy_role.name}** is already linked to **{base_role.name}**.")
+
+            buddies[base_id].append(buddy_id)
+            
+        await ctx.send(f"Linked **{buddy_role.name}** as a buddy role for **{base_role.name}**.")
 
     @aboutmeset_roles.command(name="unlink")
-    async def roles_unlink(self, ctx, base_role: discord.Role):
+    async def roles_unlink(self, ctx, base_role: discord.Role, buddy_role: discord.Role):
         """
-        Remove the link between a base role and a buddy role.
+        Remove a specific buddy role from the base role's list.
+        Usage: [p]aboutmeset roles unlink @BaseRole @RewardRole
         """
+        base_id = str(base_role.id)
+        buddy_id = str(buddy_role.id)
+
         async with self.config.guild(ctx.guild).role_buddies() as buddies:
-            if str(base_role.id) in buddies:
-                del buddies[str(base_role.id)]
-                await ctx.send(f"Removed the buddy role link for **{base_role.name}**.")
-            else:
-                await ctx.send(f"**{base_role.name}** doesn't have a buddy role linked.")
+            if base_id not in buddies or buddy_id not in buddies[base_id]:
+                return await ctx.send(f"**{buddy_role.name}** is not currently linked to **{base_role.name}**.")
+
+            buddies[base_id].remove(buddy_id)
+            
+            # Clean up: remove the base role key if its list of buddies is empty
+            if not buddies[base_id]:
+                del buddies[base_id]
+                
+            await ctx.send(f"Unlinked **{buddy_role.name}** from **{base_role.name}**.")
 
     @aboutmeset_roles.command(name="remove")
     async def roles_remove(self, ctx, role: discord.Role):
         """
-        Stop tracking a role completely.
+        Stop tracking a role completely (removes day target and all buddy links).
         """
         role_id = str(role.id)
         
@@ -163,7 +185,7 @@ class AboutMe(commands.Cog):
             else:
                 return await ctx.send("That role is not currently configured.")
 
-        # Remove from buddies if it exists there
+        # Remove from buddies (the key itself)
         async with self.config.guild(ctx.guild).role_buddies() as buddies:
             if role_id in buddies:
                 del buddies[role_id]
@@ -184,13 +206,16 @@ class AboutMe(commands.Cog):
             role = ctx.guild.get_role(int(role_id))
             role_name = role.mention if role else f"Deleted-Role-{role_id}"
             
-            # Check for buddy
+            # Check for buddy links
             buddy_text = ""
             if role_id in buddies:
-                buddy_id = int(buddies[role_id])
-                buddy_role = ctx.guild.get_role(buddy_id)
-                buddy_name = buddy_role.mention if buddy_role else "Unknown Role"
-                buddy_text = f" ➡️ Linked to {buddy_name}"
+                buddy_names = []
+                for buddy_id_str in buddies[role_id]:
+                    buddy_role = ctx.guild.get_role(int(buddy_id_str))
+                    buddy_name = buddy_role.mention if buddy_role else "Unknown Role"
+                    buddy_names.append(buddy_name)
+                    
+                buddy_text = f" ➡️ Buddies: {', '.join(buddy_names)}"
 
             lines.append(f"{role_name}: **{days}** days{buddy_text}")
 
