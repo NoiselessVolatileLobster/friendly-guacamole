@@ -21,7 +21,7 @@ class AboutMe(commands.Cog):
         }
         self.config.register_guild(**default_guild)
 
-    async def _process_member_status(self, ctx, member: discord.Member):
+    async def _process_member_status(self, ctx, member: discord.Member, level):
         """Helper function to generate the member status embed."""
         
         # Join Date
@@ -206,7 +206,7 @@ class AboutMe(commands.Cog):
             # levelup.init_user(ctx.guild.id, str(ctx.author.id))
             # level = levelup.data[ctx.guild.id]["users"][str(ctx.author.id)]["level"]
 
-        embed = await self._process_member_status(ctx, ctx.author)
+        embed = await self._process_member_status(ctx, ctx.author, level)
         if embed:
             await ctx.send(embed=embed)
             
