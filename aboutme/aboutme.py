@@ -21,7 +21,7 @@ class AboutMe(commands.Cog):
         }
         self.config.register_guild(**default_guild)
 
-    async def _process_member_status(self, ctx: commands.Context, member: discord.Member):
+    async def _process_member_status(self, ctx, member: discord.Member):
         """Helper function to generate the member status embed."""
         
         # LevelUp level
@@ -29,9 +29,8 @@ class AboutMe(commands.Cog):
         if self.bot.get_cog("LevelUp"):
             level = "TBD"
             levelup = self.bot.get_cog("LevelUp")
-            if ctx.guild.id in levelup.data:
-                levelup.init_user(ctx.guild.id, str(ctx.author.id))
-                level = levelup.data[ctx.guild.id]["users"][str(ctx.author.id)]["level"]
+            levelup.init_user(ctx.guild.id, str(ctx.author.id))
+            # level = levelup.data[ctx.guild.id]["users"][str(ctx.author.id)]["level"]
         
         # Join Date
 
