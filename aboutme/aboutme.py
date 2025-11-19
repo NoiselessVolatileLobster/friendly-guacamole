@@ -21,7 +21,7 @@ class AboutMe(commands.Cog):
         }
         self.config.register_guild(**default_guild)
 
-    async def _process_member_status(self, ctx, member: discord.Member):
+    async def _process_member_status(self, ctx: commands.Context, member: discord.Member):
         """Helper function to generate the member status embed."""
         
         # LevelUp level
