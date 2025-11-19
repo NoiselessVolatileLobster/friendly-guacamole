@@ -87,7 +87,7 @@ class AboutMe(commands.Cog):
 
         helper_output = ""
         if helper_parts:
-            helper_output = f"\n**I help T3P by being a ** {', '.join(helper_parts)}"
+            helper_output = f"\n**I help T3P by being a part of these teams: ** {', '.join(helper_parts)}"
 
 
         # --- 3. Role Progress Calculation ---
