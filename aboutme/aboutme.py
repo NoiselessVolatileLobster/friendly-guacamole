@@ -16,7 +16,7 @@ class AboutMe(commands.Cog):
             "dm_status_roles": {},
             "award_roles": [],
             "helper_roles": [],
-            "egg_status_roles": {} # CHANGED: Dict to store { "role_id": "emoji" }
+            "egg_status_roles": {} 
         }
         self.config.register_guild(**default_guild)
 
@@ -32,6 +32,9 @@ class AboutMe(commands.Cog):
         delta = now - joined_at
         days_in_server = delta.days
         date_str = joined_at.strftime("%B %d, %Y")
+        
+        # Formatting Change 1: Single line join date
+        base_description = f"Joined on {date_str} ({days_in_server} days ago)"
 
         # --- 2a. Location Role Check ---
         location_roles_config = await self.config.guild(ctx.guild).location_roles()
@@ -44,10 +47,6 @@ class AboutMe(commands.Cog):
             if location_role and location_role in member.roles:
                 location_parts.append(f"{emoji} {location_role.name}")
 
-        location_output = ""
-        if location_parts:
-            location_output = f"\n**Location:** {', '.join(location_parts)}"
-
         # --- 2b. DM Status Role Check ---
         dm_status_config = await self.config.guild(ctx.guild).dm_status_roles()
         dm_status_parts = []
@@ -59,9 +58,12 @@ class AboutMe(commands.Cog):
             if dm_role and dm_role in member.roles:
                 dm_status_parts.append(f"{emoji} {dm_role.name}")
 
-        dm_status_output = ""
-        if dm_status_parts:
-            dm_status_output = f"\n**DM Status:** {', '.join(dm_status_parts)}"
+        # Formatting Change 2: Combine Location and DM Status into one line (no headers)
+        combined_status_parts = location_parts + dm_status_parts
+        combined_status_output = ""
+        if combined_status_parts:
+            # Joining with 2 spaces for visual separation
+            combined_status_output = f"\n{'  '.join(combined_status_parts)}"
 
         # --- 2c. Award Roles Check ---
         award_roles_config = await self.config.guild(ctx.guild).award_roles()
@@ -87,9 +89,10 @@ class AboutMe(commands.Cog):
 
         helper_output = ""
         if helper_parts:
-            helper_output = f"\n**I help T3P by being a part of these teams: ** {', '.join(helper_parts)}"
+            # Formatting Change 3: Reworded helper text
+            helper_output = f"\n**I am part of these teams:** {', '.join(helper_parts)}"
 
-        # --- 2e. Egg Status Roles Check (UPDATED) ---
+        # --- 2e. Egg Status Roles Check ---
         egg_roles_config = await self.config.guild(ctx.guild).egg_status_roles()
         egg_parts = []
 
@@ -146,16 +149,13 @@ class AboutMe(commands.Cog):
             role_progress_output = "\n\n**Role Progress**\n" + "\n".join(progress_lines)
 
         # --- 4. Build Final Description ---
-        base_description = f"Joined on {date_str}.\nThat was **{days_in_server}** days ago!"
-        
-        # Combine all parts
+        # Formatting Change 4: Egg Status moved right under base description
         final_description = (
             base_description + 
-            location_output + 
-            dm_status_output + 
+            egg_output +             # Moved here
+            combined_status_output + # Combined Loc & DM
             award_output + 
             helper_output + 
-            egg_output +
             role_progress_output
         )
 
@@ -380,7 +380,7 @@ class AboutMe(commands.Cog):
         await ctx.send(embed=embed)
 
     # ------------------------------------------------------------------
-    # Egg Status Role Management (UPDATED)
+    # Egg Status Role Management
     # ------------------------------------------------------------------
 
     @aboutmeset.group(name="eggroles")
