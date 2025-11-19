@@ -29,7 +29,7 @@ class AboutMe(commands.Cog):
         days_in_server = delta.days
         date_str = joined_at.strftime("%B %d, %Y")
 
-        # --- 2. Location Role Check (Moved Up & Modified to append to description) ---
+        # --- 2. Location Role Check ---
         location_roles_config = await self.config.guild(ctx.guild).location_roles()
         location_parts = []
         
@@ -40,19 +40,17 @@ class AboutMe(commands.Cog):
             
             # Check if the member has this role
             if location_role and location_role in member.roles:
-                # Store the output as "Emoji RoleName"
                 location_parts.append(f"{emoji} **{location_role.name}**")
 
         location_output = ""
         if location_parts:
             # Format the location output string to include the header
-            # Roles are joined by comma, making it a concise line in the description
             location_output = (
                 f"\n**Location:** {', '.join(location_parts)}"
             )
 
         # --- 3. Build Embed ---
-        # The Location output is appended directly to the main description text
+        # Description includes join date and location, but NOT the hardcoded link.
         base_description = f"Joined on {date_str}.\nThat was **{days_in_server}** days ago!"
         
         embed = discord.Embed(
@@ -62,11 +60,8 @@ class AboutMe(commands.Cog):
         )
         embed.set_thumbnail(url=member.display_avatar.url)
         
-        # Hardcoded link appended last
-        embed.description += (
-            f"\n\n---\n"
-            f"Don't forget to visit <id:customize> to request more roles!"
-        )
+        # Move the hardcoded line to the footer (NEW LOCATION)
+        embed.set_footer(text="Don't forget to visit <id:customize> to request more roles!")
 
         # --- 4. Role Progress Check ---
         role_targets = await self.config.guild(ctx.guild).role_targets()
