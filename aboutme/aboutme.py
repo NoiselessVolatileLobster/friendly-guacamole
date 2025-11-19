@@ -1,9 +1,6 @@
 import discord
 from redbot.core import commands, Config
-from redbot.core.bot import Red
 from datetime import datetime, timezone
-from .abc import CompositeMetaClass
-from .abc import MixinMeta
 
 class AboutMe(commands.Cog):
     """A cog to show how long you have been in the server and track role progress."""
@@ -11,7 +8,7 @@ class AboutMe(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=9876543210, force_registration=True)
-
+        
         default_guild = {
             "role_targets": {}, 
             "role_buddies": {},
@@ -24,12 +21,9 @@ class AboutMe(commands.Cog):
         }
         self.config.register_guild(**default_guild)
 
-    async def _process_member_status(self, ctx, member: discord.Member, level):
-    # async def _process_member_status(self, ctx, member: discord.Member):
+    async def _process_member_status(self, ctx, member: discord.Member):
         """Helper function to generate the member status embed."""
         
-        # Join Date
-
         if member.joined_at is None:
             return await ctx.send("I couldn't determine when that member joined this server.")
 
@@ -41,8 +35,7 @@ class AboutMe(commands.Cog):
         date_str = joined_at.strftime("%B %d, %Y")
         
         # Formatting Change 1: Single line join date
-        base_description = f"Level {level} | Joined on {date_str} ({days_in_server} days ago)"
-        # base_description = f"Joined on {date_str} ({days_in_server} days ago)"
+        base_description = f"Joined on {date_str} ({days_in_server} days ago)"
 
         # --- 2a. Location Role Check ---
         location_roles_config = await self.config.guild(ctx.guild).location_roles()
@@ -202,17 +195,7 @@ class AboutMe(commands.Cog):
     @commands.guild_only()
     async def aboutme(self, ctx):
         """Check how long you have been in this server and see role progress."""
-
-        # LevelUp level should be checked on the user's command
-        if self.bot.get_cog("LevelUp"):
-            levelup = self.bot.get_cog("LevelUp")
-            level = "TBD"
-            if ctx.guild.id in levelup.data:
-                levelup.init_user(ctx.guild.id, str(ctx.author.id))
-                level = levelup.data[ctx.guild.id]["users"][str(ctx.author.id)]["level"]
-
-        embed = await self._process_member_status(ctx, ctx.author, level)
-        # embed = await self._process_member_status(ctx, ctx.author)
+        embed = await self._process_member_status(ctx, ctx.author)
         if embed:
             await ctx.send(embed=embed)
             
