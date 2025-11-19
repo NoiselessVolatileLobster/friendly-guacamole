@@ -113,7 +113,11 @@ class AboutMe(commands.Cog):
             house_role = ctx.guild.get_role(role_id)
             
             if house_role and house_role in member.roles:
-                house_parts.append(f"{emoji} {house_role.name}")  
+                house_parts.append(f"{emoji} {house_role.name}")
+
+        house_output =  ""
+        if house_parts:
+            house_output = f"\n**My T3P house:** {', '.join(house_parts)}"
 
         # --- 3. Role Progress Calculation ---
         role_targets = await self.config.guild(ctx.guild).role_targets()
@@ -159,7 +163,8 @@ class AboutMe(commands.Cog):
         # --- 4. Build Final Description ---
         final_description = (
             base_description + 
-            combined_status_output + # Combined Egg, Loc & DM
+            combined_status_output + # Combined Egg, Loc & DM +
+            house_output +
             award_output + 
             helper_output + 
             role_progress_output
