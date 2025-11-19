@@ -3,6 +3,7 @@ from redbot.core import commands, Config
 from redbot.core.bot import Red
 from datetime import datetime, timezone
 from .abc import CompositeMetaClass
+from .abc import MixinMeta
 
 class AboutMe(commands.Cog):
     """A cog to show how long you have been in the server and track role progress."""
