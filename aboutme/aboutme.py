@@ -203,8 +203,9 @@ class AboutMe(commands.Cog):
         if self.bot.get_cog("LevelUp"):
             levelup = self.bot.get_cog("LevelUp")
             level = "TBD"
-            levelup.init_user(ctx.guild.id, str(ctx.author.id))
-            level = levelup.data[ctx.guild.id]["users"][str(ctx.author.id)]["level"]
+            if ctx.guild.id in levelup.data:
+                levelup.init_user(ctx.guild.id, str(ctx.author.id))
+                level = levelup.data[ctx.guild.id]["users"][str(ctx.author.id)]["level"]
 
         embed = await self._process_member_status(ctx, ctx.author, level)
         if embed:
