@@ -58,14 +58,26 @@ class AboutMe(commands.Cog):
             if dm_role and dm_role in member.roles:
                 dm_status_parts.append(f"{emoji} {dm_role.name}")
 
-        # Formatting Change 2: Combine Location and DM Status into one line (no headers)
-        combined_status_parts = location_parts + dm_status_parts
+        # --- 2c. Egg Status Roles Check (Moved up for combining) ---
+        egg_roles_config = await self.config.guild(ctx.guild).egg_status_roles()
+        egg_parts = []
+
+        for role_id_str, emoji in egg_roles_config.items():
+            role_id = int(role_id_str)
+            egg_role = ctx.guild.get_role(role_id)
+            
+            if egg_role and egg_role in member.roles:
+                egg_parts.append(f"{emoji} {egg_role.name}")
+
+        # Formatting Change: Combine Egg, Location, and DM Status into one line
+        # Order: Egg -> Location -> DM Status
+        combined_status_parts = egg_parts + location_parts + dm_status_parts
         combined_status_output = ""
         if combined_status_parts:
             # Joining with 2 spaces for visual separation
             combined_status_output = f"\n{'  '.join(combined_status_parts)}"
 
-        # --- 2c. Award Roles Check ---
+        # --- 2d. Award Roles Check ---
         award_roles_config = await self.config.guild(ctx.guild).award_roles()
         award_parts = []
 
@@ -78,7 +90,7 @@ class AboutMe(commands.Cog):
         if award_parts:
             award_output = f"\n**Awards:** {', '.join(award_parts)}"
 
-        # --- 2d. Helper Roles Check ---
+        # --- 2e. Helper Roles Check ---
         helper_roles_config = await self.config.guild(ctx.guild).helper_roles()
         helper_parts = []
 
@@ -89,23 +101,7 @@ class AboutMe(commands.Cog):
 
         helper_output = ""
         if helper_parts:
-            # Formatting Change 3: Reworded helper text
             helper_output = f"\n**I am part of these teams:** {', '.join(helper_parts)}"
-
-        # --- 2e. Egg Status Roles Check ---
-        egg_roles_config = await self.config.guild(ctx.guild).egg_status_roles()
-        egg_parts = []
-
-        for role_id_str, emoji in egg_roles_config.items():
-            role_id = int(role_id_str)
-            egg_role = ctx.guild.get_role(role_id)
-            
-            if egg_role and egg_role in member.roles:
-                egg_parts.append(f"{emoji} {egg_role.name}")
-
-        egg_output = ""
-        if egg_parts:
-            egg_output = f"\n**Egg Status:** {', '.join(egg_parts)}"
 
         # --- 3. Role Progress Calculation ---
         role_targets = await self.config.guild(ctx.guild).role_targets()
@@ -149,11 +145,9 @@ class AboutMe(commands.Cog):
             role_progress_output = "\n\n**Role Progress**\n" + "\n".join(progress_lines)
 
         # --- 4. Build Final Description ---
-        # Formatting Change 4: Egg Status moved right under base description
         final_description = (
             base_description + 
-            egg_output +             # Moved here
-            combined_status_output + # Combined Loc & DM
+            combined_status_output + # Combined Egg, Loc & DM
             award_output + 
             helper_output + 
             role_progress_output
