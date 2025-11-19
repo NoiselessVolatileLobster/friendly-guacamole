@@ -17,6 +17,7 @@ class AboutMe(commands.Cog):
             "award_roles": [],
             "helper_roles": [],
             "egg_status_roles": {} 
+            "house_roles": {}
         }
         self.config.register_guild(**default_guild)
 
@@ -102,6 +103,19 @@ class AboutMe(commands.Cog):
         helper_output = ""
         if helper_parts:
             helper_output = f"\n**I am part of these teams:** {', '.join(helper_parts)}"
+
+        # --- 2f. House Roles Check ---
+        house_roles_config = await self.config.guild(ctx.guild).house_roles()
+        house_parts = []
+
+        for role_id in house_roles_config:
+            house_role = ctx.guild.get_role(int(role_id))
+            if house_role and house_role in member.roles:
+                house_parts.append(f"{house_role.name}")
+
+        house_output = ""
+        if house_parts:
+            house_output = f"\n**My T3P House is ** {', '.join(house_parts)}"    
 
         # --- 3. Role Progress Calculation ---
         role_targets = await self.config.guild(ctx.guild).role_targets()
@@ -371,6 +385,52 @@ class AboutMe(commands.Cog):
             lines.append(role_name)
 
         embed = discord.Embed(title="Configured Helper Roles", description="\n".join(lines), color=await ctx.embed_color())
+        await ctx.send(embed=embed)
+
+
+    # ------------------------------------------------------------------
+    # House Role Management
+    # ------------------------------------------------------------------
+
+    @aboutmeset.group(name="house")
+    async def aboutmeset_house(self, ctx):
+        """Manage House roles (displayed in the House section)."""
+        pass
+
+    @aboutmeset_house.command(name="add")
+    async def house_add(self, ctx, role: discord.Role):
+        """Add a House role."""
+        async with self.config.guild(ctx.guild).house_roles() as houses:
+            if role.id not in houses:
+                houses.append(role.id)
+                await ctx.send(f"Added **{role.name}** to House roles.")
+            else:
+                await ctx.send(f"**{role.name}** is already a House role.")
+
+    @aboutmeset_house.command(name="remove")
+    async def house_remove(self, ctx, role: discord.Role):
+        """Remove a House role."""
+        async with self.config.guild(ctx.guild).house_roles() as houses:
+            if role.id in houses:
+                houses.remove(role.id)
+                await ctx.send(f"Removed **{role.name}** from House roles.")
+            else:
+                await ctx.send(f"**{role.name}** is not currently configured as a House role.")
+
+    @aboutmeset_house.command(name="list")
+    async def house_list(self, ctx):
+        """List all configured House roles."""
+        houses = await self.config.guild(ctx.guild).house_roles()
+        if not houses:
+            return await ctx.send("No House roles are currently configured.")
+
+        lines = []
+        for role_id in houses:
+            role = ctx.guild.get_role(role_id)
+            role_name = role.mention if role else f"Deleted-Role-{role_id}"
+            lines.append(role_name)
+
+        embed = discord.Embed(title="Configured House Roles", description="\n".join(lines), color=await ctx.embed_color())
         await ctx.send(embed=embed)
 
     # ------------------------------------------------------------------
