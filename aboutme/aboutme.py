@@ -16,7 +16,7 @@ class AboutMe(commands.Cog):
             "dm_status_roles": {},
             "award_roles": [],
             "helper_roles": [],
-            "egg_status_roles": {} 
+            "egg_status_roles": {},
             "house_roles": {}
         }
         self.config.register_guild(**default_guild)
