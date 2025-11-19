@@ -14,8 +14,9 @@ class AboutMe(commands.Cog):
             "role_buddies": {},
             "location_roles": {},
             "dm_status_roles": {},
-            "award_roles": [],  # NEW: List of role IDs
-            "helper_roles": []  # NEW: List of role IDs
+            "award_roles": [],
+            "helper_roles": [],
+            "egg_status_roles": {} # CHANGED: Dict to store { "role_id": "emoji" }
         }
         self.config.register_guild(**default_guild)
 
@@ -62,12 +63,11 @@ class AboutMe(commands.Cog):
         if dm_status_parts:
             dm_status_output = f"\n**DM Status:** {', '.join(dm_status_parts)}"
 
-        # --- 2c. Award Roles Check (NEW) ---
+        # --- 2c. Award Roles Check ---
         award_roles_config = await self.config.guild(ctx.guild).award_roles()
         award_parts = []
 
         for role_id in award_roles_config:
-            # Config stores IDs as integers in the list, but let's handle potential strings safely
             award_role = ctx.guild.get_role(int(role_id))
             if award_role and award_role in member.roles:
                 award_parts.append(f"{award_role.name}")
@@ -76,7 +76,7 @@ class AboutMe(commands.Cog):
         if award_parts:
             award_output = f"\n**Awards:** {', '.join(award_parts)}"
 
-        # --- 2d. Helper Roles Check (NEW) ---
+        # --- 2d. Helper Roles Check ---
         helper_roles_config = await self.config.guild(ctx.guild).helper_roles()
         helper_parts = []
 
@@ -89,6 +89,20 @@ class AboutMe(commands.Cog):
         if helper_parts:
             helper_output = f"\n**I help T3P by being a part of these teams: ** {', '.join(helper_parts)}"
 
+        # --- 2e. Egg Status Roles Check (UPDATED) ---
+        egg_roles_config = await self.config.guild(ctx.guild).egg_status_roles()
+        egg_parts = []
+
+        for role_id_str, emoji in egg_roles_config.items():
+            role_id = int(role_id_str)
+            egg_role = ctx.guild.get_role(role_id)
+            
+            if egg_role and egg_role in member.roles:
+                egg_parts.append(f"{emoji} {egg_role.name}")
+
+        egg_output = ""
+        if egg_parts:
+            egg_output = f"\n**Egg Status:** {', '.join(egg_parts)}"
 
         # --- 3. Role Progress Calculation ---
         role_targets = await self.config.guild(ctx.guild).role_targets()
@@ -141,6 +155,7 @@ class AboutMe(commands.Cog):
             dm_status_output + 
             award_output + 
             helper_output + 
+            egg_output +
             role_progress_output
         )
 
@@ -275,7 +290,7 @@ class AboutMe(commands.Cog):
         await ctx.send(embed=embed)
 
     # ------------------------------------------------------------------
-    # NEW: Award Role Management
+    # Award Role Management
     # ------------------------------------------------------------------
 
     @aboutmeset.group(name="award")
@@ -320,7 +335,7 @@ class AboutMe(commands.Cog):
         await ctx.send(embed=embed)
 
     # ------------------------------------------------------------------
-    # NEW: Helper Role Management
+    # Helper Role Management
     # ------------------------------------------------------------------
 
     @aboutmeset.group(name="helper")
@@ -362,6 +377,51 @@ class AboutMe(commands.Cog):
             lines.append(role_name)
 
         embed = discord.Embed(title="Configured Helper Roles", description="\n".join(lines), color=await ctx.embed_color())
+        await ctx.send(embed=embed)
+
+    # ------------------------------------------------------------------
+    # Egg Status Role Management (UPDATED)
+    # ------------------------------------------------------------------
+
+    @aboutmeset.group(name="eggroles")
+    async def aboutmeset_eggroles(self, ctx):
+        """Manage Egg Status roles and their corresponding emojis."""
+        pass
+
+    @aboutmeset_eggroles.command(name="add")
+    async def eggroles_add(self, ctx, role: discord.Role, emoji: str):
+        """Add an Egg Status role and associate an emoji with it."""
+        async with self.config.guild(ctx.guild).egg_status_roles() as egg_roles:
+            role_id_str = str(role.id)
+            egg_roles[role_id_str] = emoji
+            
+        await ctx.send(f"Configured **{role.name}** as an Egg Status role with emoji: {emoji}")
+
+    @aboutmeset_eggroles.command(name="remove")
+    async def eggroles_remove(self, ctx, role: discord.Role):
+        """Remove an Egg Status role."""
+        async with self.config.guild(ctx.guild).egg_status_roles() as egg_roles:
+            role_id_str = str(role.id)
+            if role_id_str in egg_roles:
+                del egg_roles[role_id_str]
+                await ctx.send(f"Removed **{role.name}** from Egg Status roles.")
+            else:
+                await ctx.send(f"**{role.name}** is not currently configured as an Egg Status role.")
+
+    @aboutmeset_eggroles.command(name="list")
+    async def eggroles_list(self, ctx):
+        """List all configured Egg Status roles."""
+        egg_roles = await self.config.guild(ctx.guild).egg_status_roles()
+        if not egg_roles:
+            return await ctx.send("No Egg Status roles are currently configured.")
+
+        lines = []
+        for role_id_str, emoji in egg_roles.items():
+            role = ctx.guild.get_role(int(role_id_str))
+            role_name = role.mention if role else f"Deleted-Role-{role_id_str}"
+            lines.append(f"{emoji} {role_name}")
+
+        embed = discord.Embed(title="Configured Egg Status Roles", description="\n".join(lines), color=await ctx.embed_color())
         await ctx.send(embed=embed)
 
     # ------------------------------------------------------------------
