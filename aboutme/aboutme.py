@@ -24,10 +24,11 @@ class AboutMe(commands.Cog):
     async def _process_member_status(self, ctx, member: discord.Member):
         """Helper function to generate the member status embed."""
         
-        # LevelUp level
+        LevelUp level
 
-        # if self.bot.get_cog("LevelUp"):
-        #     levelup = self.bot.get_cog("LevelUp")
+        if self.bot.get_cog("LevelUp"):
+            level = "TBD"
+        #    levelup = self.bot.get_cog("LevelUp")
         #    if self.guild.id in levelup.data:
         #        levelup.init_user(self.guild.id, str(interaction.user.id))
         #        level = levelup.data[self.guild.id]["users"][str(interaction.user.id)]["level"]
@@ -45,8 +46,8 @@ class AboutMe(commands.Cog):
         date_str = joined_at.strftime("%B %d, %Y")
         
         # Formatting Change 1: Single line join date
-        # base_description = f"Level {level} | Joined on {date_str} ({days_in_server} days ago)"
-        base_description = f"Joined on {date_str} ({days_in_server} days ago)"
+        base_description = f"Level {level} | Joined on {date_str} ({days_in_server} days ago)"
+        # base_description = f"Joined on {date_str} ({days_in_server} days ago)"
 
         # --- 2a. Location Role Check ---
         location_roles_config = await self.config.guild(ctx.guild).location_roles()
