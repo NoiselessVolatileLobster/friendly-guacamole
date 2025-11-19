@@ -2,6 +2,12 @@ import discord
 from redbot.core import commands, Config
 from datetime import datetime, timezone
 
+# --- ⚠️ IMPORTANT: USER CONFIGURATION REQUIRED ⚠️ ---
+# Replace '999999999999999999' below with the actual Channel ID you want to link to.
+# This should be the channel where users request roles.
+CUSTOMIZE_CHANNEL_ID = 999999999999999999 
+# -----------------------------------------------------
+
 class AboutMe(commands.Cog):
     """A cog to show how long you have been in the server and track role progress."""
 
@@ -11,7 +17,6 @@ class AboutMe(commands.Cog):
         
         default_guild = {
             "role_targets": {}, 
-            # Updated: role_buddies value is now a list of role IDs (strings)
             "role_buddies": {}  
         }
         self.config.register_guild(**default_guild)
@@ -40,6 +45,14 @@ class AboutMe(commands.Cog):
             color=await ctx.embed_color()
         )
         embed.set_thumbnail(url=member.display_avatar.url)
+        
+        # New line added to the Description 
+        # (It uses the Discord channel mention format: <#ID>)
+        embed.description += (
+                f"\n\n---\n"
+                f"Don't forget to visit <id:customize> to request more roles!"
+            )
+
 
         # --- 3. Check Role Progress ---
         role_targets = await self.config.guild(ctx.guild).role_targets()
@@ -55,37 +68,30 @@ class AboutMe(commands.Cog):
             if role_id_str in role_targets:
                 target_days = role_targets[role_id_str]
                 
-                # --- NEW LOGIC: Check for ANY buddy role in the list ---
+                # Check if there is a linked "Buddy Role" for this base role
                 buddy_role_ids = role_buddies.get(role_id_str, [])
                 has_buddy_role = False
                 
                 for b_id_str in buddy_role_ids:
                     buddy_role_obj = ctx.guild.get_role(int(b_id_str))
-                    # Check if the buddy role exists AND if the member has it
                     if buddy_role_obj and buddy_role_obj in member.roles:
                         has_buddy_role = True
-                        break # Found one match, success!
+                        break 
 
                 # --- Status Logic Flow ---
                 if days_in_server < target_days:
-                    # Time not met. Two possibilities:
                     if has_buddy_role:
-                        # User has reward role, but hasn't met the time requirement yet.
                         progress_lines.append(f"{role.mention}: Locked 🔒 - Days not met")
                     else:
-                        # Standard countdown
                         remaining = target_days - days_in_server
                         progress_lines.append(
                             f"{role.mention}: **{remaining}** days remaining to unlock"
                         )
                 
                 else:
-                    # Time requirement met. Two possibilities:
                     if has_buddy_role:
-                        # Time met + Has ANY Reward Role = Unlocked
                         progress_lines.append(f"{role.mention}: Unlocked ✅")
                     else:
-                        # Time met + Missing ALL Reward Roles = Ready for promotion
                         progress_lines.append(f"{role.mention}: Level up to unlock!")
         
         if progress_lines:
@@ -97,7 +103,7 @@ class AboutMe(commands.Cog):
 
         await ctx.send(embed=embed)
 
-    # --- Configuration Commands ---
+    # --- Configuration Commands (Unchanged) ---
 
     @commands.group()
     @commands.guild_only()
@@ -134,7 +140,6 @@ class AboutMe(commands.Cog):
         base_id = str(base_role.id)
         buddy_id = str(buddy_role.id)
 
-        # Ensure the base role actually has a target set first
         targets = await self.config.guild(ctx.guild).role_targets()
         if base_id not in targets:
             return await ctx.send(f"**{base_role.name}** is not configured yet. Use `[p]aboutmeset roles add` first.")
@@ -165,7 +170,6 @@ class AboutMe(commands.Cog):
 
             buddies[base_id].remove(buddy_id)
             
-            # Clean up: remove the base role key if its list of buddies is empty
             if not buddies[base_id]:
                 del buddies[base_id]
                 
@@ -178,14 +182,12 @@ class AboutMe(commands.Cog):
         """
         role_id = str(role.id)
         
-        # Remove from targets
         async with self.config.guild(ctx.guild).role_targets() as targets:
             if role_id in targets:
                 del targets[role_id]
             else:
                 return await ctx.send("That role is not currently configured.")
 
-        # Remove from buddies (the key itself)
         async with self.config.guild(ctx.guild).role_buddies() as buddies:
             if role_id in buddies:
                 del buddies[role_id]
@@ -206,7 +208,6 @@ class AboutMe(commands.Cog):
             role = ctx.guild.get_role(int(role_id))
             role_name = role.mention if role else f"Deleted-Role-{role_id}"
             
-            # Check for buddy links
             buddy_text = ""
             if role_id in buddies:
                 buddy_names = []
