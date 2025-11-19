@@ -8,7 +8,9 @@ class AboutMe(commands.Cog):
 
     def __init__(self, bot):
         self.cog: AboutMe = cog
+        guild: discord.Guild,
         self.bot: Red = cog.bot
+        self.guild = guild
         self.config = Config.get_conf(self, identifier=9876543210, force_registration=True)
 
         default_guild = {
