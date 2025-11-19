@@ -7,12 +7,11 @@ class AboutMe(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
-        # Initialize the Config to save data
         self.config = Config.get_conf(self, identifier=9876543210, force_registration=True)
         
-        # Default structure: A dictionary where Key = Role ID (string), Value = Days (int)
         default_guild = {
-            "role_targets": {}
+            "role_targets": {}, # { "role_id": days_int }
+            "role_buddies": {}  # { "role_id": "buddy_role_id" }
         }
         self.config.register_guild(**default_guild)
 
@@ -26,15 +25,14 @@ class AboutMe(commands.Cog):
         if member.joined_at is None:
             return await ctx.send("I couldn't determine when you joined this server.")
 
-        # 1. Calculate basic time info
+        # --- 1. Time Calculation ---
         now = datetime.now(timezone.utc)
         joined_at = member.joined_at
         delta = now - joined_at
         days_in_server = delta.days
-
         date_str = joined_at.strftime("%B %d, %Y")
 
-        # 2. Create the Base Embed
+        # --- 2. Build Embed ---
         embed = discord.Embed(
             title=ctx.guild.name,
             description=f"Joined on {date_str}.\nThat was **{days_in_server}** days ago!",
@@ -42,32 +40,48 @@ class AboutMe(commands.Cog):
         )
         embed.set_thumbnail(url=member.display_avatar.url)
 
-        # 3. Check for Role Targets
-        # Fetch the dictionary of {role_id: target_days}
+        # --- 3. Check Role Progress ---
         role_targets = await self.config.guild(ctx.guild).role_targets()
+        role_buddies = await self.config.guild(ctx.guild).role_buddies()
         
         progress_lines = []
 
-        # Loop through the user's current roles
+        # Iterate through the user's current roles
         for role in member.roles:
             role_id_str = str(role.id)
             
-            # If this role is in our database
+            # Only process if this role is tracked in our config
             if role_id_str in role_targets:
                 target_days = role_targets[role_id_str]
-                days_remaining = target_days - days_in_server
+                
+                # Check if there is a linked "Buddy Role" for this base role
+                buddy_role_id = role_buddies.get(role_id_str)
+                has_buddy_role = False
+                if buddy_role_id:
+                    # Check if the user actually holds this buddy role
+                    if ctx.guild.get_role(int(buddy_role_id)) in member.roles:
+                        has_buddy_role = True
 
-                # Only show if there is time remaining (greater than 0)
-                if days_remaining > 0:
+                # --- Logic Flow ---
+                if days_in_server < target_days:
+                    # Case 1: Not enough time yet
+                    remaining = target_days - days_in_server
                     progress_lines.append(
-                        f"{role.mention}: **{days_remaining}** days remaining to unlock"
+                        f"{role.mention}: **{remaining}** days remaining to unlock"
                     )
+                
+                else:
+                    # Case 2: Time requirement met
+                    if has_buddy_role:
+                        # Time met + Has Reward Role = Complete
+                        progress_lines.append(f"{role.mention}: Unlocked ✅")
+                    else:
+                        # Time met + Missing Reward Role = Prompt to level up
+                        progress_lines.append(f"{role.mention}: Level up to unlock!")
         
-        # If we found any relevant roles, add them to the embed
         if progress_lines:
-            # Join all lines with a newline character
             embed.add_field(
-                name="Channel Unlock Progress", 
+                name="Role Progress", 
                 value="\n".join(progress_lines), 
                 inline=False
             )
@@ -91,8 +105,8 @@ class AboutMe(commands.Cog):
     @aboutmeset_roles.command(name="add")
     async def roles_add(self, ctx, role: discord.Role, days: int):
         """
-        Add a target number of days to a role.
-        Usage: [p]aboutmeset roles add @Role 365
+        Set the day target for a role.
+        Usage: [p]aboutmeset roles add @BaseRole 30
         """
         if days < 1:
             return await ctx.send("Please enter a positive number of days.")
@@ -100,26 +114,62 @@ class AboutMe(commands.Cog):
         async with self.config.guild(ctx.guild).role_targets() as targets:
             targets[str(role.id)] = days
         
-        await ctx.send(f"Added configuration: Users with **{role.name}** will see a countdown to **{days}** days.")
+        await ctx.send(f"Configured **{role.name}** with a target of **{days}** days.")
+
+    @aboutmeset_roles.command(name="link")
+    async def roles_link(self, ctx, base_role: discord.Role, buddy_role: discord.Role):
+        """
+        Link a reward (buddy) role to a base role.
+        Usage: [p]aboutmeset roles link @BaseRole @RewardRole
+        """
+        # Ensure the base role actually has a target set first
+        targets = await self.config.guild(ctx.guild).role_targets()
+        if str(base_role.id) not in targets:
+            return await ctx.send(f"**{base_role.name}** is not configured yet. Use `[p]aboutmeset roles add` first.")
+
+        async with self.config.guild(ctx.guild).role_buddies() as buddies:
+            buddies[str(base_role.id)] = str(buddy_role.id)
+            
+        await ctx.send(f"Linked! Users with **{base_role.name}** need **{buddy_role.name}** to unlock the goal.")
+
+    @aboutmeset_roles.command(name="unlink")
+    async def roles_unlink(self, ctx, base_role: discord.Role):
+        """
+        Remove the link between a base role and a buddy role.
+        """
+        async with self.config.guild(ctx.guild).role_buddies() as buddies:
+            if str(base_role.id) in buddies:
+                del buddies[str(base_role.id)]
+                await ctx.send(f"Removed the buddy role link for **{base_role.name}**.")
+            else:
+                await ctx.send(f"**{base_role.name}** doesn't have a buddy role linked.")
 
     @aboutmeset_roles.command(name="remove")
     async def roles_remove(self, ctx, role: discord.Role):
         """
-        Remove a role from the tracking list.
-        Usage: [p]aboutmeset roles remove @Role
+        Stop tracking a role completely.
         """
+        role_id = str(role.id)
+        
+        # Remove from targets
         async with self.config.guild(ctx.guild).role_targets() as targets:
-            role_id = str(role.id)
             if role_id in targets:
                 del targets[role_id]
-                await ctx.send(f"Removed configuration for **{role.name}**.")
             else:
-                await ctx.send("That role is not currently configured.")
+                return await ctx.send("That role is not currently configured.")
+
+        # Remove from buddies if it exists there
+        async with self.config.guild(ctx.guild).role_buddies() as buddies:
+            if role_id in buddies:
+                del buddies[role_id]
+
+        await ctx.send(f"Removed configuration for **{role.name}**.")
 
     @aboutmeset_roles.command(name="list")
     async def roles_list(self, ctx):
-        """List all configured roles and their day targets."""
+        """List all configured roles, days, and linked buddy roles."""
         targets = await self.config.guild(ctx.guild).role_targets()
+        buddies = await self.config.guild(ctx.guild).role_buddies()
         
         if not targets:
             return await ctx.send("No roles are currently configured.")
@@ -127,14 +177,20 @@ class AboutMe(commands.Cog):
         lines = []
         for role_id, days in targets.items():
             role = ctx.guild.get_role(int(role_id))
-            if role:
-                lines.append(f"{role.mention}: {days} days")
-            else:
-                # Handle case where role was deleted from server but exists in config
-                lines.append(f"*(Deleted Role {role_id})*: {days} days")
+            role_name = role.mention if role else f"Deleted-Role-{role_id}"
+            
+            # Check for buddy
+            buddy_text = ""
+            if role_id in buddies:
+                buddy_id = int(buddies[role_id])
+                buddy_role = ctx.guild.get_role(buddy_id)
+                buddy_name = buddy_role.mention if buddy_role else "Unknown Role"
+                buddy_text = f" ➡️ Linked to {buddy_name}"
+
+            lines.append(f"{role_name}: **{days}** days{buddy_text}")
 
         embed = discord.Embed(
-            title="AboutMe Role Configurations",
+            title="AboutMe Configurations",
             description="\n".join(lines),
             color=await ctx.embed_color()
         )
