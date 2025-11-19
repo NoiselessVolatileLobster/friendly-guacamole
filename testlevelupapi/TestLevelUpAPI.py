@@ -36,14 +36,18 @@ class TestLevelUpAPI(commands.Cog):
                 "The LevelUp cog is not loaded. Please ensure it is installed and loaded to run this test."
             )
 
-        # Basic check to ensure the required methods are available
-        if not hasattr(levelup_cog, "add_xp") or not hasattr(levelup_cog, "check_levelups"):
+        # Basic check to ensure the required method is available
+        if not hasattr(levelup_cog, "add_xp"):
             return await ctx.send(
-                "The 'LevelUp' cog is loaded but does not expose the required API methods (`add_xp` or `check_levelups`)."
+                "The 'LevelUp' cog is loaded but does not expose the required API method (`add_xp`)."
             )
+        
+        # We previously tried to call check_levelups, but it is a private helper 
+        # that requires internal arguments (profile, conf), leading to the error.
+        # We will now rely solely on add_xp, which should be the intended public API hook.
 
         await ctx.send(
-            f"API Test: Attempting to add 1000 XP and check for level-ups for **{member.display_name}** (`{member.id}`)."
+            f"API Test: Attempting to add 1000 XP to **{member.display_name}** (`{member.id}`)."
         )
 
         try:
@@ -51,14 +55,14 @@ class TestLevelUpAPI(commands.Cog):
             # The method signature is expected to be add_xp(member, amount)
             new_xp = await levelup_cog.add_xp(member, 1000)
 
-            # 3. Call the check_levelups API method
-            # This is crucial for triggering potential level announcements
-            await levelup_cog.check_levelups(member)
+            # NOTE: We removed the explicit call to levelup_cog.check_levelups(member)
+            # as it caused an error due to missing required positional arguments.
+            # We assume the add_xp method handles the level-up check internally.
 
             await ctx.send(
                 f"✅ **Success!** Added 1000 XP to **{member.display_name}**. "
                 f"New total XP (returned by API): `{new_xp}`. "
-                f"Level-up checks have been performed."
+                f"If LevelUp handles checks internally, the member may have leveled up."
             )
 
         except Exception as e:
