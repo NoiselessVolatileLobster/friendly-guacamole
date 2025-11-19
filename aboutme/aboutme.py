@@ -13,7 +13,9 @@ class AboutMe(commands.Cog):
             "role_targets": {}, 
             "role_buddies": {},
             "location_roles": {},
-            "dm_status_roles": {} # NEW: { "role_id": "emoji_string" }
+            "dm_status_roles": {},
+            "award_roles": [],  # NEW: List of role IDs
+            "helper_roles": []  # NEW: List of role IDs
         }
         self.config.register_guild(**default_guild)
 
@@ -45,7 +47,7 @@ class AboutMe(commands.Cog):
         if location_parts:
             location_output = f"\n**Location:** {', '.join(location_parts)}"
 
-        # --- 2b. DM Status Role Check (NEW) ---
+        # --- 2b. DM Status Role Check ---
         dm_status_config = await self.config.guild(ctx.guild).dm_status_roles()
         dm_status_parts = []
 
@@ -59,6 +61,34 @@ class AboutMe(commands.Cog):
         dm_status_output = ""
         if dm_status_parts:
             dm_status_output = f"\n**DM Status:** {', '.join(dm_status_parts)}"
+
+        # --- 2c. Award Roles Check (NEW) ---
+        award_roles_config = await self.config.guild(ctx.guild).award_roles()
+        award_parts = []
+
+        for role_id in award_roles_config:
+            # Config stores IDs as integers in the list, but let's handle potential strings safely
+            award_role = ctx.guild.get_role(int(role_id))
+            if award_role and award_role in member.roles:
+                award_parts.append(f"**{award_role.name}**")
+
+        award_output = ""
+        if award_parts:
+            award_output = f"\n**Awards:** {', '.join(award_parts)}"
+
+        # --- 2d. Helper Roles Check (NEW) ---
+        helper_roles_config = await self.config.guild(ctx.guild).helper_roles()
+        helper_parts = []
+
+        for role_id in helper_roles_config:
+            helper_role = ctx.guild.get_role(int(role_id))
+            if helper_role and helper_role in member.roles:
+                helper_parts.append(f"**{helper_role.name}**")
+
+        helper_output = ""
+        if helper_parts:
+            helper_output = f"\n**I help T3P by being a ** {', '.join(helper_parts)}"
+
 
         # --- 3. Role Progress Calculation ---
         role_targets = await self.config.guild(ctx.guild).role_targets()
@@ -109,8 +139,16 @@ class AboutMe(commands.Cog):
             f"Don't forget to visit <id:customize> to request more roles!"
         )
 
-        # Combine all parts: Base -> Location -> DM Status -> Progress -> Link
-        final_description = base_description + location_output + dm_status_output + role_progress_output + footer_link
+        # Combine all parts
+        final_description = (
+            base_description + 
+            location_output + 
+            dm_status_output + 
+            award_output + 
+            helper_output + 
+            role_progress_output + 
+            footer_link
+        )
 
         embed = discord.Embed(
             title=f"About {member.display_name} in {ctx.guild.name}",
@@ -163,10 +201,7 @@ class AboutMe(commands.Cog):
 
     @aboutmeset_locations.command(name="add")
     async def locations_add(self, ctx, role: discord.Role, emoji: str):
-        """
-        Add a location role and associate an emoji with it.
-        Usage: [p]aboutmeset locations add @US-West 🇺🇸
-        """
+        """Add a location role and associate an emoji with it."""
         async with self.config.guild(ctx.guild).location_roles() as locations:
             role_id_str = str(role.id)
             locations[role_id_str] = emoji
@@ -175,10 +210,7 @@ class AboutMe(commands.Cog):
 
     @aboutmeset_locations.command(name="remove")
     async def locations_remove(self, ctx, role: discord.Role):
-        """
-        Remove a location role from tracking.
-        Usage: [p]aboutmeset locations remove @US-West
-        """
+        """Remove a location role from tracking."""
         async with self.config.guild(ctx.guild).location_roles() as locations:
             role_id_str = str(role.id)
             if role_id_str in locations:
@@ -189,9 +221,8 @@ class AboutMe(commands.Cog):
 
     @aboutmeset_locations.command(name="list")
     async def locations_list(self, ctx):
-        """List all configured location roles and their emojis."""
+        """List all configured location roles."""
         locations = await self.config.guild(ctx.guild).location_roles()
-        
         if not locations:
             return await ctx.send("No location roles are currently configured.")
 
@@ -201,15 +232,11 @@ class AboutMe(commands.Cog):
             role_name = role.mention if role else f"Deleted-Role-{role_id_str}"
             lines.append(f"{emoji} {role_name}")
 
-        embed = discord.Embed(
-            title="Configured Location Roles",
-            description="\n".join(lines),
-            color=await ctx.embed_color()
-        )
+        embed = discord.Embed(title="Configured Location Roles", description="\n".join(lines), color=await ctx.embed_color())
         await ctx.send(embed=embed)
 
     # ------------------------------------------------------------------
-    # NEW: DM Status Role Management
+    # DM Status Role Management
     # ------------------------------------------------------------------
 
     @aboutmeset.group(name="dmstatus")
@@ -219,10 +246,7 @@ class AboutMe(commands.Cog):
 
     @aboutmeset_dmstatus.command(name="add")
     async def dmstatus_add(self, ctx, role: discord.Role, emoji: str):
-        """
-        Add a DM Status role and associate an emoji with it.
-        Usage: [p]aboutmeset dmstatus add @DMsOpen 🟢
-        """
+        """Add a DM Status role and associate an emoji with it."""
         async with self.config.guild(ctx.guild).dm_status_roles() as statuses:
             role_id_str = str(role.id)
             statuses[role_id_str] = emoji
@@ -231,10 +255,7 @@ class AboutMe(commands.Cog):
 
     @aboutmeset_dmstatus.command(name="remove")
     async def dmstatus_remove(self, ctx, role: discord.Role):
-        """
-        Remove a DM Status role from tracking.
-        Usage: [p]aboutmeset dmstatus remove @DMsOpen
-        """
+        """Remove a DM Status role from tracking."""
         async with self.config.guild(ctx.guild).dm_status_roles() as statuses:
             role_id_str = str(role.id)
             if role_id_str in statuses:
@@ -245,9 +266,8 @@ class AboutMe(commands.Cog):
 
     @aboutmeset_dmstatus.command(name="list")
     async def dmstatus_list(self, ctx):
-        """List all configured DM Status roles and their emojis."""
+        """List all configured DM Status roles."""
         statuses = await self.config.guild(ctx.guild).dm_status_roles()
-        
         if not statuses:
             return await ctx.send("No DM Status roles are currently configured.")
 
@@ -257,11 +277,97 @@ class AboutMe(commands.Cog):
             role_name = role.mention if role else f"Deleted-Role-{role_id_str}"
             lines.append(f"{emoji} {role_name}")
 
-        embed = discord.Embed(
-            title="Configured DM Status Roles",
-            description="\n".join(lines),
-            color=await ctx.embed_color()
-        )
+        embed = discord.Embed(title="Configured DM Status Roles", description="\n".join(lines), color=await ctx.embed_color())
+        await ctx.send(embed=embed)
+
+    # ------------------------------------------------------------------
+    # NEW: Award Role Management
+    # ------------------------------------------------------------------
+
+    @aboutmeset.group(name="award")
+    async def aboutmeset_award(self, ctx):
+        """Manage Award roles (displayed in the Awards section)."""
+        pass
+
+    @aboutmeset_award.command(name="add")
+    async def award_add(self, ctx, role: discord.Role):
+        """Add an Award role."""
+        async with self.config.guild(ctx.guild).award_roles() as awards:
+            if role.id not in awards:
+                awards.append(role.id)
+                await ctx.send(f"Added **{role.name}** to Award roles.")
+            else:
+                await ctx.send(f"**{role.name}** is already an Award role.")
+
+    @aboutmeset_award.command(name="remove")
+    async def award_remove(self, ctx, role: discord.Role):
+        """Remove an Award role."""
+        async with self.config.guild(ctx.guild).award_roles() as awards:
+            if role.id in awards:
+                awards.remove(role.id)
+                await ctx.send(f"Removed **{role.name}** from Award roles.")
+            else:
+                await ctx.send(f"**{role.name}** is not currently configured as an Award role.")
+
+    @aboutmeset_award.command(name="list")
+    async def award_list(self, ctx):
+        """List all configured Award roles."""
+        awards = await self.config.guild(ctx.guild).award_roles()
+        if not awards:
+            return await ctx.send("No Award roles are currently configured.")
+
+        lines = []
+        for role_id in awards:
+            role = ctx.guild.get_role(role_id)
+            role_name = role.mention if role else f"Deleted-Role-{role_id}"
+            lines.append(role_name)
+
+        embed = discord.Embed(title="Configured Award Roles", description="\n".join(lines), color=await ctx.embed_color())
+        await ctx.send(embed=embed)
+
+    # ------------------------------------------------------------------
+    # NEW: Helper Role Management
+    # ------------------------------------------------------------------
+
+    @aboutmeset.group(name="helper")
+    async def aboutmeset_helper(self, ctx):
+        """Manage Helper roles (displayed in the Helper section)."""
+        pass
+
+    @aboutmeset_helper.command(name="add")
+    async def helper_add(self, ctx, role: discord.Role):
+        """Add a Helper role."""
+        async with self.config.guild(ctx.guild).helper_roles() as helpers:
+            if role.id not in helpers:
+                helpers.append(role.id)
+                await ctx.send(f"Added **{role.name}** to Helper roles.")
+            else:
+                await ctx.send(f"**{role.name}** is already a Helper role.")
+
+    @aboutmeset_helper.command(name="remove")
+    async def helper_remove(self, ctx, role: discord.Role):
+        """Remove a Helper role."""
+        async with self.config.guild(ctx.guild).helper_roles() as helpers:
+            if role.id in helpers:
+                helpers.remove(role.id)
+                await ctx.send(f"Removed **{role.name}** from Helper roles.")
+            else:
+                await ctx.send(f"**{role.name}** is not currently configured as a Helper role.")
+
+    @aboutmeset_helper.command(name="list")
+    async def helper_list(self, ctx):
+        """List all configured Helper roles."""
+        helpers = await self.config.guild(ctx.guild).helper_roles()
+        if not helpers:
+            return await ctx.send("No Helper roles are currently configured.")
+
+        lines = []
+        for role_id in helpers:
+            role = ctx.guild.get_role(role_id)
+            role_name = role.mention if role else f"Deleted-Role-{role_id}"
+            lines.append(role_name)
+
+        embed = discord.Embed(title="Configured Helper Roles", description="\n".join(lines), color=await ctx.embed_color())
         await ctx.send(embed=embed)
 
     # ------------------------------------------------------------------
