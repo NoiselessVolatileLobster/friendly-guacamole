@@ -4,7 +4,7 @@ import discord
 from discord.ext.commands.cog import CogMeta
 from redbot.core.bot import Red
 
-from .common.models import DB
+# from .common.models import DB
 
 
 class CompositeMetaClass(CogMeta, ABCMeta):
