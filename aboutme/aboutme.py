@@ -8,7 +8,6 @@ class AboutMe(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=9876543210, force_registration=True)
-        levelup = self.bot.get_cog("LevelUp")
 
         default_guild = {
             "role_targets": {}, 
@@ -24,13 +23,6 @@ class AboutMe(commands.Cog):
 
     async def _process_member_status(self, ctx, member: discord.Member):
         """Helper function to generate the member status embed."""
-        
-        # LevelUp level
-
-        if self.bot.get_cog("LevelUp"):
-            level = "TBD"
-            levelup.init_user(ctx.guild.id, str(ctx.author.id))
-            # level = levelup.data[ctx.guild.id]["users"][str(ctx.author.id)]["level"]
         
         # Join Date
 
@@ -206,6 +198,14 @@ class AboutMe(commands.Cog):
     @commands.guild_only()
     async def aboutme(self, ctx):
         """Check how long you have been in this server and see role progress."""
+
+        # LevelUp level should be checked on the user's command
+        if self.bot.get_cog("LevelUp"):
+            levelup = self.bot.get_cog("LevelUp")
+            level = "TBD"
+            levelup.init_user(ctx.guild.id, str(ctx.author.id))
+            # level = levelup.data[ctx.guild.id]["users"][str(ctx.author.id)]["level"]
+
         embed = await self._process_member_status(ctx, ctx.author)
         if embed:
             await ctx.send(embed=embed)
