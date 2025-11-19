@@ -24,6 +24,12 @@ class AboutMe(commands.Cog):
     async def _process_member_status(self, ctx, member: discord.Member):
         """Helper function to generate the member status embed."""
         
+        # Attempt to get LevelUp level
+        if self.bot.get_cog("LevelUp"):
+            levelup = self.bot.get_cog(LevelUp)
+        
+        # Join Date
+
         if member.joined_at is None:
             return await ctx.send("I couldn't determine when that member joined this server.")
 
@@ -159,13 +165,6 @@ class AboutMe(commands.Cog):
         role_progress_output = ""
         if progress_lines:
             role_progress_output = "\n\n**Role Progress**\n" + "\n".join(progress_lines)
-
-        # Attempt to get LevelUp level
-        if self.bot.get_cog("LevelUp"):
-            try:
-                levelup = self.bot.get_cog(LevelUp)
-            except Exception as e:
-                log.exception("Error checking LevelUp level", exc_info=e)
 
         # --- 4. Build Final Description ---
         final_description = (
