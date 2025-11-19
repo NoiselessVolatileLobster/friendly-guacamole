@@ -29,9 +29,9 @@ class AboutMe(commands.Cog):
         if self.bot.get_cog("LevelUp"):
             level = "TBD"
             levelup = self.bot.get_cog("LevelUp")
-        #    if self.guild.id in levelup.data:
-        #        levelup.init_user(self.guild.id, str(interaction.user.id))
-        #        level = levelup.data[self.guild.id]["users"][str(interaction.user.id)]["level"]
+            if ctx.guild.id in levelup.data:
+                levelup.init_user(ctx.guild.id, str(ctx.author.id))
+                level = levelup.data[ctx.guild.id]["users"][str(ctx.author.id)]["level"]
         
         # Join Date
 
