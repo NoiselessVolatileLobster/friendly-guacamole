@@ -25,11 +25,9 @@ class AboutMe(commands.Cog):
         """Helper function to generate the member status embed."""
         
         # Attempt to get LevelUp level
-        if self.bot.get_cog("LevelUp"):
-            levelup = self.bot.get_cog("LevelUp")
-            levelup.init_user(ctx.guild.id, str(ctx.author.id))
-            level = levelup.data[ctx.guild.id]["users"][str(ctx.author.id)]["level"]
-
+        levelup = self.bot.get_cog("LevelUp")
+        levelup.init_user(ctx.guild.id, str(ctx.author.id))
+        level = levelup.data[ctx.guild.id]["users"][str(ctx.author.id)]["level"]
         
         # Join Date
 
