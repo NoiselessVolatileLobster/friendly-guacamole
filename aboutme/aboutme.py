@@ -8,7 +8,8 @@ class AboutMe(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=9876543210, force_registration=True)
-        
+        levelup = self.bot.get_cog("LevelUp")
+
         default_guild = {
             "role_targets": {}, 
             "role_buddies": {},
@@ -28,7 +29,6 @@ class AboutMe(commands.Cog):
 
         if self.bot.get_cog("LevelUp"):
             level = "TBD"
-            levelup = self.bot.get_cog("LevelUp")
             levelup.init_user(ctx.guild.id, str(ctx.author.id))
             # level = levelup.data[ctx.guild.id]["users"][str(ctx.author.id)]["level"]
         
