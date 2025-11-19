@@ -398,7 +398,7 @@ class AboutMe(commands.Cog):
     @aboutmeset_houseroles.command(name="add")
     async def houseroles_add(self, ctx, role: discord.Role, emoji: str):
         """Add an House Status role and associate an emoji with it."""
-        async with self.config.guild(ctx.guild).house_status_roles() as house_roles:
+        async with self.config.guild(ctx.guild).house_roles() as house_roles:
             role_id_str = str(role.id)
             house_roles[role_id_str] = emoji
             
@@ -407,7 +407,7 @@ class AboutMe(commands.Cog):
     @aboutmeset_houseroles.command(name="remove")
     async def houseroles_remove(self, ctx, role: discord.Role):
         """Remove an House role."""
-        async with self.config.guild(ctx.guild).house_status_roles() as house_roles:
+        async with self.config.guild(ctx.guild).house_roles() as house_roles:
             role_id_str = str(role.id)
             if role_id_str in house_roles:
                 del house_roles[role_id_str]
@@ -418,7 +418,7 @@ class AboutMe(commands.Cog):
     @aboutmeset_houseroles.command(name="list")
     async def houseroles_list(self, ctx):
         """List all configured House roles."""
-        house_roles = await self.config.guild(ctx.guild).house_status_roles()
+        house_roles = await self.config.guild(ctx.guild).house_roles()
         if not house_roles:
             return await ctx.send("No House roles are currently configured.")
 
