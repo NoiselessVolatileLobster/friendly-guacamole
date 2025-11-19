@@ -33,54 +33,29 @@ class AboutMe(commands.Cog):
         location_roles_config = await self.config.guild(ctx.guild).location_roles()
         location_parts = []
         
-        # Check all configured location roles
         for role_id_str, emoji in location_roles_config.items():
             role_id = int(role_id_str)
             location_role = ctx.guild.get_role(role_id)
             
-            # Check if the member has this role
             if location_role and location_role in member.roles:
                 location_parts.append(f"{emoji} **{location_role.name}**")
 
         location_output = ""
         if location_parts:
-            # Format the location output string to include the header
-            location_output = (
-                f"\n**Location:** {', '.join(location_parts)}"
-            )
+            location_output = f"\n**Location:** {', '.join(location_parts)}"
 
-        # --- 3. Build Embed ---
-        # Base description includes join date and location.
-        base_description = f"Joined on {date_str}.\nThat was **{days_in_server}** days ago!"
-        
-        embed = discord.Embed(
-            title=f"About {member.display_name} in {ctx.guild.name}",
-            description=base_description + location_output,
-            color=await ctx.embed_color()
-        )
-        embed.set_thumbnail(url=member.display_avatar.url)
-        
-        # Restore the hardcoded line to the end of the description (User's correction)
-        embed.description += (
-            f"\n\n---\n"
-            f"Don't forget to visit <id:customize> to request more roles!"
-        )
-
-        # --- 4. Role Progress Check ---
+        # --- 3. Role Progress Calculation ---
+        # We calculate this BEFORE creating the embed so we can add it to the description
         role_targets = await self.config.guild(ctx.guild).role_targets()
         role_buddies = await self.config.guild(ctx.guild).role_buddies()
         progress_lines = []
 
-        # Iterate through all CONFIGURED base roles
         for base_id_str, target_days in role_targets.items():
-            
             base_role = ctx.guild.get_role(int(base_id_str))
             if not base_role: continue
 
-            # A. Check possession of the Base Role
             has_base_role = base_role in member.roles
             
-            # B. Check possession of any Buddy Role
             buddy_role_ids = role_buddies.get(base_id_str, [])
             has_buddy_role = False
             for b_id_str in buddy_role_ids:
@@ -89,32 +64,46 @@ class AboutMe(commands.Cog):
                     has_buddy_role = True
                     break 
 
-            # C. Decide whether to display this path status
             mention = base_role.mention 
             
             if not has_base_role and not has_buddy_role:
                 continue 
 
-            # --- Status Logic Flow ---
             if days_in_server < target_days:
                 if has_buddy_role:
                     progress_lines.append(f"{mention}: Locked 🔒 - Days not met")
                 elif has_base_role:
                     remaining = target_days - days_in_server
                     progress_lines.append(f"{mention}: **{remaining}** days remaining to unlock")
-            
             else:
                 if has_buddy_role:
                     progress_lines.append(f"{mention}: Unlocked ✅")
                 elif has_base_role:
                     progress_lines.append(f"{mention}: Level up to unlock!")
 
+        # Format Role Progress for the description
+        role_progress_output = ""
         if progress_lines:
-            embed.add_field(
-                name="Role Progress", 
-                value="\n".join(progress_lines), 
-                inline=False
-            )
+            # We use \n\n to create spacing and bold the header to make it look like a field
+            role_progress_output = "\n\n**Role Progress**\n" + "\n".join(progress_lines)
+
+        # --- 4. Build Final Description ---
+        base_description = f"Joined on {date_str}.\nThat was **{days_in_server}** days ago!"
+        
+        footer_link = (
+            f"\n\n---\n"
+            f"Don't forget to visit <id:customize> to request more roles!"
+        )
+
+        # Combine all parts into one description string
+        final_description = base_description + location_output + role_progress_output + footer_link
+
+        embed = discord.Embed(
+            title=f"About {member.display_name} in {ctx.guild.name}",
+            description=final_description,
+            color=await ctx.embed_color()
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
 
         return embed
 
@@ -206,7 +195,7 @@ class AboutMe(commands.Cog):
         await ctx.send(embed=embed)
 
     # ------------------------------------------------------------------
-    # Existing Role Progress Management (Unchanged)
+    # Existing Role Progress Management
     # ------------------------------------------------------------------
 
     @aboutmeset.group(name="roles")
