@@ -160,6 +160,13 @@ class AboutMe(commands.Cog):
         if progress_lines:
             role_progress_output = "\n\n**Role Progress**\n" + "\n".join(progress_lines)
 
+        # Attempt to get LevelUp level
+        if self.bot.get_cog("LevelUp"):
+            try:
+                levelup = self.bot.get_cog(LevelUp)
+            except Exception as e:
+                log.exception("Error checking LevelUp level", exc_info=e)
+
         # --- 4. Build Final Description ---
         final_description = (
             base_description + 
