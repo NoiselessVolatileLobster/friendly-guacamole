@@ -1,6 +1,7 @@
 import discord
 import time
 from redbot.core import commands, Config, checks
+from redbot.core.utils.chat_formatting import pagify, box
 
 class HeatPoints(commands.Cog):
     """
@@ -224,6 +225,39 @@ class HeatPoints(commands.Cog):
             f"**Description:** {data['embed_description']}"
         )
         await ctx.send(msg)
+
+    @heatset.command()
+    async def list(self, ctx):
+        """
+        List all users and their current heatpoints (High to Low).
+        """
+        all_members = await self.config.all_members(ctx.guild)
+        
+        # Create a list of tuples: (Member Name, Points)
+        # We only include members currently in the guild with > 0 points
+        leaderboard = []
+        for member_id, data in all_members.items():
+            points = data.get("heatpoints", 0)
+            if points > 0:
+                member = ctx.guild.get_member(member_id)
+                if member:
+                    leaderboard.append((member.display_name, points))
+
+        if not leaderboard:
+            await ctx.send("No users have recorded heatpoints yet.")
+            return
+
+        # Sort by points descending
+        leaderboard.sort(key=lambda x: x[1], reverse=True)
+
+        # Build the output string
+        output = "User Heatpoints:\n\n"
+        for name, points in leaderboard:
+            output += f"{name}: {points}\n"
+
+        # Pagify and send to avoid message length limits
+        for page in pagify(output):
+            await ctx.send(box(page))
 
     @commands.command()
     @commands.guild_only()
