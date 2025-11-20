@@ -1,4 +1,4 @@
 from .gifonly import GifOnly
 
-def setup(bot):
-    bot.add_cog(GifOnly(bot))
+async def setup(bot):
+    await bot.add_cog(GifOnly(bot))
