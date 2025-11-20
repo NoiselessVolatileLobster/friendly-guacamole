@@ -124,7 +124,7 @@ class GifOnly(commands.Cog):
                 await self.log_deletion(message, settings)
                 
                 # Optional: Send a temp warning message
-                warning = await message.channel.send(f"{message.author.mention}, only GIFs are allowed in this channel!", delete_after=3)
+                warning = await message.channel.send(f"{message.author.mention}, only GIFs are allowed in this channel!", delete_after=5)
                 
             except discord.Forbidden:
                 print(f"GifOnly Error: Missing 'Manage Messages' permission in {message.guild.name}")
