@@ -17,7 +17,8 @@ class AboutMe(commands.Cog):
             "award_roles": [],
             "helper_roles": [],
             "egg_status_roles": {},
-            "house_roles": {}
+            "house_roles": {},
+            "role_target_overrides": {} # NEW: { "base_role_id": "target_role_id" }
         }
         self.config.register_guild(**default_guild)
 
@@ -59,7 +60,7 @@ class AboutMe(commands.Cog):
             if dm_role and dm_role in member.roles:
                 dm_status_parts.append(f"{emoji} {dm_role.name}")
 
-        # --- 2c. Egg Status Roles Check (Moved up for combining) ---
+        # --- 2c. Egg Status Roles Check ---
         egg_roles_config = await self.config.guild(ctx.guild).egg_status_roles()
         egg_parts = []
 
@@ -71,11 +72,9 @@ class AboutMe(commands.Cog):
                 egg_parts.append(f"{emoji} {egg_role.name}")
 
         # Formatting Change: Combine Egg, Location, and DM Status into one line
-        # Order: Egg -> Location -> DM Status
         combined_status_parts = egg_parts + location_parts + dm_status_parts
         combined_status_output = ""
         if combined_status_parts:
-            # Joining with 2 spaces for visual separation
             combined_status_output = f"\n{'  '.join(combined_status_parts)}"
 
         # --- 2d. Award Roles Check ---
@@ -122,12 +121,25 @@ class AboutMe(commands.Cog):
         # --- 3. Role Progress Calculation ---
         role_targets = await self.config.guild(ctx.guild).role_targets()
         role_buddies = await self.config.guild(ctx.guild).role_buddies()
+        role_target_overrides = await self.config.guild(ctx.guild).role_target_overrides()
+        
         progress_lines = []
 
         for base_id_str, target_days in role_targets.items():
             base_role = ctx.guild.get_role(int(base_id_str))
             if not base_role: continue
 
+            # --- NEW: Check for Target Override (Target Role) ---
+            # If the user has the "Target Role", we show "Unlocked!" and skip base role checks.
+            target_override_id = role_target_overrides.get(base_id_str)
+            if target_override_id:
+                target_override_role = ctx.guild.get_role(int(target_override_id))
+                if target_override_role and target_override_role in member.roles:
+                    # User has the superior target role
+                    progress_lines.append(f"{target_override_role.mention} Unlocked! ✅")
+                    continue # Skip normal base role processing
+
+            # --- Standard Base Role Logic ---
             has_base_role = base_role in member.roles
             
             buddy_role_ids = role_buddies.get(base_id_str, [])
@@ -140,6 +152,7 @@ class AboutMe(commands.Cog):
 
             mention = base_role.mention 
             
+            # Only display if the user is actively involved (has the base role) OR has completed the path (has the buddy role)
             if not has_base_role and not has_buddy_role:
                 continue 
 
@@ -163,7 +176,7 @@ class AboutMe(commands.Cog):
         # --- 4. Build Final Description ---
         final_description = (
             base_description + 
-            combined_status_output + # Combined Egg, Loc & DM +
+            combined_status_output + 
             house_output +
             award_output + 
             helper_output + 
@@ -548,10 +561,45 @@ class AboutMe(commands.Cog):
                 
             await ctx.send(f"Unlinked **{buddy_role.name}** from **{base_role.name}**.")
 
+    @aboutmeset_roles.command(name="linktarget")
+    async def roles_linktarget(self, ctx, base_role: discord.Role, target_role: discord.Role):
+        """
+        Link a 'target' role to a base role. 
+        If the user has the target role, the base role display is replaced by 'Unlocked!'.
+        Usage: [p]aboutmeset roles linktarget @BaseRole @TargetRole
+        """
+        base_id = str(base_role.id)
+        target_id = str(target_role.id)
+        
+        # Check if base role is configured
+        targets = await self.config.guild(ctx.guild).role_targets()
+        if base_id not in targets:
+             return await ctx.send(f"**{base_role.name}** is not configured as a base role yet.")
+             
+        async with self.config.guild(ctx.guild).role_target_overrides() as overrides:
+            overrides[base_id] = target_id
+            
+        await ctx.send(f"Linked **{target_role.name}** as a target override for **{base_role.name}**.")
+
+    @aboutmeset_roles.command(name="unlinktarget")
+    async def roles_unlinktarget(self, ctx, base_role: discord.Role):
+        """
+        Remove the target role link from a base role.
+        Usage: [p]aboutmeset roles unlinktarget @BaseRole
+        """
+        base_id = str(base_role.id)
+        
+        async with self.config.guild(ctx.guild).role_target_overrides() as overrides:
+            if base_id in overrides:
+                del overrides[base_id]
+                await ctx.send(f"Removed target override for **{base_role.name}**.")
+            else:
+                await ctx.send(f"**{base_role.name}** does not have a target override linked.")
+
     @aboutmeset_roles.command(name="remove")
     async def roles_remove(self, ctx, role: discord.Role):
         """
-        Stop tracking a role completely (removes day target and all buddy links).
+        Stop tracking a role completely (removes day target, buddy links, and target overrides).
         """
         role_id = str(role.id)
         
@@ -565,13 +613,19 @@ class AboutMe(commands.Cog):
             if role_id in buddies:
                 del buddies[role_id]
 
+        # NEW: Remove from target overrides as well
+        async with self.config.guild(ctx.guild).role_target_overrides() as overrides:
+            if role_id in overrides:
+                del overrides[role_id]
+
         await ctx.send(f"Removed configuration for **{role.name}**.")
 
     @aboutmeset_roles.command(name="list")
     async def roles_list(self, ctx):
-        """List all configured roles, days, and linked buddy roles."""
+        """List all configured roles, days, linked buddy roles, and target overrides."""
         targets = await self.config.guild(ctx.guild).role_targets()
         buddies = await self.config.guild(ctx.guild).role_buddies()
+        target_overrides = await self.config.guild(ctx.guild).role_target_overrides()
         
         if not targets:
             return await ctx.send("No roles are currently configured.")
@@ -581,6 +635,7 @@ class AboutMe(commands.Cog):
             role = ctx.guild.get_role(int(role_id))
             role_name = role.mention if role else f"Deleted-Role-{role_id}"
             
+            # Buddy Text
             buddy_text = ""
             if role_id in buddies:
                 buddy_names = []
@@ -588,10 +643,17 @@ class AboutMe(commands.Cog):
                     buddy_role = ctx.guild.get_role(int(buddy_id_str))
                     buddy_name = buddy_role.mention if buddy_role else "Unknown Role"
                     buddy_names.append(buddy_name)
-                    
                 buddy_text = f" ➡️ Buddies: {', '.join(buddy_names)}"
+            
+            # Target Override Text
+            target_text = ""
+            if role_id in target_overrides:
+                t_id = target_overrides[role_id]
+                t_role = ctx.guild.get_role(int(t_id))
+                t_name = t_role.mention if t_role else f"Unknown-Role-{t_id}"
+                target_text = f" 🎯 Target: {t_name}"
 
-            lines.append(f"{role_name}: **{days}** days{buddy_text}")
+            lines.append(f"{role_name}: **{days}** days{buddy_text}{target_text}")
 
         embed = discord.Embed(
             title="AboutMe Configurations",
