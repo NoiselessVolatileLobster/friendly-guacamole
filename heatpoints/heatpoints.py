@@ -18,7 +18,8 @@ class HeatPoints(commands.Cog):
             "embed_title": "Heat Level Reached!",
             "embed_description": "Congratulations! You have reached the activity threshold.",
             "embed_image": "",  # Empty string means no image
-            "notification_channel": None # If None, sends in the active channel
+            "notification_channel": None, # If None, sends in the active channel
+            "use_active_channel": True # If True, overrides notification_channel to use the message channel
         }
 
         default_member = {
@@ -69,17 +70,26 @@ class HeatPoints(commands.Cog):
                 await self._send_reward_embed(message.channel, member, new_points)
                 await self.config.member(member).has_triggered_reward.set(True)
 
-    async def _send_reward_embed(self, channel, member, points):
+    async def _send_reward_embed(self, source_channel, member, points):
         """
         Helper function to construct and send the embed.
         """
         guild = member.guild
         guild_data = await self.config.guild(guild).all()
 
+        # Determine destination channel
+        dest_channel = source_channel
+        
+        # If we are NOT forced to use the active channel, and a notification channel is set
+        if not guild_data["use_active_channel"] and guild_data["notification_channel"]:
+            found_channel = guild.get_channel(guild_data["notification_channel"])
+            if found_channel:
+                dest_channel = found_channel
+
         embed = discord.Embed(
             title=guild_data["embed_title"],
             description=guild_data["embed_description"].replace("{user}", member.mention).replace("{points}", str(points)),
-            color=await self.bot.get_embed_color(channel)
+            color=await self.bot.get_embed_color(dest_channel)
         )
 
         if guild_data["embed_image"]:
@@ -88,7 +98,7 @@ class HeatPoints(commands.Cog):
         embed.set_footer(text=f"User: {member.display_name}", icon_url=member.display_avatar.url)
 
         try:
-            await channel.send(content=member.mention, embed=embed)
+            await dest_channel.send(content=member.mention, embed=embed)
         except discord.Forbidden:
             # Bot lacks permissions to send embed in this channel
             pass
@@ -126,6 +136,37 @@ class HeatPoints(commands.Cog):
         await self.config.guild(ctx.guild).enabled.set(not current)
         status = "disabled" if current else "enabled"
         await ctx.send(f"HeatPoints system is now **{status}**.")
+
+    @heatset.command()
+    async def channel(self, ctx, channel: discord.TextChannel = None):
+        """
+        Set a specific channel for reward embeds.
+        
+        If no channel is specified, the specific channel setting is cleared.
+        """
+        if channel is None:
+            await self.config.guild(ctx.guild).notification_channel.set(None)
+            await ctx.send("Specific notification channel cleared. Embeds will post in the active channel.")
+        else:
+            await self.config.guild(ctx.guild).notification_channel.set(channel.id)
+            # Automatically switch to using the specific channel
+            await self.config.guild(ctx.guild).use_active_channel.set(False)
+            await ctx.send(f"Reward embeds will now be sent to {channel.mention}.")
+
+    @heatset.command()
+    async def toggleorigin(self, ctx):
+        """
+        Toggle whether embeds are posted in the channel where the user reached the threshold.
+        
+        True = Always post in the active channel (Origin).
+        False = Post in the specific channel configured via `[p]heatset channel` (if set).
+        """
+        current = await self.config.guild(ctx.guild).use_active_channel()
+        new_state = not current
+        await self.config.guild(ctx.guild).use_active_channel.set(new_state)
+        
+        state_str = "Active Channel (Origin)" if new_state else "Configured Specific Channel"
+        await ctx.send(f"Embed destination mode set to: **{state_str}**.")
 
     @heatset.command()
     async def configembed(self, ctx, title: str, image_url: str, *, description: str):
@@ -166,9 +207,18 @@ class HeatPoints(commands.Cog):
         View current settings.
         """
         data = await self.config.guild(ctx.guild).all()
+        
+        channel_name = "None"
+        if data['notification_channel']:
+            chan = ctx.guild.get_channel(data['notification_channel'])
+            channel_name = chan.mention if chan else "Deleted Channel"
+            
+        mode = "Active Channel (Origin)" if data['use_active_channel'] else f"Specific Channel: {channel_name}"
+
         msg = (
             f"**Status:** {'Enabled' if data['enabled'] else 'Disabled'}\n"
             f"**Threshold:** {data['threshold']} points\n"
+            f"**Mode:** {mode}\n"
             f"**Title:** {data['embed_title']}\n"
             f"**Image:** {data['embed_image'] or 'None'}\n"
             f"**Description:** {data['embed_description']}"
