@@ -18,7 +18,7 @@ class AboutMe(commands.Cog):
             "helper_roles": [],
             "egg_status_roles": {},
             "house_roles": {},
-            "role_target_overrides": {} # NEW: { "base_role_id": "target_role_id" }
+            "role_target_overrides": {} 
         }
         self.config.register_guild(**default_guild)
 
@@ -28,56 +28,74 @@ class AboutMe(commands.Cog):
         if member.joined_at is None:
             return await ctx.send("I couldn't determine when that member joined this server.")
 
-        # --- 1. Time Calculation ---
+        # --- 1. Time Calculation (Line 1) ---
         now = datetime.now(timezone.utc)
         joined_at = member.joined_at
         delta = now - joined_at
         days_in_server = delta.days
         date_str = joined_at.strftime("%B %d, %Y")
         
-        # Formatting Change 1: Single line join date
         base_description = f"Joined on {date_str} ({days_in_server} days ago)"
 
-        # --- 2a. Location Role Check ---
-        location_roles_config = await self.config.guild(ctx.guild).location_roles()
-        location_parts = []
-        
-        for role_id_str, emoji in location_roles_config.items():
-            role_id = int(role_id_str)
-            location_role = ctx.guild.get_role(role_id)
-            
-            if location_role and location_role in member.roles:
-                location_parts.append(f"{emoji} {location_role.name}")
-
-        # --- 2b. DM Status Role Check ---
-        dm_status_config = await self.config.guild(ctx.guild).dm_status_roles()
-        dm_status_parts = []
-
-        for role_id_str, emoji in dm_status_config.items():
-            role_id = int(role_id_str)
-            dm_role = ctx.guild.get_role(role_id)
-
-            if dm_role and dm_role in member.roles:
-                dm_status_parts.append(f"{emoji} {dm_role.name}")
-
-        # --- 2c. Egg Status Roles Check ---
+        # --- 2. Egg Status | House (Line 2) ---
+        # Egg Status
         egg_roles_config = await self.config.guild(ctx.guild).egg_status_roles()
         egg_parts = []
-
         for role_id_str, emoji in egg_roles_config.items():
             role_id = int(role_id_str)
             egg_role = ctx.guild.get_role(role_id)
-            
             if egg_role and egg_role in member.roles:
                 egg_parts.append(f"{emoji} {egg_role.name}")
 
-        # Formatting Change: Combine Egg, Location, and DM Status into one line
-        combined_status_parts = egg_parts + location_parts + dm_status_parts
-        combined_status_output = ""
-        if combined_status_parts:
-            combined_status_output = f"\n{'  '.join(combined_status_parts)}"
+        # House
+        house_roles_config = await self.config.guild(ctx.guild).house_roles()
+        house_parts = []
+        for role_id_str, emoji in house_roles_config.items():
+            role_id = int(role_id_str)
+            house_role = ctx.guild.get_role(role_id)
+            if house_role and house_role in member.roles:
+                house_parts.append(f"{emoji} {house_role.name}")
 
-        # --- 2d. Award Roles Check ---
+        line_2_components = []
+        if egg_parts:
+            line_2_components.append(", ".join(egg_parts))
+        if house_parts:
+            line_2_components.append(", ".join(house_parts))
+            
+        line_2_output = ""
+        if line_2_components:
+            line_2_output = f"\n{' | '.join(line_2_components)}"
+
+        # --- 3. Location | DM Status (Line 3) ---
+        # Location
+        location_roles_config = await self.config.guild(ctx.guild).location_roles()
+        location_parts = []
+        for role_id_str, emoji in location_roles_config.items():
+            role_id = int(role_id_str)
+            location_role = ctx.guild.get_role(role_id)
+            if location_role and location_role in member.roles:
+                location_parts.append(f"{emoji} {location_role.name}")
+
+        # DM Status
+        dm_status_config = await self.config.guild(ctx.guild).dm_status_roles()
+        dm_status_parts = []
+        for role_id_str, emoji in dm_status_config.items():
+            role_id = int(role_id_str)
+            dm_role = ctx.guild.get_role(role_id)
+            if dm_role and dm_role in member.roles:
+                dm_status_parts.append(f"{emoji} {dm_role.name}")
+
+        line_3_components = []
+        if location_parts:
+            line_3_components.append(", ".join(location_parts))
+        if dm_status_parts:
+            line_3_components.append(", ".join(dm_status_parts))
+
+        line_3_output = ""
+        if line_3_components:
+            line_3_output = f"\n{' | '.join(line_3_components)}"
+
+        # --- 4. Awards (Line 4) ---
         award_roles_config = await self.config.guild(ctx.guild).award_roles()
         award_parts = []
 
@@ -90,7 +108,7 @@ class AboutMe(commands.Cog):
         if award_parts:
             award_output = f"\n**Awards:** {', '.join(award_parts)}"
 
-        # --- 2e. Helper Roles Check ---
+        # --- 5. Teams (Line 5) ---
         helper_roles_config = await self.config.guild(ctx.guild).helper_roles()
         helper_parts = []
 
@@ -101,24 +119,9 @@ class AboutMe(commands.Cog):
 
         helper_output = ""
         if helper_parts:
-            helper_output = f"\n**I am part of these teams:** {', '.join(helper_parts)}"
+            helper_output = f"\n**Teams:** {', '.join(helper_parts)}"
 
-        # --- 2f. House Roles Check ---
-        house_roles_config = await self.config.guild(ctx.guild).house_roles()
-        house_parts = []
-        
-        for role_id_str, emoji in house_roles_config.items():
-            role_id = int(role_id_str)
-            house_role = ctx.guild.get_role(role_id)
-            
-            if house_role and house_role in member.roles:
-                house_parts.append(f"{emoji} {house_role.name}")
-
-        house_output =  ""
-        if house_parts:
-            house_output = f"\n**My T3P house:** {', '.join(house_parts)}"
-
-        # --- 3. Role Progress Calculation ---
+        # --- Role Progress Calculation ---
         role_targets = await self.config.guild(ctx.guild).role_targets()
         role_buddies = await self.config.guild(ctx.guild).role_buddies()
         role_target_overrides = await self.config.guild(ctx.guild).role_target_overrides()
@@ -129,17 +132,16 @@ class AboutMe(commands.Cog):
             base_role = ctx.guild.get_role(int(base_id_str))
             if not base_role: continue
 
-            # --- NEW: Check for Target Override (Target Role) ---
-            # If the user has the "Target Role", we show "Unlocked!" and skip base role checks.
+            # Check for Target Override
             target_override_id = role_target_overrides.get(base_id_str)
             if target_override_id:
                 target_override_role = ctx.guild.get_role(int(target_override_id))
                 if target_override_role and target_override_role in member.roles:
-                    # User has the superior target role
-                    progress_lines.append(f"{target_override_role.mention} Unlocked! ✅")
-                    continue # Skip normal base role processing
+                    # User has the superior target role - Checkmark removed as requested
+                    progress_lines.append(f"{target_override_role.mention} Unlocked!")
+                    continue 
 
-            # --- Standard Base Role Logic ---
+            # Standard Base Role Logic
             has_base_role = base_role in member.roles
             
             buddy_role_ids = role_buddies.get(base_id_str, [])
@@ -152,7 +154,6 @@ class AboutMe(commands.Cog):
 
             mention = base_role.mention 
             
-            # Only display if the user is actively involved (has the base role) OR has completed the path (has the buddy role)
             if not has_base_role and not has_buddy_role:
                 continue 
 
@@ -173,13 +174,13 @@ class AboutMe(commands.Cog):
         if progress_lines:
             role_progress_output = "\n\n**Role Progress**\n" + "\n".join(progress_lines)
 
-        # --- 4. Build Final Description ---
+        # --- Build Final Description ---
         final_description = (
             base_description + 
-            combined_status_output + 
-            house_output +
-            award_output + 
-            helper_output + 
+            line_2_output +  # Egg | House
+            line_3_output +  # Location | DM Status
+            award_output +   # Awards
+            helper_output +  # Teams
             role_progress_output
         )
 
