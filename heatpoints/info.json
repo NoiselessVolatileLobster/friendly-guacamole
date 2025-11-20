@@ -1,0 +1,10 @@
+{
+    "author": ["NoiselessVolatileLobster"],
+    "install_msg": "HeatPoints has been installed. Configure it using `[p]heatset`.",
+    "name": "HeatPoints",
+    "short": "Track hourly activity points and reward users with an embed.",
+    "description": "Assigns 1 point per hour to active users and sends a custom embed when a threshold is reached.",
+    "tags": ["utility", "activity", "tracking"],
+    "requirements": [],
+    "min_bot_version": "3.5.0"
+}
