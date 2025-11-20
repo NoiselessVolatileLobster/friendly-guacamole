@@ -127,7 +127,7 @@ class SecretSanta(commands.Cog):
         default_global = {
             "embed_data": {
                 "title": "🎁 Secret Santa Sign-Up!",
-                "description": "Click the button below to join our annual Secret Santa event. You'll be matched with a random recipient once sign-ups close. Be sure to provide accurate country information!",
+                "description": "Click the button below to join our annual Secret Santa event. You'll be matched with a random recipient once sign-ups close. Be sure to provide accurate country information!\n **It is important you share a Gift Wishlist and you edit your privacy settings so it displays a nickname. Please see \"Add, Delete, and Manage Addresses\" and \"Change Your Gift List Privacy Settings\" on Amazon's website for details**",
                 "image": None,
                 "channel_id": None,
                 "message_id": None,
