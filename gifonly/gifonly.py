@@ -112,8 +112,8 @@ class GifOnly(commands.Cog):
 
         # Check for admin/mod permissions (Optional: admins usually bypass)
         # If you want admins to be subject to the rules, remove this block.
-        if await self.bot.is_admin(message.author) or await self.bot.is_mod(message.author):
-            return
+        # if await self.bot.is_admin(message.author) or await self.bot.is_mod(message.author):
+        #    return
 
         # Run GIF detection
         is_valid_gif = await self.is_gif(message)
