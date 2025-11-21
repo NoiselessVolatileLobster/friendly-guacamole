@@ -1,6 +1,7 @@
 import discord
 from redbot.core import commands, Config
 from datetime import datetime, timezone
+import json
 
 class AboutMe(commands.Cog):
     """A cog to show how long you have been in the server and track role progress."""
@@ -262,6 +263,31 @@ class AboutMe(commands.Cog):
     async def aboutmeset(self, ctx):
         """Settings for the AboutMe cog."""
         pass
+
+    # New Debugging Command
+    @aboutmeset.command(name="debugactivity")
+    async def aboutmeset_debugactivity(self, ctx, member: discord.Member):
+        """
+        [ADMIN] Displays the raw activity data returned by the OuijaPoke cog for a member.
+        This is useful for debugging why the activity status (e.g., Excluded/Unknown) is displayed incorrectly.
+        """
+        ouija_cog = self.bot.get_cog("OuijaPoke")
+        
+        if not ouija_cog or not hasattr(ouija_cog, "get_member_activity_state"):
+            return await ctx.send("The OuijaPoke cog is not loaded or does not support the required API method.")
+
+        try:
+            status_data = await ouija_cog.get_member_activity_state(member)
+            
+            # Format the dictionary nicely for display
+            formatted_data = json.dumps(status_data, indent=4)
+            
+            await ctx.send(
+                f"Raw OuijaPoke Activity Data for **{member.display_name}**:\n"
+                f"```json\n{formatted_data}\n```"
+            )
+        except Exception as e:
+            await ctx.send(f"An error occurred while fetching activity data: `{e}`")
 
     # ------------------------------------------------------------------
     # Location Role Management
