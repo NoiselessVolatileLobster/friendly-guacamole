@@ -35,10 +35,10 @@ class AboutMe(commands.Cog):
         days_in_server = delta.days
         date_str = joined_at.strftime("%B %d, %Y")
         
+        # Line 1: Joined on...
         base_description = f"Joined on {date_str} ({days_in_server} days ago)"
 
         # --- 2. Egg Status | House (Line 2) ---
-        # Egg Status
         egg_roles_config = await self.config.guild(ctx.guild).egg_status_roles()
         egg_parts = []
         for role_id_str, emoji in egg_roles_config.items():
@@ -47,7 +47,6 @@ class AboutMe(commands.Cog):
             if egg_role and egg_role in member.roles:
                 egg_parts.append(f"{emoji} {egg_role.name}")
 
-        # House
         house_roles_config = await self.config.guild(ctx.guild).house_roles()
         house_parts = []
         for role_id_str, emoji in house_roles_config.items():
@@ -67,7 +66,6 @@ class AboutMe(commands.Cog):
             line_2_output = f"\n{' | '.join(line_2_components)}"
 
         # --- 3. Location | DM Status (Line 3) ---
-        # Location
         location_roles_config = await self.config.guild(ctx.guild).location_roles()
         location_parts = []
         for role_id_str, emoji in location_roles_config.items():
@@ -76,7 +74,6 @@ class AboutMe(commands.Cog):
             if location_role and location_role in member.roles:
                 location_parts.append(f"{emoji} {location_role.name}")
 
-        # DM Status
         dm_status_config = await self.config.guild(ctx.guild).dm_status_roles()
         dm_status_parts = []
         for role_id_str, emoji in dm_status_config.items():
@@ -95,7 +92,46 @@ class AboutMe(commands.Cog):
         if line_3_components:
             line_3_output = f"\n{' | '.join(line_3_components)}"
 
-        # --- 4. Awards (Line 4) ---
+        # --- 4. Activity Status (New Line) ---
+        activity_output = ""
+        ouija_cog = self.bot.get_cog("OuijaPoke")
+        
+        # Check if the required cog and method exist
+        if ouija_cog and hasattr(ouija_cog, "get_member_activity_state"):
+            try:
+                # Call the public API
+                status_data = await ouija_cog.get_member_activity_state(member)
+                status = status_data.get('status', 'unknown')
+                is_excluded = status_data.get('is_excluded', False)
+                days_inactive = status_data.get('days_inactive')
+
+                if is_excluded:
+                    emoji = "💤"
+                    status_text = "Excluded from tracking"
+                    last_seen_text = ""
+                else:
+                    emoji_map = {
+                        "active": "✅",
+                        "poke_eligible": "👉",
+                        "summon_eligible": "👻",
+                        "unknown": "❓"
+                    }
+                    emoji = emoji_map.get(status, "❓")
+                    status_text = status.capitalize().replace('_', ' ')
+                    
+                    last_seen_text = ""
+                    # Display days inactive if available
+                    if days_inactive is not None and days_inactive >= 0:
+                        last_seen_text = f" ({days_inactive} days inactive)"
+                    elif days_inactive is None:
+                        last_seen_text = " (Unknown last seen date)"
+                
+                activity_output = f"\n{emoji} **Activity Status:** {status_text}{last_seen_text}"
+                
+            except Exception as e:
+                print(f"Warning: Could not get OuijaPoke activity for {member.name}. Error: {e}")
+        
+        # --- 5. Awards (Line 5) ---
         award_roles_config = await self.config.guild(ctx.guild).award_roles()
         award_parts = []
 
@@ -108,7 +144,7 @@ class AboutMe(commands.Cog):
         if award_parts:
             award_output = f"\n**Awards:** {', '.join(award_parts)}"
 
-        # --- 5. Teams (Line 5) ---
+        # --- 6. Teams (Line 6) ---
         helper_roles_config = await self.config.guild(ctx.guild).helper_roles()
         helper_parts = []
 
@@ -119,6 +155,7 @@ class AboutMe(commands.Cog):
 
         helper_output = ""
         if helper_parts:
+            # Changed the bolded title to 'Teams:' as requested
             helper_output = f"\n**Teams:** {', '.join(helper_parts)}"
 
         # --- Role Progress Calculation ---
@@ -137,7 +174,7 @@ class AboutMe(commands.Cog):
             if target_override_id:
                 target_override_role = ctx.guild.get_role(int(target_override_id))
                 if target_override_role and target_override_role in member.roles:
-                    # User has the superior target role - Checkmark removed as requested
+                    # Target role logic: Display target role and "Unlocked!", no checkmark
                     progress_lines.append(f"{target_override_role.mention} Unlocked!")
                     continue 
 
@@ -179,10 +216,10 @@ class AboutMe(commands.Cog):
             base_description + 
             line_2_output +  # Egg | House
             line_3_output +  # Location | DM Status
+            activity_output + # NEW: Activity Status
             award_output +   # Awards
             helper_output +  # Teams
             role_progress_output
-            
         )
 
         embed = discord.Embed(
@@ -615,7 +652,7 @@ class AboutMe(commands.Cog):
             if role_id in buddies:
                 del buddies[role_id]
 
-        # NEW: Remove from target overrides as well
+        # Remove from target overrides as well
         async with self.config.guild(ctx.guild).role_target_overrides() as overrides:
             if role_id in overrides:
                 del overrides[role_id]
