@@ -116,32 +116,26 @@ class AboutMe(commands.Cog):
                     
                     activity_output = f"\n{emoji}{status_text}{last_seen_text}"
                 else:
-                    # User is tracked (but may be unknown/inactive)
+                    # User is tracked (not excluded)
                     
-                    # Check for the combination that indicates a truly untracked/unknown state
-                    # which the user wants mapped to "Hibernating"
-                    if status == 'unknown' and days_inactive is None:
-                        emoji = "💤"
-                        status_text = "Hibernating"
-                        last_seen_text = "" # No last seen date available
-                    else:
-                        # Standard tracking/activity status
-                        emoji_map = {
-                            "active": "✅",
-                            "poke_eligible": "👉",
-                            "summon_eligible": "👻",
-                            "unknown": "❓"
-                        }
-                        emoji = emoji_map.get(status, "❓")
-                        status_text = status.capitalize().replace('_', ' ')
-                        
-                        # New wording for last seen
-                        last_seen_text = ""
-                        if days_inactive is not None and days_inactive >= 0:
-                            last_seen_text = f" (last seen {days_inactive} days ago)"
-                        elif days_inactive is None:
-                            last_seen_text = " (unknown last seen date)"
-                
+                    # Standard tracking/activity status
+                    emoji_map = {
+                        "active": "✅",
+                        "poke_eligible": "👉",
+                        "summon_eligible": "👻",
+                        "unknown": "❓"
+                    }
+                    emoji = emoji_map.get(status, "❓")
+                    status_text = status.capitalize().replace('_', ' ')
+                    
+                    # New wording for last seen
+                    last_seen_text = ""
+                    if days_inactive is not None and days_inactive >= 0:
+                        last_seen_text = f" (last seen {days_inactive} days ago)"
+                    elif days_inactive is None:
+                        # If status is unknown AND days_inactive is None, show unknown/unknown date
+                        last_seen_text = " (unknown last seen date)"
+            
                     activity_output = f"\n{emoji}{status_text}{last_seen_text}"
                 
             except Exception as e:
