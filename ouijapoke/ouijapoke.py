@@ -939,6 +939,7 @@ class OuijaPoke(commands.Cog):
         ✅ = Active
         👉 = Eligible for Poke
         👻 = Eligible for Summon
+        ❓ = Unknown data
         💤 = Hibernating (Excluded by Role)
         """
         async with ctx.typing():
@@ -982,8 +983,10 @@ class OuijaPoke(commands.Cog):
                                 icon = "✅" # Active
                             elif last_seen_dt >= summon_cutoff:
                                 icon = "👉" # Inactive enough for poke, but not summon
+                            elif last_seen_dt < summon_cutoff:
+                                icon = "👻" # Inactive enough for summon 
                             else:
-                                icon = "👻" # Inactive enough for summon
+                                icon = "❓" # Unknown data
                             
                     except ValueError:
                         pass
