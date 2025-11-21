@@ -966,7 +966,7 @@ class OuijaPoke(commands.Cog):
                 # Determine exclusion FIRST to override icons
                 is_hibernating = self._is_excluded(member, excluded_roles)
                 
-                icon = "👻" # Default to summon (most inactive/never seen)
+                icon = "❓" # Default to Unknown Data
                 days_ago_str = "Never"
                 sort_val = float('inf') # Infinity for sorting 'Never' at the end of their group
                 
