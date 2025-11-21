@@ -22,6 +22,26 @@ class AboutMe(commands.Cog):
         }
         self.config.register_guild(**default_guild)
 
+    # Ouija status
+
+    async def checkstatus(self, ctx, member: discord.Member):
+        # 1. Get the OuijaPoke instance
+        ouija_cog = self.bot.get_cog("OuijaPoke")
+        
+        if not ouija_cog:
+            return await ctx.send("OuijaPoke cog is not loaded.")
+
+        # 2. Call the public API method we just added
+        # Note: The method is async, so we must await it
+        status_data = await ouija_cog.get_member_activity_state(member)
+        
+        # 3. Use the data
+        status = status_data['status'] # "active", "poke_eligible", etc.
+        is_excluded = status_data['is_excluded']
+        days = status_data['days_inactive']
+
+        # await ctx.send(f"{member.display_name} is currently **{status}** (Inactive for {days} days).")
+
     async def _process_member_status(self, ctx, member: discord.Member):
         """Helper function to generate the member status embed."""
         
@@ -94,6 +114,12 @@ class AboutMe(commands.Cog):
         line_3_output = ""
         if line_3_components:
             line_3_output = f"\n{' | '.join(line_3_components)}"
+
+        # Activity Status
+
+        line_4_output = ""
+        if status:
+            line_4_output = status
 
         # --- 4. Awards (Line 4) ---
         award_roles_config = await self.config.guild(ctx.guild).award_roles()
@@ -179,9 +205,11 @@ class AboutMe(commands.Cog):
             base_description + 
             line_2_output +  # Egg | House
             line_3_output +  # Location | DM Status
+            line_4_output + # Status | Days
             award_output +   # Awards
             helper_output +  # Teams
             role_progress_output
+            
         )
 
         embed = discord.Embed(
