@@ -104,7 +104,7 @@ class AboutMe(commands.Cog):
                 status_data = await ouija_cog.get_member_activity_state(member)
                 status = status_data.get('status', 'unknown')
                 
-                # FIX: Check for 'is_hibernating' instead of 'is_excluded'
+                # Check for 'is_hibernating'
                 is_hibernating = status_data.get('is_hibernating', False)
                 days_inactive = status_data.get('days_inactive')
 
@@ -195,19 +195,23 @@ class AboutMe(commands.Cog):
 
             mention = base_role.mention 
             
-            if not has_base_role and not has_buddy_role:
+            # --- FIX: Only display the base role if the member actually has it. ---
+            if not has_base_role:
                 continue 
+            # ---------------------------------------------------------------------
 
+            # The logic below now only executes if has_base_role is True.
             if days_in_server < target_days:
-                if has_buddy_role:
-                    progress_lines.append(f"{mention}: Locked 🔒 - Days not met")
-                elif has_base_role:
-                    remaining = target_days - days_in_server
-                    progress_lines.append(f"{mention}: **{remaining}** days remaining to unlock")
+                remaining = target_days - days_in_server
+                progress_lines.append(f"{mention}: **{remaining}** days remaining to unlock")
             else:
+                # Days are met (days_in_server >= target_days)
                 if has_buddy_role:
+                    # Days met AND they somehow already have a reward role linked to this base role.
+                    # Display as unlocked.
                     progress_lines.append(f"{mention}: Unlocked ✅")
-                elif has_base_role:
+                else:
+                    # Days met, waiting for the level-up action.
                     progress_lines.append(f"{mention}: Level up to unlock!")
 
         # Format Role Progress
