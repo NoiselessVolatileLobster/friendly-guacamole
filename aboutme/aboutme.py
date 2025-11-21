@@ -103,11 +103,13 @@ class AboutMe(commands.Cog):
                 # Call the public API
                 status_data = await ouija_cog.get_member_activity_state(member)
                 status = status_data.get('status', 'unknown')
-                is_excluded = status_data.get('is_excluded', False)
+                
+                # FIX: Check for 'is_hibernating' instead of 'is_excluded'
+                is_hibernating = status_data.get('is_hibernating', False)
                 days_inactive = status_data.get('days_inactive')
 
-                if is_excluded:
-                    # RULE 1: If excluded, display Hibernating and ignore days_inactive.
+                if is_hibernating:
+                    # RULE 1: If hibernating (excluded), display Hibernating and ignore days_inactive.
                     emoji = "💤"
                     status_text = "Hibernating"
                     activity_output = f"\n{emoji}{status_text}" 
@@ -269,7 +271,7 @@ class AboutMe(commands.Cog):
     async def aboutmeset_debugactivity(self, ctx, member: discord.Member):
         """
         [ADMIN] Displays the raw activity data returned by the OuijaPoke cog for a member.
-        This is useful for debugging why the activity status (e.g., Excluded/Unknown) is displayed incorrectly.
+        This is useful for debugging why the activity status (e.g., Hibernating/Unknown) is displayed incorrectly.
         """
         ouija_cog = self.bot.get_cog("OuijaPoke")
         
