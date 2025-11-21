@@ -4,7 +4,7 @@ from redbot.core.utils.chat_formatting import humanize_list
 from datetime import datetime, timedelta, timezone
 import random
 import re
-from typing import Union, List, Tuple, Dict
+from typing import Union, List, Tuple, Dict, Optional
 
 # Pydantic is used for structured configuration in modern Red cogs
 try:
@@ -176,6 +176,62 @@ class OuijaPoke(commands.Cog):
             except ValueError:
                 return "Invalid Date"
         return "Never"
+
+    # --- PUBLIC API FOR EXTERNAL COGS ---
+    
+    async def get_member_activity_state(self, member: discord.Member) -> Dict[str, Union[str, bool, int, None]]:
+        """
+        Public API method to retrieve the status of a specific member.
+        
+        Returns a dict containing:
+        - 'status': str ("active", "poke_eligible", "summon_eligible", "unknown")
+        - 'is_excluded': bool
+        - 'days_inactive': int (or None if never seen)
+        - 'last_seen': datetime (or None if never seen)
+        """
+        if member.bot:
+            return {"status": "unknown", "is_excluded": True, "days_inactive": None, "last_seen": None}
+
+        data = await self.config.guild(member.guild).all()
+        settings = OuijaSettings(**data["ouija_settings"])
+        
+        # 1. Check Exclusion
+        is_excluded = self._is_excluded(member, data["excluded_roles"])
+        
+        # 2. Get Timing Data
+        last_seen_str = data["last_seen"].get(str(member.id))
+        
+        days_inactive = None
+        last_seen_dt = None
+        status = "unknown"
+
+        if last_seen_str:
+            try:
+                last_seen_dt = datetime.fromisoformat(last_seen_str).replace(tzinfo=timezone.utc)
+                days_inactive = (datetime.now(timezone.utc) - last_seen_dt).days
+                
+                # 3. Determine Status
+                poke_cutoff = self._get_inactivity_cutoff(settings.poke_days)
+                summon_cutoff = self._get_inactivity_cutoff(settings.summon_days)
+                
+                if last_seen_dt >= poke_cutoff:
+                    status = "active"
+                elif last_seen_dt >= summon_cutoff:
+                    status = "poke_eligible"
+                else:
+                    status = "summon_eligible"
+                    
+            except ValueError:
+                status = "unknown"
+        
+        return {
+            "status": status,
+            "is_excluded": is_excluded,
+            "days_inactive": days_inactive,
+            "last_seen": last_seen_dt
+        }
+
+    # --- End Public API ---
 
     async def _get_all_eligible_member_data(self, ctx: commands.Context) -> List[dict]:
         """Retrieves comprehensive data for all members who meet EITHER the poke or summon inactivity criteria."""
