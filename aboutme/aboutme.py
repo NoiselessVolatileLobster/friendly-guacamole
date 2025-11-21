@@ -106,10 +106,17 @@ class AboutMe(commands.Cog):
                 days_inactive = status_data.get('days_inactive')
 
                 if is_excluded:
+                    # User is excluded (Hibernating)
                     emoji = "💤"
-                    status_text = "Excluded from tracking"
+                    status_text = "Hibernating"
+                    
                     last_seen_text = ""
+                    if days_inactive is not None and days_inactive >= 0:
+                        last_seen_text = f" (last seen {days_inactive} days ago)"
+                    
+                    activity_output = f"\n{emoji}{status_text}{last_seen_text}"
                 else:
+                    # User is tracked
                     emoji_map = {
                         "active": "✅",
                         "poke_eligible": "👉",
@@ -119,14 +126,14 @@ class AboutMe(commands.Cog):
                     emoji = emoji_map.get(status, "❓")
                     status_text = status.capitalize().replace('_', ' ')
                     
+                    # New wording for last seen
                     last_seen_text = ""
-                    # Display days inactive if available
                     if days_inactive is not None and days_inactive >= 0:
-                        last_seen_text = f" ({days_inactive} days inactive)"
+                        last_seen_text = f" (last seen {days_inactive} days ago)"
                     elif days_inactive is None:
-                        last_seen_text = " (Unknown last seen date)"
+                        last_seen_text = " (unknown last seen date)"
                 
-                activity_output = f"\n{emoji} **Activity Status:** {status_text}{last_seen_text}"
+                    activity_output = f"\n{emoji}{status_text}{last_seen_text}"
                 
             except Exception as e:
                 print(f"Warning: Could not get OuijaPoke activity for {member.name}. Error: {e}")
@@ -155,7 +162,6 @@ class AboutMe(commands.Cog):
 
         helper_output = ""
         if helper_parts:
-            # Changed the bolded title to 'Teams:' as requested
             helper_output = f"\n**Teams:** {', '.join(helper_parts)}"
 
         # --- Role Progress Calculation ---
@@ -216,7 +222,7 @@ class AboutMe(commands.Cog):
             base_description + 
             line_2_output +  # Egg | House
             line_3_output +  # Location | DM Status
-            activity_output + # NEW: Activity Status
+            activity_output + # Activity Status
             award_output +   # Awards
             helper_output +  # Teams
             role_progress_output
