@@ -520,23 +520,94 @@ class OuijaPoke(commands.Cog):
     async def ouijaset(self, ctx: commands.Context):
         """Manages the OuijaPoke settings."""
         if ctx.invoked_subcommand is None:
-            settings = await self._get_settings(ctx.guild)
-            data = await self.config.guild(ctx.guild).all()
-            excluded_roles_count = len(data["excluded_roles"])
-            excluded_channels_count = len(data["excluded_channels"])
-            inactive_roles_count = len(data["inactive_roles"])
+            await ctx.send_help(ctx.command)
+
+    @ouijaset.command(name="view")
+    async def ouijaset_view(self, ctx: commands.Context):
+        """Displays the full settings page for the guild."""
+        settings = await self._get_settings(ctx.guild)
+        data = await self.config.guild(ctx.guild).all()
+        
+        embed = discord.Embed(
+            title="🔮 OuijaPoke Configuration",
+            description="Current settings for this guild.",
+            color=discord.Color.purple()
+        )
+        
+        # 1. Inactivity Thresholds
+        embed.add_field(
+            name="🕒 Inactivity Thresholds",
+            value=(
+                f"👉 **Poke:** > {settings.poke_days} days inactive\n"
+                f"👻 **Summon:** > {settings.summon_days} days inactive"
+            ),
+            inline=False
+        )
+        
+        # 2. Activity Definition
+        burst_desc = "Every message counts"
+        if settings.required_messages > 1 and settings.required_window_hours > 0:
+            burst_desc = f"**{settings.required_messages}** msgs in **{settings.required_window_hours}** hrs"
+        
+        embed.add_field(
+            name="🏃 Activity Logic",
+            value=(
+                f"**Definition:** {burst_desc}\n"
+                f"**Min Char Length:** {settings.min_message_length} chars"
+            ),
+            inline=False
+        )
+        
+        # 3. Exclusions
+        excl_roles = []
+        for rid in data["excluded_roles"]:
+            role = ctx.guild.get_role(rid)
+            if role: excl_roles.append(role.mention)
             
-            msg = (
-                "**OuijaPoke Settings**\n"
-                f"- **Poke Inactivity:** {settings.poke_days} days\n"
-                f"- **Summon Inactivity:** {settings.summon_days} days\n"
-                f"- **Activity Definition:** {settings.required_messages} msg(s) in {settings.required_window_hours} hr(s)\n"
-                f"- **Min Message Length:** {settings.min_message_length} chars\n"
-                f"- **Excluded Roles:** {excluded_roles_count}\n"
-                f"- **Excluded Channels:** {excluded_channels_count}\n"
-                f"- **Inactive Awards:** {inactive_roles_count} configured"
-            )
-            await ctx.send(msg)
+        excl_chans = []
+        for cid in data["excluded_channels"]:
+            # formatted as channel mention
+            excl_chans.append(f"<#{cid}>")
+
+        embed.add_field(
+            name="🚫 Exclusions",
+            value=(
+                f"**Roles:** {humanize_list(excl_roles) if excl_roles else 'None'}\n"
+                f"**Channels:** {humanize_list(excl_chans) if excl_chans else 'None'}"
+            ),
+            inline=False
+        )
+        
+        # 4. Inactive Awards
+        awards = []
+        # sort by days
+        sorted_awards = sorted(data["inactive_roles"].items(), key=lambda x: x[1])
+        for rid_str, days in sorted_awards:
+            role = ctx.guild.get_role(int(rid_str))
+            if role:
+                awards.append(f"{role.mention} (**>{days}** days)")
+        
+        embed.add_field(
+            name="🏆 Inactive Role Awards",
+            value="\n".join(awards) if awards else "No auto-roles configured",
+            inline=False
+        )
+
+        # 5. Messages & Assets (Truncated for display)
+        poke_msg_preview = (settings.poke_message[:45] + '..') if len(settings.poke_message) > 45 else settings.poke_message
+        summon_msg_preview = (settings.summon_message[:45] + '..') if len(settings.summon_message) > 45 else settings.summon_message
+
+        embed.add_field(
+            name="🎨 Messages & GIFs",
+            value=(
+                f"**Poke Msg:** `{poke_msg_preview}`\n"
+                f"**Summon Msg:** `{summon_msg_preview}`\n"
+                f"**GIFs Stored:** {len(settings.poke_gifs)} Poke / {len(settings.summon_gifs)} Summon"
+            ),
+            inline=False
+        )
+
+        await ctx.send(embed=embed)
 
     # --- Configuration Commands ---
 
@@ -689,7 +760,7 @@ class OuijaPoke(commands.Cog):
             poke_cutoff = self._get_inactivity_cutoff(poke_days)
             summon_cutoff = self._get_inactivity_cutoff(summon_days)
             
-            lines = []
+            status_entries = []
             
             # We want to list ALL members, not just those with data
             for member in ctx.guild.members:
@@ -700,12 +771,14 @@ class OuijaPoke(commands.Cog):
                 
                 icon = "👻" # Default to summon (most inactive/never seen)
                 days_ago_str = "Never"
+                sort_key = float('inf') # Infinity for sorting 'Never' at the end
                 
                 if last_seen_str:
                     try:
                         last_seen_dt = datetime.fromisoformat(last_seen_str).replace(tzinfo=timezone.utc)
                         diff_days = (datetime.now(timezone.utc) - last_seen_dt).days
                         days_ago_str = f"{diff_days} days ago"
+                        sort_key = diff_days
                         
                         # Determine status based on thresholds
                         if last_seen_dt >= poke_cutoff:
@@ -718,10 +791,17 @@ class OuijaPoke(commands.Cog):
                     except ValueError:
                         pass
                 
-                lines.append(f"{icon} **{member.display_name}** ({member.id}) | {days_ago_str}")
+                line = f"{icon} **{member.display_name}** ({member.id}) | {days_ago_str}"
+                status_entries.append((sort_key, line))
 
-            if not lines:
+            if not status_entries:
                 return await ctx.send("No non-bot members found.")
+            
+            # Sort by days inactive (Ascending: 0 days -> ... -> Never)
+            status_entries.sort(key=lambda x: x[0])
+            
+            # Extract lines
+            lines = [entry[1] for entry in status_entries]
             
             # Pagination
             pages = []
@@ -742,7 +822,7 @@ class OuijaPoke(commands.Cog):
                 
             for i, page_content in enumerate(pages):
                 embed = discord.Embed(
-                    title=f"Member Activity Status",
+                    title=f"Member Activity Status (Sorted by Activity)",
                     description=page_content,
                     color=discord.Color.gold()
                 )
