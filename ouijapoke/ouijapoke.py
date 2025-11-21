@@ -51,8 +51,8 @@ class OuijaPoke(commands.Cog):
             last_seen={}, # {user_id: "ISO_DATETIME_STRING"}
             last_poked={}, # {user_id: "ISO_DATETIME_STRING"}
             last_summoned={}, # {user_id: "ISO_DATETIME_STRING"}
-            excluded_roles=[], # [role_id, ...]
-            excluded_channels=[], # [channel_id, ...] (NEW)
+            excluded_roles=[], # [role_id, ...] -> Now referred to as "Hibernating Roles" in UI
+            excluded_channels=[], # [channel_id, ...]
             ouija_settings=OuijaSettings().model_dump(),
             inactive_roles={}, # {role_id: days_inactive}
         )
@@ -93,7 +93,7 @@ class OuijaPoke(commands.Cog):
         return datetime.now(timezone.utc) - timedelta(days=days)
 
     def _is_excluded(self, member: discord.Member, excluded_roles: List[int]) -> bool:
-        """Checks if the member has any role that is in the excluded list."""
+        """Checks if the member has any role that is in the hibernating (excluded) list."""
         if not excluded_roles:
             return False
         
@@ -103,7 +103,7 @@ class OuijaPoke(commands.Cog):
         return bool(member_role_ids.intersection(excluded_role_ids))
     
     def _get_excluded_role_names(self, member: discord.Member, excluded_roles: List[int]) -> List[str]:
-        """Returns the names of the roles that are causing the exclusion."""
+        """Returns the names of the roles that are causing the hibernation."""
         excluded_names = []
         excluded_role_ids = set(excluded_roles)
         for role in member.roles:
@@ -185,18 +185,18 @@ class OuijaPoke(commands.Cog):
         
         Returns a dict containing:
         - 'status': str ("active", "poke_eligible", "summon_eligible", "unknown")
-        - 'is_excluded': bool
+        - 'is_hibernating': bool (True if they have a Hibernating role)
         - 'days_inactive': int (or None if never seen)
         - 'last_seen': datetime (or None if never seen)
         """
         if member.bot:
-            return {"status": "unknown", "is_excluded": True, "days_inactive": None, "last_seen": None}
+            return {"status": "unknown", "is_hibernating": True, "days_inactive": None, "last_seen": None}
 
         data = await self.config.guild(member.guild).all()
         settings = OuijaSettings(**data["ouija_settings"])
         
-        # 1. Check Exclusion
-        is_excluded = self._is_excluded(member, data["excluded_roles"])
+        # 1. Check Hibernation (Exclusion)
+        is_hibernating = self._is_excluded(member, data["excluded_roles"])
         
         # 2. Get Timing Data
         last_seen_str = data["last_seen"].get(str(member.id))
@@ -226,7 +226,7 @@ class OuijaPoke(commands.Cog):
         
         return {
             "status": status,
-            "is_excluded": is_excluded,
+            "is_hibernating": is_hibernating,
             "days_inactive": days_inactive,
             "last_seen": last_seen_dt
         }
@@ -282,7 +282,7 @@ class OuijaPoke(commands.Cog):
         return eligible_list
     
     async def _get_excluded_eligible_members(self, ctx: commands.Context) -> List[dict]:
-        """Retrieves data for members who are eligible by activity but excluded by role."""
+        """Retrieves data for members who are eligible by activity but excluded by role (Hibernating)."""
         guild = ctx.guild
         data = await self.config.guild(guild).all()
         
@@ -614,7 +614,7 @@ class OuijaPoke(commands.Cog):
             inline=False
         )
         
-        # 3. Exclusions
+        # 3. Exclusions & Hibernation
         excl_roles = []
         for rid in data["excluded_roles"]:
             role = ctx.guild.get_role(rid)
@@ -626,10 +626,10 @@ class OuijaPoke(commands.Cog):
             excl_chans.append(f"<#{cid}>")
 
         embed.add_field(
-            name="🚫 Exclusions",
+            name="🚫 Channel Exclusions & 💤 Hibernation",
             value=(
-                f"**Roles:** {humanize_list(excl_roles) if excl_roles else 'None'}\n"
-                f"**Channels:** {humanize_list(excl_chans) if excl_chans else 'None'}"
+                f"**Hibernating Roles:** {humanize_list(excl_roles) if excl_roles else 'None'}\n"
+                f"**Excluded Channels:** {humanize_list(excl_chans) if excl_chans else 'None'}"
             ),
             inline=False
         )
@@ -744,6 +744,140 @@ class OuijaPoke(commands.Cog):
             channels.remove(channel.id)
         await ctx.send(f"Channel {channel.mention} removed from exclusions.")
 
+    # --- Hibernating (Excluded) Roles Management ---
+
+    @ouijaset.group(name="hibernatingroles", aliases=["hibernate", "hibernating", "excludedroles", "exclrole"], invoke_without_command=True)
+    async def ouijaset_hibernatingroles(self, ctx: commands.Context):
+        """
+        Manages roles whose members are permanently in hibernation (excluded from being poked/summoned).
+        """
+        excluded_roles = await self.config.guild(ctx.guild).excluded_roles()
+        
+        if not excluded_roles:
+            return await ctx.send("No roles are currently set as Hibernating.")
+        
+        role_names = []
+        for role_id in excluded_roles:
+            role = ctx.guild.get_role(role_id)
+            if role:
+                role_names.append(role.name)
+                
+        await ctx.send(
+            f"The following roles are marked as **Hibernating** (members are ineligible):\n"
+            f"{humanize_list(role_names)}"
+        )
+
+    @ouijaset_hibernatingroles.command(name="add")
+    async def hibernatingroles_add(self, ctx: commands.Context, role: discord.Role):
+        """Adds a role to the Hibernating list."""
+        async with self.config.guild(ctx.guild).excluded_roles() as excluded_roles:
+            if role.id in excluded_roles:
+                return await ctx.send(f"The role **{role.name}** is already set to Hibernate.")
+            excluded_roles.append(role.id)
+        
+        await ctx.send(f"Added role **{role.name}** to the Hibernating list. Members with this role will no longer be poked or summoned.")
+
+    @ouijaset_hibernatingroles.command(name="remove")
+    async def hibernatingroles_remove(self, ctx: commands.Context, role: discord.Role):
+        """Removes a role from the Hibernating list."""
+        async with self.config.guild(ctx.guild).excluded_roles() as excluded_roles:
+            if role.id not in excluded_roles:
+                return await ctx.send(f"The role **{role.name}** was not found in the Hibernating list.")
+            excluded_roles.remove(role.id)
+            
+        await ctx.send(f"Removed role **{role.name}** from the Hibernating list. Members with this role may now be poked or summoned if they meet the inactivity criteria.")
+
+    # --- Eligible Members Display ---
+
+    @ouijaset.command(name="eligible")
+    async def ouijaset_eligible(self, ctx: commands.Context):
+        """Displays a list of all members currently eligible for being poked/summoned OR excluded (hibernating)."""
+        
+        settings = await self._get_settings(ctx.guild)
+
+        async with ctx.typing():
+            eligible_members = await self._get_all_eligible_member_data(ctx)
+            excluded_eligible_members = await self._get_excluded_eligible_members(ctx)
+
+        # 1. Handle main eligible list
+        if eligible_members:
+            # Prepare content for display
+            entries = []
+            for i, member_data in enumerate(eligible_members):
+                entry = (
+                    f"**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)\n"
+                    f"  ➡️ Last Active: **{member_data['last_seen_days']} days ago**\n"
+                    f"  👀 Last Poked: {member_data['last_poked']}\n"
+                    f"  👻 Last Summoned: {member_data['last_summoned']}\n"
+                    f"  ✅ Eligible For: {member_data['eligible_for']}"
+                )
+                entries.append(entry)
+
+            # Use basic page separation for clarity
+            pages = []
+            MAX_CHARS = 1000
+            current_page = ""
+            
+            for entry in entries:
+                if len(current_page) + len(entry) + 2 > MAX_CHARS:
+                    pages.append(current_page)
+                    current_page = entry + "\n"
+                else:
+                    current_page += entry + "\n"
+            if current_page:
+                pages.append(current_page)
+            
+            # Send the pages
+            for page_num, content in enumerate(pages):
+                embed = discord.Embed(
+                    title=f"👻 Active Eligible Members ({len(eligible_members)} Total)",
+                    description=f"Members below are eligible for action (Sorted by inactivity):\n\n{content}",
+                    color=discord.Color.dark_purple()
+                )
+                embed.set_footer(text=f"Page {page_num + 1}/{len(pages)} (Eligible) | Poke Days: {settings.poke_days}, Summon Days: {settings.summon_days}")
+                await ctx.send(embed=embed)
+        else:
+            await ctx.send("🎉 **No members are currently eligible** for poking or summoning based on activity alone.")
+
+        # 2. Handle hibernating (excluded) members list
+        if excluded_eligible_members:
+            excluded_entries = []
+            for i, member_data in enumerate(excluded_eligible_members):
+                entry = (
+                    f"**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)\n"
+                    f"  ➡️ Last Active: **{member_data['last_seen_days']} days ago**\n"
+                    f"  🚫 Excluded By: **{member_data['excluded_by']}**\n"
+                    f"  ⚠️ *Would be Eligible For: {member_data['eligible_for']}*"
+                )
+                excluded_entries.append(entry)
+
+            # Use basic page separation for clarity
+            excluded_pages = []
+            MAX_CHARS = 1000
+            current_page = ""
+            
+            for entry in excluded_entries:
+                if len(current_page) + len(entry) + 2 > MAX_CHARS:
+                    excluded_pages.append(current_page)
+                    current_page = entry + "\n"
+                else:
+                    current_page += entry + "\n"
+            if current_page:
+                excluded_pages.append(current_page)
+            
+            # Send the excluded pages
+            for page_num, content in enumerate(excluded_pages):
+                embed = discord.Embed(
+                    title=f"💤 Hibernating Eligible Members ({len(excluded_eligible_members)} Total)",
+                    description=f"Members below are inactive enough, but **HIBERNATING** due to role:\n\n{content}",
+                    color=discord.Color.orange()
+                )
+                embed.set_footer(text=f"Page {page_num + 1}/{len(excluded_pages)} (Hibernating) | Total Hibernating: {len(excluded_eligible_members)}")
+                await ctx.send(embed=embed)
+        elif eligible_members:
+             # Only send this message if we sent the first embed, to keep the output clean
+             await ctx.send("✅ No members are currently hibernating who would otherwise be eligible for action.")
+
     # --- Inactive Roles ---
     
     @ouijaset.group(name="inactiverole", invoke_without_command=True)
@@ -805,7 +939,7 @@ class OuijaPoke(commands.Cog):
         ✅ = Active
         👉 = Eligible for Poke
         👻 = Eligible for Summon
-        💤 = Excluded by Role
+        💤 = Hibernating (Excluded by Role)
         """
         async with ctx.typing():
             settings = await self._get_settings(ctx.guild)
@@ -829,7 +963,7 @@ class OuijaPoke(commands.Cog):
                 last_seen_str = last_seen_data.get(str(member.id))
                 
                 # Determine exclusion FIRST to override icons
-                is_excluded = self._is_excluded(member, excluded_roles)
+                is_hibernating = self._is_excluded(member, excluded_roles)
                 
                 icon = "👻" # Default to summon (most inactive/never seen)
                 days_ago_str = "Never"
@@ -842,7 +976,7 @@ class OuijaPoke(commands.Cog):
                         days_ago_str = f"{diff_days} days ago"
                         sort_val = diff_days
                         
-                        if not is_excluded:
+                        if not is_hibernating:
                             # Determine normal status based on thresholds
                             if last_seen_dt >= poke_cutoff:
                                 icon = "✅" # Active
@@ -854,11 +988,11 @@ class OuijaPoke(commands.Cog):
                     except ValueError:
                         pass
                 
-                if is_excluded:
+                if is_hibernating:
                     icon = "💤"
                 
-                # Primary Sort Key: 0 for included, 1 for excluded (Excluded goes to bottom)
-                primary_sort = 1 if is_excluded else 0
+                # Primary Sort Key: 0 for included, 1 for excluded (Hibernating goes to bottom)
+                primary_sort = 1 if is_hibernating else 0
                 
                 line = f"{icon} **{member.display_name}** ({member.id}) | {days_ago_str}"
                 
@@ -868,7 +1002,7 @@ class OuijaPoke(commands.Cog):
             if not status_entries:
                 return await ctx.send("No non-bot members found.")
             
-            # Sort by primary group (Included < Excluded), then by days inactive
+            # Sort by primary group (Included < Hibernating), then by days inactive
             status_entries.sort(key=lambda x: x[0])
             
             # Extract lines
@@ -897,7 +1031,7 @@ class OuijaPoke(commands.Cog):
                     description=page_content,
                     color=discord.Color.gold()
                 )
-                embed.set_footer(text=f"Page {i+1}/{len(pages)} | ✅ Active | 👉 Poke | 👻 Summon | 💤 Excluded")
+                embed.set_footer(text=f"Page {i+1}/{len(pages)} | ✅ Active | 👉 Poke | 👻 Summon | 💤 Hibernating")
                 await ctx.send(embed=embed)
 
     # --- Message Settings ---
