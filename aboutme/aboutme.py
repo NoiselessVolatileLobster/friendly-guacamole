@@ -106,17 +106,13 @@ class AboutMe(commands.Cog):
                 days_inactive = status_data.get('days_inactive')
 
                 if is_excluded:
-                    # User is explicitly excluded (Hibernating)
+                    # RULE 1: User is explicitly excluded. Display Hibernating. Ignore days_inactive display.
                     emoji = "💤"
                     status_text = "Hibernating"
                     
-                    last_seen_text = ""
-                    if days_inactive is not None and days_inactive >= 0:
-                        last_seen_text = f" (last seen {days_inactive} days ago)"
-                    
-                    activity_output = f"\n{emoji}{status_text}{last_seen_text}"
+                    activity_output = f"\n{emoji}{status_text}" # No last seen date when hibernating/excluded
                 else:
-                    # User is tracked (not excluded)
+                    # RULE 2: User is tracked (not excluded). Check activity status and last seen date.
                     
                     # Standard tracking/activity status
                     emoji_map = {
@@ -133,7 +129,7 @@ class AboutMe(commands.Cog):
                     if days_inactive is not None and days_inactive >= 0:
                         last_seen_text = f" (last seen {days_inactive} days ago)"
                     elif days_inactive is None:
-                        # If status is unknown AND days_inactive is None, show unknown/unknown date
+                        # If days_inactive is None (usually when status is 'unknown'), display unknown last seen date
                         last_seen_text = " (unknown last seen date)"
             
                     activity_output = f"\n{emoji}{status_text}{last_seen_text}"
