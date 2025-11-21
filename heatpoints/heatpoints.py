@@ -1,5 +1,6 @@
 import discord
 import time
+import asyncio
 from redbot.core import commands, Config, checks
 from redbot.core.utils.chat_formatting import pagify, box
 
@@ -51,25 +52,35 @@ class HeatPoints(commands.Cog):
 
         member_data = await self.config.member(member).all()
         last_point_time = member_data["last_point_timestamp"]
+        time_passed = current_time - last_point_time
 
-        # Check if 1 hour (3600 seconds) has passed since the last point
-        if current_time - last_point_time >= 3600:
-            # Grant point
+        # 1. Check if it's too early (less than 1 hour/3600s)
+        if time_passed < 3600:
+            return
+
+        # 2. Determine points based on streak
+        # If more than 2 hours (7200s) have passed, they missed an hour window.
+        # Streak resets to 1 (this current message counts as the start of a new streak).
+        if time_passed > 7200:
+            new_points = 1
+            # Reset the reward trigger so they can earn it again on this new streak
+            await self.config.member(member).has_triggered_reward.set(False)
+        else:
+            # Within the 1-2 hour window. Maintain streak.
             new_points = member_data["heatpoints"] + 1
             
-            # Save new state
-            async with self.config.member(member).all() as u_data:
-                u_data["heatpoints"] = new_points
-                u_data["last_point_timestamp"] = current_time
+        # Save new state
+        async with self.config.member(member).all() as u_data:
+            u_data["heatpoints"] = new_points
+            u_data["last_point_timestamp"] = current_time
 
-            # Check threshold logic
-            threshold = await self.config.guild(guild).threshold()
-            
-            # Only trigger if they hit the threshold EXACTLY or crossed it without having triggered it before.
-            # This prevents spamming the embed every hour after they pass the number.
-            if new_points >= threshold and not member_data["has_triggered_reward"]:
-                await self._send_reward_embed(message.channel, member, new_points)
-                await self.config.member(member).has_triggered_reward.set(True)
+        # Check threshold logic
+        threshold = await self.config.guild(guild).threshold()
+        
+        # Only trigger if they hit the threshold EXACTLY or crossed it without having triggered it before.
+        if new_points >= threshold and not member_data["has_triggered_reward"]:
+            await self._send_reward_embed(message.channel, member, new_points)
+            await self.config.member(member).has_triggered_reward.set(True)
 
     async def _send_reward_embed(self, source_channel, member, points):
         """
@@ -258,6 +269,23 @@ class HeatPoints(commands.Cog):
         # Pagify and send to avoid message length limits
         for page in pagify(output):
             await ctx.send(box(page))
+
+    @heatset.command()
+    async def resetall(self, ctx):
+        """
+        Reset heatpoints for ALL users in this server.
+        """
+        await ctx.send("⚠️ **Warning**: This will reset heatpoints for **everyone** in this server to 0.\nType `yes` to confirm.")
+        try:
+            pred = lambda m: m.author == ctx.author and m.channel == ctx.channel
+            msg = await self.bot.wait_for("message", check=pred, timeout=30)
+            if msg.content.lower() == "yes":
+                await self.config.clear_all_members(ctx.guild)
+                await ctx.send("All heatpoints have been reset.")
+            else:
+                await ctx.send("Reset cancelled.")
+        except asyncio.TimeoutError:
+            await ctx.send("Reset cancelled (timeout).")
 
     @commands.command()
     @commands.guild_only()
