@@ -339,7 +339,7 @@ class Ouijapoke(commands.Cog):
                     seen_icon = "🟢"  # Active
             else:
                 last_seen_str = "Unknown"
-                seen_icon = "❓" # Changed from 👻 to ❓
+                seen_icon = "❓"
 
             # --- Last Poked Status ---
             if last_poked_ts:
@@ -376,7 +376,7 @@ class Ouijapoke(commands.Cog):
             "🟢: Active (Last seen < Poke Days)\n"
             "🟠: Eligible for Poke (Last seen between Poke and Summon Days)\n"
             "🔴: Eligible for Summon (Last seen > Summon Days)\n"
-            "❓: Last active date unknown\n" # Changed from 👻 to ❓
+            "❓: Last active date unknown\n"
             "📋: Date Last Poked\n"
             "🔮: Date Last Summoned\n\n"
         )
