@@ -749,10 +749,13 @@ class OuijaPoke(commands.Cog):
         ✅ = Active
         👉 = Eligible for Poke
         👻 = Eligible for Summon
+        💤 = Excluded by Role
         """
         async with ctx.typing():
             settings = await self._get_settings(ctx.guild)
-            last_seen_data = await self.config.guild(ctx.guild).last_seen()
+            data = await self.config.guild(ctx.guild).all()
+            last_seen_data = data["last_seen"]
+            excluded_roles = data["excluded_roles"]
             
             poke_days = settings.poke_days
             summon_days = settings.summon_days
@@ -769,35 +772,47 @@ class OuijaPoke(commands.Cog):
                 
                 last_seen_str = last_seen_data.get(str(member.id))
                 
+                # Determine exclusion FIRST to override icons
+                is_excluded = self._is_excluded(member, excluded_roles)
+                
                 icon = "👻" # Default to summon (most inactive/never seen)
                 days_ago_str = "Never"
-                sort_key = float('inf') # Infinity for sorting 'Never' at the end
+                sort_val = float('inf') # Infinity for sorting 'Never' at the end of their group
                 
                 if last_seen_str:
                     try:
                         last_seen_dt = datetime.fromisoformat(last_seen_str).replace(tzinfo=timezone.utc)
                         diff_days = (datetime.now(timezone.utc) - last_seen_dt).days
                         days_ago_str = f"{diff_days} days ago"
-                        sort_key = diff_days
+                        sort_val = diff_days
                         
-                        # Determine status based on thresholds
-                        if last_seen_dt >= poke_cutoff:
-                            icon = "✅" # Active
-                        elif last_seen_dt >= summon_cutoff:
-                            icon = "👉" # Inactive enough for poke, but not summon
-                        else:
-                            icon = "👻" # Inactive enough for summon
+                        if not is_excluded:
+                            # Determine normal status based on thresholds
+                            if last_seen_dt >= poke_cutoff:
+                                icon = "✅" # Active
+                            elif last_seen_dt >= summon_cutoff:
+                                icon = "👉" # Inactive enough for poke, but not summon
+                            else:
+                                icon = "👻" # Inactive enough for summon
                             
                     except ValueError:
                         pass
                 
+                if is_excluded:
+                    icon = "💤"
+                
+                # Primary Sort Key: 0 for included, 1 for excluded (Excluded goes to bottom)
+                primary_sort = 1 if is_excluded else 0
+                
                 line = f"{icon} **{member.display_name}** ({member.id}) | {days_ago_str}"
-                status_entries.append((sort_key, line))
+                
+                # Store tuple: ((primary_group, days_inactive), display_line)
+                status_entries.append(((primary_sort, sort_val), line))
 
             if not status_entries:
                 return await ctx.send("No non-bot members found.")
             
-            # Sort by days inactive (Ascending: 0 days -> ... -> Never)
+            # Sort by primary group (Included < Excluded), then by days inactive
             status_entries.sort(key=lambda x: x[0])
             
             # Extract lines
@@ -826,7 +841,7 @@ class OuijaPoke(commands.Cog):
                     description=page_content,
                     color=discord.Color.gold()
                 )
-                embed.set_footer(text=f"Page {i+1}/{len(pages)} | ✅ Active | 👉 Poke (> {poke_days}d) | 👻 Summon (> {summon_days}d)")
+                embed.set_footer(text=f"Page {i+1}/{len(pages)} | ✅ Active | 👉 Poke | 👻 Summon | 💤 Excluded")
                 await ctx.send(embed=embed)
 
     # --- Message Settings ---
