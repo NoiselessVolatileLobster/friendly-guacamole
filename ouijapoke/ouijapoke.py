@@ -675,14 +675,19 @@ class OuijaPoke(commands.Cog):
     async def ouijaset_status(self, ctx: commands.Context):
         """
         Lists all members with their current activity status.
-        ✅ = Active (Last seen < Poke Days)
-        ❌ = Inactive (Last seen >= Poke Days or never seen)
+        ✅ = Active
+        👉 = Eligible for Poke
+        👻 = Eligible for Summon
         """
         async with ctx.typing():
             settings = await self._get_settings(ctx.guild)
             last_seen_data = await self.config.guild(ctx.guild).last_seen()
+            
             poke_days = settings.poke_days
-            cutoff_dt = self._get_inactivity_cutoff(poke_days)
+            summon_days = settings.summon_days
+            
+            poke_cutoff = self._get_inactivity_cutoff(poke_days)
+            summon_cutoff = self._get_inactivity_cutoff(summon_days)
             
             lines = []
             
@@ -693,23 +698,27 @@ class OuijaPoke(commands.Cog):
                 
                 last_seen_str = last_seen_data.get(str(member.id))
                 
-                is_active = False
+                icon = "👻" # Default to summon (most inactive/never seen)
                 days_ago_str = "Never"
                 
                 if last_seen_str:
                     try:
                         last_seen_dt = datetime.fromisoformat(last_seen_str).replace(tzinfo=timezone.utc)
-                        # Check if strictly active
-                        if last_seen_dt >= cutoff_dt:
-                            is_active = True
-                        
                         diff_days = (datetime.now(timezone.utc) - last_seen_dt).days
                         days_ago_str = f"{diff_days} days ago"
+                        
+                        # Determine status based on thresholds
+                        if last_seen_dt >= poke_cutoff:
+                            icon = "✅" # Active
+                        elif last_seen_dt >= summon_cutoff:
+                            icon = "👉" # Inactive enough for poke, but not summon
+                        else:
+                            icon = "👻" # Inactive enough for summon
+                            
                     except ValueError:
                         pass
                 
-                icon = "✅" if is_active else "❌"
-                lines.append(f"{icon} **{member.display_name}** | {days_ago_str}")
+                lines.append(f"{icon} **{member.display_name}** ({member.id}) | {days_ago_str}")
 
             if not lines:
                 return await ctx.send("No non-bot members found.")
@@ -733,11 +742,11 @@ class OuijaPoke(commands.Cog):
                 
             for i, page_content in enumerate(pages):
                 embed = discord.Embed(
-                    title=f"Member Activity Status (Threshold: {poke_days} days)",
+                    title=f"Member Activity Status",
                     description=page_content,
                     color=discord.Color.gold()
                 )
-                embed.set_footer(text=f"Page {i+1}/{len(pages)} | ✅ = Active, ❌ = Inactive")
+                embed.set_footer(text=f"Page {i+1}/{len(pages)} | ✅ Active | 👉 Poke (> {poke_days}d) | 👻 Summon (> {summon_days}d)")
                 await ctx.send(embed=embed)
 
     # --- Message Settings ---
