@@ -350,7 +350,8 @@ class Bingo(commands.Cog):
         stamps.append([2, 2])  # add the Free Space here
         for stamp in stamps:
             x, y = stamp
-            results["x"][x] += 1
+            # This line should now be safe because the converter.py now ensures y <= 4
+            results["x"][x] += 1 
             results["y"][y] += 1
             if stamp in [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4]]:
                 results["right_diag"] += 1

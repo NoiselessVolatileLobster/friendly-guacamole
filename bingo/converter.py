@@ -8,7 +8,7 @@ class Stamp:
         if len(argument) > 2:
             raise commands.BadArgument("Your stamp must be 2 characters max.")
         
-        # Check if the number part is 1-5 to prevent out-of-bounds error
+        # Check if the number part is 1-5 to prevent the KeyError: 5
         try:
             row_number = int(argument[1])
             if not 1 <= row_number <= 5:
@@ -16,7 +16,7 @@ class Stamp:
         except (ValueError, IndexError):
             raise commands.BadArgument("The second character of your stamp must be a number from 1 to 5.")
         
-        y = row_number - 1
+        y = row_number - 1  # Ensures y is 0, 1, 2, 3, or 4
         bingo = await ctx.cog.config.guild(ctx.guild).bingo()
         try:
             x = bingo.index(argument[0].upper())
