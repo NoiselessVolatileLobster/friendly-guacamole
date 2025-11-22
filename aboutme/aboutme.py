@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import json
 
 class AboutMe(commands.Cog):
-    """A cog to show how long you have been in the server and track role progress."""
+    """A cog to that shows information about the server and its members."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -27,7 +27,8 @@ class AboutMe(commands.Cog):
         """Helper function to generate the member status embed."""
         
         if member.joined_at is None:
-            return await ctx.send("I couldn't determine when that member joined this server.")
+            await ctx.send("I couldn't determine when that member joined this server.")
+            return None
 
         # --- 1. Time Calculation (Line 1) ---
         now = datetime.now(timezone.utc)
@@ -93,34 +94,27 @@ class AboutMe(commands.Cog):
         if line_3_components:
             line_3_output = f"\n{' | '.join(line_3_components)}"
 
-        # --- 4. Activity Status (New Line) ---
+        # --- 4. Activity Status (Line 4) ---
         activity_output = ""
         ouija_cog = self.bot.get_cog("OuijaPoke")
         
-        # Check if the required cog and method exist
         if ouija_cog and hasattr(ouija_cog, "get_member_activity_state"):
             try:
-                # Call the public API
                 status_data = await ouija_cog.get_member_activity_state(member)
                 status = status_data.get('status', 'unknown')
-                
-                # Check for 'is_hibernating'
                 is_hibernating = status_data.get('is_hibernating', False)
                 days_inactive = status_data.get('days_inactive')
 
                 if is_hibernating:
-                    # RULE 1: If hibernating (excluded), display Hibernating and ignore days_inactive.
                     emoji = "💤"
                     status_text = "Hibernating"
                     activity_output = f"\n{emoji}{status_text}" 
                 elif days_inactive is None:
-                    # RULE 2: If not excluded but days_inactive is None, display Unknown.
                     emoji = "❓"
                     status_text = "Unknown"
                     last_seen_text = " (unknown last seen date)"
                     activity_output = f"\n{emoji}{status_text}{last_seen_text}"
                 else:
-                    # RULE 3: If tracked and data is present, display actual status.
                     emoji_map = {
                         "active": "✅",
                         "poke_eligible": "👉",
@@ -130,7 +124,6 @@ class AboutMe(commands.Cog):
                     emoji = emoji_map.get(status, "❓")
                     status_text = status.capitalize().replace('_', ' ')
                     last_seen_text = f" (last seen {days_inactive} days ago)"
-            
                     activity_output = f"\n{emoji}{status_text}{last_seen_text}"
                 
             except Exception as e:
@@ -178,7 +171,6 @@ class AboutMe(commands.Cog):
             if target_override_id:
                 target_override_role = ctx.guild.get_role(int(target_override_id))
                 if target_override_role and target_override_role in member.roles:
-                    # Target role logic: Display target role and "Unlocked!", no checkmark
                     progress_lines.append(f"{target_override_role.mention} Unlocked!")
                     continue 
 
@@ -195,23 +187,16 @@ class AboutMe(commands.Cog):
 
             mention = base_role.mention 
             
-            # --- FIX: Only display the base role if the member actually has it. ---
             if not has_base_role:
                 continue 
-            # ---------------------------------------------------------------------
 
-            # The logic below now only executes if has_base_role is True.
             if days_in_server < target_days:
                 remaining = target_days - days_in_server
                 progress_lines.append(f"{mention}: **{remaining}** days remaining to unlock")
             else:
-                # Days are met (days_in_server >= target_days)
                 if has_buddy_role:
-                    # Days met AND they somehow already have a reward role linked to this base role.
-                    # Display as unlocked.
                     progress_lines.append(f"{mention}: Unlocked ✅")
                 else:
-                    # Days met, waiting for the level-up action.
                     progress_lines.append(f"{mention}: Level up to unlock!")
 
         # Format Role Progress
@@ -239,26 +224,70 @@ class AboutMe(commands.Cog):
 
         return embed
 
+    async def _display_server_info(self, ctx):
+        """Placeholder function for Server Information embed."""
+        embed = discord.Embed(
+            title="Server Information",
+            description="Server Information content will go here.",
+            color=await ctx.embed_color()
+        )
+        await ctx.send(embed=embed)
+
+    async def _display_channel_info(self, ctx):
+        """Placeholder function for Channel Information embed."""
+        embed = discord.Embed(
+            title="Channel Information",
+            description="Channel Information content will go here.",
+            color=await ctx.embed_color()
+        )
+        await ctx.send(embed=embed)
+
     # ------------------------------------------------------------------
     # USER COMMANDS
     # ------------------------------------------------------------------
 
     @commands.command()
     @commands.guild_only()
-    async def about(self, ctx, member: discord.Member):
-        """Check how long a specific user has been in this server and see their role progress."""
-        embed = await self._process_member_status(ctx, member)
-        if embed:
-            await ctx.send(embed=embed)
+    async def about(self, ctx, *, argument: str = "me"):
+        """
+        Check information about me, a user, the server, or channels.
+        
+        Usage:
+        [p]about me (or just [p]about)
+        [p]about @User
+        [p]about server
+        [p]about channels
+        """
+        
+        arg_lower = argument.lower()
 
-    @commands.command()
-    @commands.guild_only()
-    async def aboutme(self, ctx):
-        """Check how long you have been in this server and see role progress."""
-        embed = await self._process_member_status(ctx, ctx.author)
-        if embed:
-            await ctx.send(embed=embed)
-            
+        # Case 1: "me"
+        if arg_lower == "me":
+            embed = await self._process_member_status(ctx, ctx.author)
+            if embed:
+                await ctx.send(embed=embed)
+            return
+
+        # Case 2: "server"
+        if arg_lower == "server":
+            await self._display_server_info(ctx)
+            return
+
+        # Case 3: "channels"
+        if arg_lower == "channels":
+            await self._display_channel_info(ctx)
+            return
+
+        # Case 4: Member (Mention, ID, or Name)
+        try:
+            converter = commands.MemberConverter()
+            member = await converter.convert(ctx, argument)
+            embed = await self._process_member_status(ctx, member)
+            if embed:
+                await ctx.send(embed=embed)
+        except commands.BadArgument:
+            await ctx.send("Could not find that user or recognize the command argument. Options are: `me`, `server`, `channels`, or a member.")
+
     # ------------------------------------------------------------------
     # ADMIN COMMANDS
     # ------------------------------------------------------------------
@@ -270,306 +299,218 @@ class AboutMe(commands.Cog):
         """Settings for the AboutMe cog."""
         pass
 
-    # New Debugging Command
     @aboutmeset.command(name="debugactivity")
     async def aboutmeset_debugactivity(self, ctx, member: discord.Member):
-        """
-        [ADMIN] Displays the raw activity data returned by the OuijaPoke cog for a member.
-        This is useful for debugging why the activity status (e.g., Hibernating/Unknown) is displayed incorrectly.
-        """
+        """[ADMIN] Displays raw OuijaPoke activity data."""
         ouija_cog = self.bot.get_cog("OuijaPoke")
-        
         if not ouija_cog or not hasattr(ouija_cog, "get_member_activity_state"):
-            return await ctx.send("The OuijaPoke cog is not loaded or does not support the required API method.")
-
+            return await ctx.send("OuijaPoke cog not loaded or incompatible.")
         try:
             status_data = await ouija_cog.get_member_activity_state(member)
-            
-            # Format the dictionary nicely for display
             formatted_data = json.dumps(status_data, indent=4)
-            
-            await ctx.send(
-                f"Raw OuijaPoke Activity Data for **{member.display_name}**:\n"
-                f"```json\n{formatted_data}\n```"
-            )
+            await ctx.send(f"Raw Data for **{member.display_name}**:\n```json\n{formatted_data}\n```")
         except Exception as e:
-            await ctx.send(f"An error occurred while fetching activity data: `{e}`")
+            await ctx.send(f"Error: `{e}`")
 
-    # ------------------------------------------------------------------
-    # Location Role Management
-    # ------------------------------------------------------------------
-
+    # --- Location Role Management ---
     @aboutmeset.group(name="locations")
     async def aboutmeset_locations(self, ctx):
-        """Manage location roles and their corresponding emojis."""
+        """Manage location roles."""
         pass
 
     @aboutmeset_locations.command(name="add")
     async def locations_add(self, ctx, role: discord.Role, emoji: str):
-        """Add a location role and associate an emoji with it."""
+        """Add location role."""
         async with self.config.guild(ctx.guild).location_roles() as locations:
-            role_id_str = str(role.id)
-            locations[role_id_str] = emoji
-            
-        await ctx.send(f"Configured **{role.name}** as a location role with emoji: {emoji}")
+            locations[str(role.id)] = emoji
+        await ctx.send(f"Added location role **{role.name}** with {emoji}")
 
     @aboutmeset_locations.command(name="remove")
     async def locations_remove(self, ctx, role: discord.Role):
-        """Remove a location role from tracking."""
+        """Remove location role."""
         async with self.config.guild(ctx.guild).location_roles() as locations:
-            role_id_str = str(role.id)
-            if role_id_str in locations:
-                del locations[role_id_str]
-                await ctx.send(f"Removed **{role.name}** from location role tracking.")
+            if str(role.id) in locations:
+                del locations[str(role.id)]
+                await ctx.send(f"Removed **{role.name}** from locations.")
             else:
-                await ctx.send(f"**{role.name}** is not currently tracked as a location role.")
+                await ctx.send("Role not found in locations.")
 
     @aboutmeset_locations.command(name="list")
     async def locations_list(self, ctx):
-        """List all configured location roles."""
+        """List location roles."""
         locations = await self.config.guild(ctx.guild).location_roles()
         if not locations:
-            return await ctx.send("No location roles are currently configured.")
+            return await ctx.send("No location roles configured.")
+        lines = [f"{emoji} {ctx.guild.get_role(int(rid)).name if ctx.guild.get_role(int(rid)) else 'Deleted'}" for rid, emoji in locations.items()]
+        await ctx.send(embed=discord.Embed(title="Location Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
-        lines = []
-        for role_id_str, emoji in locations.items():
-            role = ctx.guild.get_role(int(role_id_str))
-            role_name = role.mention if role else f"Deleted-Role-{role_id_str}"
-            lines.append(f"{emoji} {role_name}")
-
-        embed = discord.Embed(title="Configured Location Roles", description="\n".join(lines), color=await ctx.embed_color())
-        await ctx.send(embed=embed)
-
-    # ------------------------------------------------------------------
-    # DM Status Role Management
-    # ------------------------------------------------------------------
-
+    # --- DM Status Management ---
     @aboutmeset.group(name="dmstatus")
     async def aboutmeset_dmstatus(self, ctx):
-        """Manage DM Status roles and their corresponding emojis."""
+        """Manage DM Status roles."""
         pass
 
     @aboutmeset_dmstatus.command(name="add")
     async def dmstatus_add(self, ctx, role: discord.Role, emoji: str):
-        """Add a DM Status role and associate an emoji with it."""
+        """Add DM status role."""
         async with self.config.guild(ctx.guild).dm_status_roles() as statuses:
-            role_id_str = str(role.id)
-            statuses[role_id_str] = emoji
-            
-        await ctx.send(f"Configured **{role.name}** as a DM Status role with emoji: {emoji}")
+            statuses[str(role.id)] = emoji
+        await ctx.send(f"Added DM status role **{role.name}** with {emoji}")
 
     @aboutmeset_dmstatus.command(name="remove")
     async def dmstatus_remove(self, ctx, role: discord.Role):
-        """Remove a DM Status role from tracking."""
+        """Remove DM status role."""
         async with self.config.guild(ctx.guild).dm_status_roles() as statuses:
-            role_id_str = str(role.id)
-            if role_id_str in statuses:
-                del statuses[role_id_str]
-                await ctx.send(f"Removed **{role.name}** from DM Status role tracking.")
+            if str(role.id) in statuses:
+                del statuses[str(role.id)]
+                await ctx.send(f"Removed **{role.name}** from DM statuses.")
             else:
-                await ctx.send(f"**{role.name}** is not currently tracked as a DM Status role.")
+                await ctx.send("Role not found in DM statuses.")
 
     @aboutmeset_dmstatus.command(name="list")
     async def dmstatus_list(self, ctx):
-        """List all configured DM Status roles."""
+        """List DM status roles."""
         statuses = await self.config.guild(ctx.guild).dm_status_roles()
         if not statuses:
-            return await ctx.send("No DM Status roles are currently configured.")
+            return await ctx.send("No DM status roles configured.")
+        lines = [f"{emoji} {ctx.guild.get_role(int(rid)).name if ctx.guild.get_role(int(rid)) else 'Deleted'}" for rid, emoji in statuses.items()]
+        await ctx.send(embed=discord.Embed(title="DM Status Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
-        lines = []
-        for role_id_str, emoji in statuses.items():
-            role = ctx.guild.get_role(int(role_id_str))
-            role_name = role.mention if role else f"Deleted-Role-{role_id_str}"
-            lines.append(f"{emoji} {role_name}")
-
-        embed = discord.Embed(title="Configured DM Status Roles", description="\n".join(lines), color=await ctx.embed_color())
-        await ctx.send(embed=embed)
-
-    # ------------------------------------------------------------------
-    # Award Role Management
-    # ------------------------------------------------------------------
-
+    # --- Award Role Management ---
     @aboutmeset.group(name="award")
     async def aboutmeset_award(self, ctx):
-        """Manage Award roles (displayed in the Awards section)."""
+        """Manage Award roles."""
         pass
 
     @aboutmeset_award.command(name="add")
     async def award_add(self, ctx, role: discord.Role):
-        """Add an Award role."""
+        """Add award role."""
         async with self.config.guild(ctx.guild).award_roles() as awards:
             if role.id not in awards:
                 awards.append(role.id)
-                await ctx.send(f"Added **{role.name}** to Award roles.")
+                await ctx.send(f"Added **{role.name}** to awards.")
             else:
-                await ctx.send(f"**{role.name}** is already an Award role.")
+                await ctx.send("Role already in awards.")
 
     @aboutmeset_award.command(name="remove")
     async def award_remove(self, ctx, role: discord.Role):
-        """Remove an Award role."""
+        """Remove award role."""
         async with self.config.guild(ctx.guild).award_roles() as awards:
             if role.id in awards:
                 awards.remove(role.id)
-                await ctx.send(f"Removed **{role.name}** from Award roles.")
+                await ctx.send(f"Removed **{role.name}** from awards.")
             else:
-                await ctx.send(f"**{role.name}** is not currently configured as an Award role.")
+                await ctx.send("Role not found in awards.")
 
     @aboutmeset_award.command(name="list")
     async def award_list(self, ctx):
-        """List all configured Award roles."""
+        """List award roles."""
         awards = await self.config.guild(ctx.guild).award_roles()
         if not awards:
-            return await ctx.send("No Award roles are currently configured.")
+            return await ctx.send("No award roles configured.")
+        lines = [ctx.guild.get_role(rid).name if ctx.guild.get_role(rid) else 'Deleted' for rid in awards]
+        await ctx.send(embed=discord.Embed(title="Award Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
-        lines = []
-        for role_id in awards:
-            role = ctx.guild.get_role(role_id)
-            role_name = role.mention if role else f"Deleted-Role-{role_id}"
-            lines.append(role_name)
-
-        embed = discord.Embed(title="Configured Award Roles", description="\n".join(lines), color=await ctx.embed_color())
-        await ctx.send(embed=embed)
-
-    # ------------------------------------------------------------------
-    # Helper Role Management
-    # ------------------------------------------------------------------
-
+    # --- Helper Role Management ---
     @aboutmeset.group(name="helper")
     async def aboutmeset_helper(self, ctx):
-        """Manage Helper roles (displayed in the Helper section)."""
+        """Manage Helper roles."""
         pass
 
     @aboutmeset_helper.command(name="add")
     async def helper_add(self, ctx, role: discord.Role):
-        """Add a Helper role."""
+        """Add helper role."""
         async with self.config.guild(ctx.guild).helper_roles() as helpers:
             if role.id not in helpers:
                 helpers.append(role.id)
-                await ctx.send(f"Added **{role.name}** to Helper roles.")
+                await ctx.send(f"Added **{role.name}** to helpers.")
             else:
-                await ctx.send(f"**{role.name}** is already a Helper role.")
+                await ctx.send("Role already in helpers.")
 
     @aboutmeset_helper.command(name="remove")
     async def helper_remove(self, ctx, role: discord.Role):
-        """Remove a Helper role."""
+        """Remove helper role."""
         async with self.config.guild(ctx.guild).helper_roles() as helpers:
             if role.id in helpers:
                 helpers.remove(role.id)
-                await ctx.send(f"Removed **{role.name}** from Helper roles.")
+                await ctx.send(f"Removed **{role.name}** from helpers.")
             else:
-                await ctx.send(f"**{role.name}** is not currently configured as a Helper role.")
+                await ctx.send("Role not found in helpers.")
 
     @aboutmeset_helper.command(name="list")
     async def helper_list(self, ctx):
-        """List all configured Helper roles."""
+        """List helper roles."""
         helpers = await self.config.guild(ctx.guild).helper_roles()
         if not helpers:
-            return await ctx.send("No Helper roles are currently configured.")
+            return await ctx.send("No helper roles configured.")
+        lines = [ctx.guild.get_role(rid).name if ctx.guild.get_role(rid) else 'Deleted' for rid in helpers]
+        await ctx.send(embed=discord.Embed(title="Helper Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
-        lines = []
-        for role_id in helpers:
-            role = ctx.guild.get_role(role_id)
-            role_name = role.mention if role else f"Deleted-Role-{role_id}"
-            lines.append(role_name)
-
-        embed = discord.Embed(title="Configured Helper Roles", description="\n".join(lines), color=await ctx.embed_color())
-        await ctx.send(embed=embed)
-
-
-    # ------------------------------------------------------------------
-    # House Role Management
-    # ------------------------------------------------------------------
-
+    # --- House Role Management ---
     @aboutmeset.group(name="houseroles")
     async def aboutmeset_houseroles(self, ctx):
-        """Manage House roles and their corresponding emojis."""
+        """Manage House roles."""
         pass
 
     @aboutmeset_houseroles.command(name="add")
     async def houseroles_add(self, ctx, role: discord.Role, emoji: str):
-        """Add an House Status role and associate an emoji with it."""
+        """Add House role."""
         async with self.config.guild(ctx.guild).house_roles() as house_roles:
-            role_id_str = str(role.id)
-            house_roles[role_id_str] = emoji
-            
-        await ctx.send(f"Configured **{role.name}** as an House role with emoji: {emoji}")
+            house_roles[str(role.id)] = emoji
+        await ctx.send(f"Added House role **{role.name}** with {emoji}")
 
     @aboutmeset_houseroles.command(name="remove")
     async def houseroles_remove(self, ctx, role: discord.Role):
-        """Remove an House role."""
+        """Remove House role."""
         async with self.config.guild(ctx.guild).house_roles() as house_roles:
-            role_id_str = str(role.id)
-            if role_id_str in house_roles:
-                del house_roles[role_id_str]
-                await ctx.send(f"Removed **{role.name}** from Houses roles.")
+            if str(role.id) in house_roles:
+                del house_roles[str(role.id)]
+                await ctx.send(f"Removed **{role.name}** from House roles.")
             else:
-                await ctx.send(f"**{role.name}** is not currently configured as an House role.")
+                await ctx.send("Role not found in House roles.")
 
     @aboutmeset_houseroles.command(name="list")
     async def houseroles_list(self, ctx):
-        """List all configured House roles."""
+        """List House roles."""
         house_roles = await self.config.guild(ctx.guild).house_roles()
         if not house_roles:
-            return await ctx.send("No House roles are currently configured.")
+            return await ctx.send("No House roles configured.")
+        lines = [f"{emoji} {ctx.guild.get_role(int(rid)).name if ctx.guild.get_role(int(rid)) else 'Deleted'}" for rid, emoji in house_roles.items()]
+        await ctx.send(embed=discord.Embed(title="House Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
-        lines = []
-        for role_id_str, emoji in house_roles.items():
-            role = ctx.guild.get_role(int(role_id_str))
-            role_name = role.mention if role else f"Deleted-Role-{role_id_str}"
-            lines.append(f"{emoji} {role_name}")
-
-        embed = discord.Embed(title="Configured House Roles", description="\n".join(lines), color=await ctx.embed_color())
-        await ctx.send(embed=embed)
-
-    # ------------------------------------------------------------------
-    # Egg Status Role Management
-    # ------------------------------------------------------------------
-
+    # --- Egg Status Role Management ---
     @aboutmeset.group(name="eggroles")
     async def aboutmeset_eggroles(self, ctx):
-        """Manage Egg Status roles and their corresponding emojis."""
+        """Manage Egg Status roles."""
         pass
 
     @aboutmeset_eggroles.command(name="add")
     async def eggroles_add(self, ctx, role: discord.Role, emoji: str):
-        """Add an Egg Status role and associate an emoji with it."""
+        """Add Egg Status role."""
         async with self.config.guild(ctx.guild).egg_status_roles() as egg_roles:
-            role_id_str = str(role.id)
-            egg_roles[role_id_str] = emoji
-            
-        await ctx.send(f"Configured **{role.name}** as an Egg Status role with emoji: {emoji}")
+            egg_roles[str(role.id)] = emoji
+        await ctx.send(f"Added Egg Status role **{role.name}** with {emoji}")
 
     @aboutmeset_eggroles.command(name="remove")
     async def eggroles_remove(self, ctx, role: discord.Role):
-        """Remove an Egg Status role."""
+        """Remove Egg Status role."""
         async with self.config.guild(ctx.guild).egg_status_roles() as egg_roles:
-            role_id_str = str(role.id)
-            if role_id_str in egg_roles:
-                del egg_roles[role_id_str]
+            if str(role.id) in egg_roles:
+                del egg_roles[str(role.id)]
                 await ctx.send(f"Removed **{role.name}** from Egg Status roles.")
             else:
-                await ctx.send(f"**{role.name}** is not currently configured as an Egg Status role.")
+                await ctx.send("Role not found in Egg Status roles.")
 
     @aboutmeset_eggroles.command(name="list")
     async def eggroles_list(self, ctx):
-        """List all configured Egg Status roles."""
+        """List Egg Status roles."""
         egg_roles = await self.config.guild(ctx.guild).egg_status_roles()
         if not egg_roles:
-            return await ctx.send("No Egg Status roles are currently configured.")
+            return await ctx.send("No Egg Status roles configured.")
+        lines = [f"{emoji} {ctx.guild.get_role(int(rid)).name if ctx.guild.get_role(int(rid)) else 'Deleted'}" for rid, emoji in egg_roles.items()]
+        await ctx.send(embed=discord.Embed(title="Egg Status Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
-        lines = []
-        for role_id_str, emoji in egg_roles.items():
-            role = ctx.guild.get_role(int(role_id_str))
-            role_name = role.mention if role else f"Deleted-Role-{role_id_str}"
-            lines.append(f"{emoji} {role_name}")
-
-        embed = discord.Embed(title="Configured Egg Status Roles", description="\n".join(lines), color=await ctx.embed_color())
-        await ctx.send(embed=embed)
-
-    # ------------------------------------------------------------------
-    # Existing Role Progress Management
-    # ------------------------------------------------------------------
-
+    # --- Role Progress Management ---
     @aboutmeset.group(name="roles")
     async def aboutmeset_roles(self, ctx):
         """Manage role targets."""
@@ -577,159 +518,95 @@ class AboutMe(commands.Cog):
 
     @aboutmeset_roles.command(name="add")
     async def roles_add(self, ctx, role: discord.Role, days: int):
-        """
-        Set the day target for a role.
-        Usage: [p]aboutmeset roles add @BaseRole 30
-        """
-        if days < 1:
-            return await ctx.send("Please enter a positive number of days.")
-
+        """Add role target."""
         async with self.config.guild(ctx.guild).role_targets() as targets:
             targets[str(role.id)] = days
-        
-        await ctx.send(f"Configured **{role.name}** with a target of **{days}** days.")
+        await ctx.send(f"Configured **{role.name}** with target of **{days}** days.")
 
     @aboutmeset_roles.command(name="link")
     async def roles_link(self, ctx, base_role: discord.Role, buddy_role: discord.Role):
-        """
-        Link a reward (buddy) role to a base role. Can be used multiple times.
-        Usage: [p]aboutmeset roles link @BaseRole @RewardRole
-        """
+        """Link buddy role."""
         base_id = str(base_role.id)
-        buddy_id = str(buddy_role.id)
-
         targets = await self.config.guild(ctx.guild).role_targets()
         if base_id not in targets:
-            return await ctx.send(f"**{base_role.name}** is not configured yet. Use `[p]aboutmeset roles add` first.")
-
+            return await ctx.send("Base role not configured yet.")
         async with self.config.guild(ctx.guild).role_buddies() as buddies:
             if base_id not in buddies:
                 buddies[base_id] = []
-            
-            if buddy_id in buddies[base_id]:
-                return await ctx.send(f"**{buddy_role.name}** is already linked to **{base_role.name}**.")
-
-            buddies[base_id].append(buddy_id)
-            
-        await ctx.send(f"Linked **{buddy_role.name}** as a buddy role for **{base_role.name}**.")
+            buddies[base_id].append(str(buddy_role.id))
+        await ctx.send(f"Linked **{buddy_role.name}** to **{base_role.name}**.")
 
     @aboutmeset_roles.command(name="unlink")
     async def roles_unlink(self, ctx, base_role: discord.Role, buddy_role: discord.Role):
-        """
-        Remove a specific buddy role from the base role's list.
-        Usage: [p]aboutmeset roles unlink @BaseRole @RewardRole
-        """
+        """Unlink buddy role."""
         base_id = str(base_role.id)
         buddy_id = str(buddy_role.id)
-
         async with self.config.guild(ctx.guild).role_buddies() as buddies:
-            if base_id not in buddies or buddy_id not in buddies[base_id]:
-                return await ctx.send(f"**{buddy_role.name}** is not currently linked to **{base_role.name}**.")
-
-            buddies[base_id].remove(buddy_id)
-            
-            if not buddies[base_id]:
-                del buddies[base_id]
-                
-            await ctx.send(f"Unlinked **{buddy_role.name}** from **{base_role.name}**.")
+            if base_id in buddies and buddy_id in buddies[base_id]:
+                buddies[base_id].remove(buddy_id)
+                await ctx.send(f"Unlinked **{buddy_role.name}** from **{base_role.name}**.")
+            else:
+                await ctx.send("Link not found.")
 
     @aboutmeset_roles.command(name="linktarget")
     async def roles_linktarget(self, ctx, base_role: discord.Role, target_role: discord.Role):
-        """
-        Link a 'target' role to a base role. 
-        If the user has the target role, the base role display is replaced by 'Unlocked!'.
-        Usage: [p]aboutmeset roles linktarget @BaseRole @TargetRole
-        """
+        """Link target override."""
         base_id = str(base_role.id)
-        target_id = str(target_role.id)
-        
-        # Check if base role is configured
         targets = await self.config.guild(ctx.guild).role_targets()
         if base_id not in targets:
-             return await ctx.send(f"**{base_role.name}** is not configured as a base role yet.")
-             
+            return await ctx.send("Base role not configured.")
         async with self.config.guild(ctx.guild).role_target_overrides() as overrides:
-            overrides[base_id] = target_id
-            
-        await ctx.send(f"Linked **{target_role.name}** as a target override for **{base_role.name}**.")
+            overrides[base_id] = str(target_role.id)
+        await ctx.send(f"Linked target **{target_role.name}** to **{base_role.name}**.")
 
     @aboutmeset_roles.command(name="unlinktarget")
     async def roles_unlinktarget(self, ctx, base_role: discord.Role):
-        """
-        Remove the target role link from a base role.
-        Usage: [p]aboutmeset roles unlinktarget @BaseRole
-        """
+        """Unlink target override."""
         base_id = str(base_role.id)
-        
         async with self.config.guild(ctx.guild).role_target_overrides() as overrides:
             if base_id in overrides:
                 del overrides[base_id]
                 await ctx.send(f"Removed target override for **{base_role.name}**.")
             else:
-                await ctx.send(f"**{base_role.name}** does not have a target override linked.")
+                await ctx.send("Target link not found.")
 
     @aboutmeset_roles.command(name="remove")
     async def roles_remove(self, ctx, role: discord.Role):
-        """
-        Stop tracking a role completely (removes day target, buddy links, and target overrides).
-        """
+        """Remove role config."""
         role_id = str(role.id)
-        
         async with self.config.guild(ctx.guild).role_targets() as targets:
             if role_id in targets:
                 del targets[role_id]
             else:
-                return await ctx.send("That role is not currently configured.")
-
+                return await ctx.send("Role not configured.")
         async with self.config.guild(ctx.guild).role_buddies() as buddies:
             if role_id in buddies:
                 del buddies[role_id]
-
-        # Remove from target overrides as well
         async with self.config.guild(ctx.guild).role_target_overrides() as overrides:
             if role_id in overrides:
                 del overrides[role_id]
-
-        await ctx.send(f"Removed configuration for **{role.name}**.")
+        await ctx.send(f"Removed config for **{role.name}**.")
 
     @aboutmeset_roles.command(name="list")
     async def roles_list(self, ctx):
-        """List all configured roles, days, linked buddy roles, and target overrides."""
+        """List role configs."""
         targets = await self.config.guild(ctx.guild).role_targets()
         buddies = await self.config.guild(ctx.guild).role_buddies()
-        target_overrides = await self.config.guild(ctx.guild).role_target_overrides()
-        
+        overrides = await self.config.guild(ctx.guild).role_target_overrides()
         if not targets:
-            return await ctx.send("No roles are currently configured.")
-
+            return await ctx.send("No roles configured.")
         lines = []
-        for role_id, days in targets.items():
-            role = ctx.guild.get_role(int(role_id))
-            role_name = role.mention if role else f"Deleted-Role-{role_id}"
-            
-            # Buddy Text
-            buddy_text = ""
-            if role_id in buddies:
-                buddy_names = []
-                for buddy_id_str in buddies[role_id]:
-                    buddy_role = ctx.guild.get_role(int(buddy_id_str))
-                    buddy_name = buddy_role.mention if buddy_role else "Unknown Role"
-                    buddy_names.append(buddy_name)
-                buddy_text = f" ➡️ Buddies: {', '.join(buddy_names)}"
-            
-            # Target Override Text
-            target_text = ""
-            if role_id in target_overrides:
-                t_id = target_overrides[role_id]
-                t_role = ctx.guild.get_role(int(t_id))
-                t_name = t_role.mention if t_role else f"Unknown-Role-{t_id}"
-                target_text = f" 🎯 Target: {t_name}"
-
-            lines.append(f"{role_name}: **{days}** days{buddy_text}{target_text}")
-
-        embed = discord.Embed(
-            title="AboutMe Configurations",
-            description="\n".join(lines),
-            color=await ctx.embed_color()
-        )
-        await ctx.send(embed=embed)
+        for rid, days in targets.items():
+            role = ctx.guild.get_role(int(rid))
+            rname = role.mention if role else "Deleted"
+            btext = ""
+            if rid in buddies:
+                bnames = [ctx.guild.get_role(int(bid)).mention if ctx.guild.get_role(int(bid)) else "Unknown" for bid in buddies[rid]]
+                btext = f" ➡️ Buddies: {', '.join(bnames)}"
+            ttext = ""
+            if rid in overrides:
+                trole = ctx.guild.get_role(int(overrides[rid]))
+                tname = trole.mention if trole else "Unknown"
+                ttext = f" 🎯 Target: {tname}"
+            lines.append(f"{rname}: **{days}** days{btext}{ttext}")
+        await ctx.send(embed=discord.Embed(title="Role Configs", description="\n".join(lines), color=await ctx.embed_color()))
