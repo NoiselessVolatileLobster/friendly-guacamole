@@ -67,7 +67,9 @@ class WhereAreWe(commands.Cog):
         
         # 3. Build the Embed
         embed = discord.Embed(
-            title=f"🌎 {guild.name} is all over the place.",
+            # UPDATED: Replaced 📊 and "Member Distribution in" with 🌎 and "Where are we?"
+            title=f"🌎 Where are we? in {guild.name}",
+            # UPDATED: Replaced description text
             description="Number of members per continent:",
             color=0xB4C6FF # The integer representation of #B4C6FF
         )
