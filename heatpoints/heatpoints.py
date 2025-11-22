@@ -63,8 +63,6 @@ class HeatPoints(commands.Cog):
         # Streak resets to 1 (this current message counts as the start of a new streak).
         if time_passed > 7200:
             new_points = 1
-            # Reset the reward trigger so they can earn it again on this new streak
-            await self.config.member(member).has_triggered_reward.set(False)
         else:
             # Within the 1-2 hour window. Maintain streak.
             new_points = member_data["heatpoints"] + 1
@@ -77,10 +75,19 @@ class HeatPoints(commands.Cog):
         # Check threshold logic
         threshold = await self.config.guild(guild).threshold()
         
-        # Only trigger if they hit the threshold EXACTLY or crossed it without having triggered it before.
-        if new_points >= threshold and not member_data["has_triggered_reward"]:
+        # If they hit the threshold
+        if new_points >= threshold:
+            # 1. Send the reward
             await self._send_reward_embed(message.channel, member, new_points)
-            await self.config.member(member).has_triggered_reward.set(True)
+            
+            # 2. Reset EVERYONE'S points to zero (The Race Reset)
+            await self.config.clear_all_members(guild)
+            
+            # Optional: Send a small confirmation that the race has reset
+            try:
+                await message.channel.send(f"🔄 **The Heat Cycle has been reset!** Everyone is back to 0 points.")
+            except:
+                pass
 
     async def _send_reward_embed(self, source_channel, member, points):
         """
