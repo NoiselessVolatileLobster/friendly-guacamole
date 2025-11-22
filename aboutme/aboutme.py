@@ -387,6 +387,38 @@ class AboutMe(commands.Cog):
             f"**Boosts:** {boost_count}"
         )
 
+        # 4. Add Member Locations from WhereAreWe Cog
+        wherearewe_cog = self.bot.get_cog("WhereAreWe")
+        locations_output = ""
+        if wherearewe_cog and hasattr(wherearewe_cog, "get_tracked_role_member_counts"):
+            try:
+                # Note: get_tracked_role_member_counts is async, so we await it
+                location_data = await wherearewe_cog.get_tracked_role_member_counts(guild)
+                
+                if location_data:
+                    location_lines = []
+                    total_tracked = 0
+                    for item in location_data:
+                        role_name = item['role_name']
+                        member_count = item['member_count']
+                        emoji = item['emoji']
+                        
+                        # Only display if count is not zero
+                        if member_count > 0:
+                            location_lines.append(f"{emoji} **{role_name}**: {member_count}")
+                            total_tracked += member_count
+                    
+                    if location_lines:
+                        locations_output = "\n\n**Member Locations:**\n" + "\n".join(location_lines)
+                        # Optional: Add total count if desired
+                        # locations_output += f"\n*Total Tracked: {total_tracked}*"
+            except Exception as e:
+                print(f"Error fetching WhereAreWe data: {e}")
+                # Fail silently or log error, don't break the whole embed
+
+        # Append locations to description
+        description += locations_output
+
         embed = discord.Embed(
             title=guild.name,
             description=description,
