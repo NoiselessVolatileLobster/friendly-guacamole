@@ -29,7 +29,7 @@ class Bingo(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
-        self.config = Config.get_conf(self, 218773382617890828)
+        self.config = Config.get_conf(self, 2018773382617890828)
         self.config.register_guild(
             tiles=[],
             stamp_colour="#e6d705",
