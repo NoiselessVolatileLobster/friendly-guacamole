@@ -284,6 +284,32 @@ class Bingo(commands.Cog):
         await self.config.guild(ctx.guild).tiles.clear()
         await ctx.send("I have reset the servers bingo card tiles.")
 
+    # --- NEW COMMAND: [p]bingoset fullreset ---
+    @bingoset.command(name="fullreset")
+    async def bingoset_fullreset(self, ctx: commands.Context):
+        """
+        Reset ALL bingo settings (tiles, colours, images) and ALL player cards for this server.
+        """
+        # Confirmation step for destructive action
+        await ctx.send("🚨 **WARNING**: This command will reset ALL guild settings (tiles, colours, images) AND clear ALL member stamps. Are you absolutely sure? Type `yes` to confirm.")
+
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == 'yes'
+
+        try:
+            await self.bot.wait_for('message', check=check, timeout=30.0)
+        except asyncio.TimeoutError:
+            await ctx.send("Full reset cancelled (timed out).")
+            return
+            
+        # 1. Clear ALL member data (stamps)
+        await self.config.clear_all_members(guild=ctx.guild)
+        
+        # 2. Clear ALL guild data (settings like colors, images, bingo word, name, seed)
+        await self.config.guild(ctx.guild).clear() 
+        
+        await ctx.send("✅ **FULL RESET COMPLETE**. All bingo settings and all player cards have been reset to default for this server.")
+
     @bingoset.command(name="seed")
     async def bingoset_seed(self, ctx: commands.Context, seed: int):
         """
