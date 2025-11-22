@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import json
 
 class AboutMe(commands.Cog):
-    """A cog to that shows information about the server and its members."""
+    """A cog to show how long you have been in the server and track role progress."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -248,17 +248,25 @@ class AboutMe(commands.Cog):
 
     @commands.command()
     @commands.guild_only()
-    async def about(self, ctx, *, argument: str = "me"):
+    async def about(self, ctx, *, argument: str = None):
         """
         Check information about me, a user, the server, or channels.
         
         Usage:
-        [p]about me (or just [p]about)
+        [p]about me
         [p]about @User
         [p]about server
-        [p]about channels
+        [p]about channel
         """
         
+        if argument is None:
+            return await ctx.send(
+                "`[p]about me` -> See information about yourself.\n"
+                "`[p]about @user` -> See information about another user.\n"
+                "`[p]about channel` -> See information about channels in this server.\n"
+                "`[p]about server` -> See information about this server."
+            )
+
         arg_lower = argument.lower()
 
         # Case 1: "me"
@@ -273,8 +281,8 @@ class AboutMe(commands.Cog):
             await self._display_server_info(ctx)
             return
 
-        # Case 3: "channels"
-        if arg_lower == "channels":
+        # Case 3: "channel" or "channels"
+        if arg_lower in ["channel", "channels"]:
             await self._display_channel_info(ctx)
             return
 
@@ -286,7 +294,7 @@ class AboutMe(commands.Cog):
             if embed:
                 await ctx.send(embed=embed)
         except commands.BadArgument:
-            await ctx.send("Could not find that user or recognize the command argument. Options are: `me`, `server`, `channels`, or a member.")
+            await ctx.send("Could not find that user or recognize the command argument. Options are: `me`, `server`, `channel`, or a member.")
 
     # ------------------------------------------------------------------
     # ADMIN COMMANDS
