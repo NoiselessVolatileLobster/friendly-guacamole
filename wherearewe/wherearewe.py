@@ -52,10 +52,11 @@ class WhereAreWe(commands.Cog):
                 role_data_unsorted.append((role.name, emoji, member_count))
                 found_roles += 1
             else:
-                # Role not found (deleted)
+                # Role not found (deleted) - count is 0, will be filtered out below
                 role_data_unsorted.append((f"Deleted Role (ID: {role_id})", "❌", 0))
 
         if not found_roles and tracked_data:
+             # Only respond with this if the list isn't empty, but all roles are deleted/missing
              await ctx.send("The tracked role list contains only deleted roles.")
              return
 
@@ -64,28 +65,33 @@ class WhereAreWe(commands.Cog):
         
         # 3. Build the Embed
         embed = discord.Embed(
-            title=f"🌎 Where are we? in {guild.name}",
+            # CHANGE 1: Title simplified
+            title="🌎 Where are we?",
             # Set the list context in the description
             description="Number of members per continent:",
             color=0xB4C6FF # The integer representation of #B4C6FF
         )
         
-        # 4. Build a single string for the list content using the new format
+        # 4. Build a single string for the list content using the new format and filter
         content_lines = []
         for role_name, emoji, count in role_data_sorted:
+            # CHANGE 3: Only include roles with a member count greater than zero.
+            if count == 0:
+                continue
+
             # Requested Format: "{emoji} **Role Name**: #"
-            
-            if emoji == "❌":
-                # Special formatting for deleted roles
-                line = f"❌ **{role_name}**" 
-            else:
-                line = f"{emoji} **{role_name}**: {count}"
+            line = f"{emoji} **{role_name}**: {count}"
                 
             content_lines.append(line)
+        
+        if not content_lines:
+            # This handles the case where there were roles, but they all had 0 members.
+            return await ctx.send("All tracked roles currently have 0 members.")
 
         # Add the entire list as the value of a single, non-inline field
         embed.add_field(
-            name="— Roles —", 
+            # CHANGE 2: Field name replaced with a zero-width space (\u200b) to effectively hide it
+            name='\u200b', 
             value='\n'.join(content_lines),
             inline=False
         )
