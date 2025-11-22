@@ -67,8 +67,8 @@ class WhereAreWe(commands.Cog):
         
         # 3. Build the Embed
         embed = discord.Embed(
-            title=f"📊 Member Distribution in {guild.name}",
-            description="Current member counts for tracked roles (Highest Count First):",
+            title=f"🌎 {guild.name} is all over the place.",
+            description="Number of members per continent:",
             color=0xB4C6FF # The integer representation of #B4C6FF
         )
         
