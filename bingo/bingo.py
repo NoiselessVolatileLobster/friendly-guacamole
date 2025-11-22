@@ -334,7 +334,8 @@ class Bingo(commands.Cog):
         await self.config.guild(ctx.guild).tiles.set(options)
         await self.config.clear_all_members(guild=ctx.guild)
         card_settings = await self.get_card_options(ctx)
-        file = await self.create_bingo_card(options, **card_settings)
+        # FIX: Pass guild_name explicitly
+        file = await self.create_bingo_card(options, guild_name=ctx.guild.name, **card_settings)
         await ctx.send("Here's how your bingo cards will appear", file=file)
 
     async def check_stamps(self, stamps: List[Tuple[int, int]]) -> bool:
@@ -364,7 +365,6 @@ class Bingo(commands.Cog):
             return True
         return False
 
-    # --- NEW COMMAND: [p]stamp ---
     @commands.command(name="stamp")
     @commands.guild_only()
     @commands.bot_has_permissions(attach_files=True)
@@ -393,7 +393,6 @@ class Bingo(commands.Cog):
         # Display the updated card
         await self.bingo_card(ctx, status_msg)
 
-    # --- UPDATED COMMAND: [p]bingo now only shows card ---
     @commands.command(name="bingo")
     @commands.guild_only()
     @commands.bot_has_permissions(attach_files=True)
