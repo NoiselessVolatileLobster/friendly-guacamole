@@ -38,9 +38,8 @@ class WhereAreWe(commands.Cog):
                 f"An administrator must use `{ctx.prefix}wherearesettings add <role> [emoji]` first."
             )
 
-        # Structure to hold temporary role data for sorting: (name, count, inline)
-        # We store the count as an integer temporarily for sorting.
-        role_data_unsorted: List[Tuple[str, int, bool]] = []
+        # Structure to hold temporary role data for sorting: (role_name, emoji, count)
+        role_data_unsorted: List[Tuple[str, str, int]] = []
         found_roles = 0
         
         # 1. Collect data
@@ -49,34 +48,47 @@ class WhereAreWe(commands.Cog):
             role: discord.Role = guild.get_role(role_id)
             
             if role:
-                # Format name with emoji, ensuring proper spacing with .strip()
-                display_name = f"{emoji} {role.name}".strip()
                 member_count = len(role.members)
-                role_data_unsorted.append((display_name, member_count, False))
+                role_data_unsorted.append((role.name, emoji, member_count))
                 found_roles += 1
             else:
                 # Role not found (deleted)
-                role_data_unsorted.append((f"❌ Deleted Role (ID: {role_id})", 0, False))
+                role_data_unsorted.append((f"Deleted Role (ID: {role_id})", "❌", 0))
 
         if not found_roles and tracked_data:
              await ctx.send("The tracked role list contains only deleted roles.")
              return
 
-        # 2. Sort data: sort by member count (index 1) in descending order (reverse=True)
-        role_data_sorted = sorted(role_data_unsorted, key=lambda item: item[1], reverse=True)
+        # 2. Sort data: sort by member count (index 2) in descending order (reverse=True)
+        role_data_sorted = sorted(role_data_unsorted, key=lambda item: item[2], reverse=True)
         
         # 3. Build the Embed
         embed = discord.Embed(
-            # UPDATED: Replaced 📊 and "Member Distribution in" with 🌎 and "Where are we?"
             title=f"🌎 Where are we? in {guild.name}",
-            # UPDATED: Replaced description text
+            # Set the list context in the description
             description="Number of members per continent:",
             color=0xB4C6FF # The integer representation of #B4C6FF
         )
         
-        for name, count, inline in role_data_sorted:
-            # We convert the count back to a string for the embed value
-            embed.add_field(name=name, value=str(count), inline=inline)
+        # 4. Build a single string for the list content using the new format
+        content_lines = []
+        for role_name, emoji, count in role_data_sorted:
+            # Requested Format: "{emoji} **Role Name**: #"
+            
+            if emoji == "❌":
+                # Special formatting for deleted roles
+                line = f"❌ **{role_name}**" 
+            else:
+                line = f"{emoji} **{role_name}**: {count}"
+                
+            content_lines.append(line)
+
+        # Add the entire list as the value of a single, non-inline field
+        embed.add_field(
+            name="— Roles —", 
+            value='\n'.join(content_lines),
+            inline=False
+        )
 
         await ctx.send(embed=embed)
 
