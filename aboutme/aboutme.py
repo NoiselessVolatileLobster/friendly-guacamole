@@ -128,7 +128,7 @@ class AboutMe(commands.Cog):
             "egg_status_roles": {},
             "house_roles": {},
             "role_target_overrides": {},
-            "channel_categories": {} # NEW: {category_id: {'type': 'public'|'secret', 'label': 'Name'}}
+            "channel_categories": {} # {category_id: {'type': 'public'|'secret', 'label': 'Name'}}
         }
         self.config.register_guild(**default_guild)
 
@@ -334,12 +334,71 @@ class AboutMe(commands.Cog):
         return embed
 
     async def _display_server_info(self, ctx):
-        """Placeholder function for Server Information embed."""
+        """Displays detailed server information embed."""
+        guild = ctx.guild
+        
+        # 1. Channel Counts from Config
+        categories_config = await self.config.guild(guild).channel_categories()
+        public_count = 0
+        secret_count = 0
+        
+        for cat_id, data in categories_config.items():
+            category = guild.get_channel(int(cat_id))
+            if not category:
+                continue
+            
+            # Count text-based channels (Text, News, Forum) excluding Voice/Stage
+            # This logic ensures we count "readable" channels for the Public/Secret stats
+            c_count = 0
+            for c in category.channels:
+                if isinstance(c, (discord.TextChannel, discord.ForumChannel)):
+                    c_count += 1
+            
+            if data['type'] == 'public':
+                public_count += c_count
+            elif data['type'] == 'secret':
+                secret_count += c_count
+
+        # Global Voice Count
+        voice_count = len(guild.voice_channels) + len(guild.stage_channels)
+
+        # 2. Data Preparation
+        desc_text = guild.description if guild.description else ""
+        
+        created_ts = int(guild.created_at.timestamp())
+        created_str = f"<t:{created_ts}:D> (<t:{created_ts}:R>)"
+        
+        member_count = guild.member_count
+        role_count = len(guild.roles)
+        emoji_count = len(guild.emojis)
+        boost_count = guild.premium_subscription_count
+
+        # 3. Build Description
+        description = (
+            f"{desc_text}\n\n"
+            f"**Founded:** {created_str}\n"
+            f"**Members:** {member_count}\n"
+            f"**Channels:**\n"
+            f" • Public: {public_count}\n"
+            f" • Secret: {secret_count}\n"
+            f" • Voice: {voice_count}\n"
+            f"**Roles:** {role_count}\n"
+            f"**Emojis:** {emoji_count}\n"
+            f"**Boosts:** {boost_count}"
+        )
+
         embed = discord.Embed(
-            title="Server Information",
-            description="Server Information content will go here.",
+            title=guild.name,
+            description=description,
             color=await ctx.embed_color()
         )
+        
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
+        
+        if guild.banner:
+            embed.set_image(url=guild.banner.url)
+
         await ctx.send(embed=embed)
 
     async def _display_channel_info(self, ctx):
