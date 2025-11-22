@@ -1,7 +1,7 @@
 import discord
 from redbot.core import Config, commands
 from redbot.core.utils.menus import menu, DEFAULT_CONTROLS
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Tuple
 
 # Identifier used for the Config instance to ensure unique storage
 # This should be a unique number for the cog.
@@ -25,7 +25,8 @@ class WhereAreWe(commands.Cog):
     @commands.command(name="wherearewe")
     async def wherearewe_command(self, ctx: commands.Context):
         """
-        Displays an embed with the member count for all tracked roles in this server.
+        Displays an embed with the member count for all tracked roles in this server,
+        sorted by member count (highest first).
         """
         guild: discord.Guild = ctx.guild
         # Retrieve the dictionary: {role_id_str: emoji_string}
@@ -37,11 +38,12 @@ class WhereAreWe(commands.Cog):
                 f"An administrator must use `{ctx.prefix}wherearesettings add <role> [emoji]` first."
             )
 
-        # Build fields for the embed
-        role_data = []
+        # Structure to hold temporary role data for sorting: (name, count, inline)
+        # We store the count as an integer temporarily for sorting.
+        role_data_unsorted: List[Tuple[str, int, bool]] = []
         found_roles = 0
         
-        # Iterate over ID and Emoji
+        # 1. Collect data
         for role_id_str, emoji in tracked_data.items():
             role_id = int(role_id_str)
             role: discord.Role = guild.get_role(role_id)
@@ -49,23 +51,30 @@ class WhereAreWe(commands.Cog):
             if role:
                 # Format name with emoji, ensuring proper spacing with .strip()
                 display_name = f"{emoji} {role.name}".strip()
-                role_data.append((display_name, str(len(role.members)), False))
+                member_count = len(role.members)
+                role_data_unsorted.append((display_name, member_count, False))
                 found_roles += 1
             else:
                 # Role not found (deleted)
-                role_data.append((f"❌ Deleted Role (ID: {role_id})", "0", False))
+                role_data_unsorted.append((f"❌ Deleted Role (ID: {role_id})", 0, False))
 
-        if not tracked_data:
+        if not found_roles and tracked_data:
+             await ctx.send("The tracked role list contains only deleted roles.")
              return
 
+        # 2. Sort data: sort by member count (index 1) in descending order (reverse=True)
+        role_data_sorted = sorted(role_data_unsorted, key=lambda item: item[1], reverse=True)
+        
+        # 3. Build the Embed
         embed = discord.Embed(
-            title=f"🌎 {guild.name}",
-            description="This is where we are:",
-            color=await ctx.embed_color()
+            title=f"📊 Member Distribution in {guild.name}",
+            description="Current member counts for tracked roles (Highest Count First):",
+            color=0xB4C6FF # The integer representation of #B4C6FF
         )
         
-        for name, value, inline in role_data:
-            embed.add_field(name=name, value=value, inline=inline)
+        for name, count, inline in role_data_sorted:
+            # We convert the count back to a string for the embed value
+            embed.add_field(name=name, value=str(count), inline=inline)
 
         await ctx.send(embed=embed)
 
@@ -107,7 +116,7 @@ class WhereAreWe(commands.Cog):
             embed = discord.Embed(
                 title="Current Tracked Roles",
                 description="\n".join(chunk),
-                color=await ctx.embed_color()
+                color=0xB4C6FF
             )
             embed.set_footer(text=f"Total tracked roles: {len(tracked_data)}")
             pages.append(embed)
