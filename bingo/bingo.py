@@ -29,7 +29,7 @@ class Bingo(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
-        self.config = Config.get_conf(self, 2018773382617890828)
+        self.config = Config.get_conf(self, 218773382617890828)
         self.config.register_guild(
             tiles=[],
             stamp_colour="#e6d705",
@@ -350,8 +350,7 @@ class Bingo(commands.Cog):
         stamps.append([2, 2])  # add the Free Space here
         for stamp in stamps:
             x, y = stamp
-            # This line should now be safe because the converter.py now ensures y <= 4
-            results["x"][x] += 1 
+            results["x"][x] += 1
             results["y"][y] += 1
             if stamp in [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4]]:
                 results["right_diag"] += 1
@@ -365,38 +364,60 @@ class Bingo(commands.Cog):
             return True
         return False
 
+    # --- NEW COMMAND: [p]stamp ---
+    @commands.command(name="stamp")
+    @commands.guild_only()
+    @commands.bot_has_permissions(attach_files=True)
+    async def stamp(self, ctx: commands.Context, stamp_coords: Stamp):
+        """
+        Stamp a tile on your bingo card (e.g., B1, I5).
+
+        `stamp_coords` - The tile you wish to stamp or unstamp.
+        """
+        stamps = await self.config.member(ctx.author).stamps()
+        
+        if stamp_coords in stamps:
+            stamps.remove(stamp_coords)
+            status_msg = f"Unstamped tile **{ctx.message.clean_content.split()[-1].upper()}**."
+        else:
+            stamps.append(stamp_coords)
+            status_msg = f"Stamped tile **{ctx.message.clean_content.split()[-1].upper()}**."
+            
+        await self.config.member(ctx.author).stamps.set(stamps)
+        
+        # Check for bingo after updating stamps
+        bingo = await self.check_stamps(stamps)
+        if bingo:
+            status_msg += f"\n🎉 {ctx.author.mention} has a **BINGO!**"
+
+        # Display the updated card
+        await self.bingo_card(ctx, status_msg)
+
+    # --- UPDATED COMMAND: [p]bingo now only shows card ---
     @commands.command(name="bingo")
     @commands.guild_only()
     @commands.bot_has_permissions(attach_files=True)
-    async def bingo(self, ctx: commands.Context, stamp: Optional[Stamp] = None):
+    async def bingo_card(self, ctx: commands.Context, message: str = None):
         """
-        Generate a Bingo Card
-
-        `stamp` - Select the tile that you would like to stamp. If not
-        provided will just show your current bingo card.
+        Generate and show your current Bingo Card.
         """
         tiles = await self.config.guild(ctx.guild).tiles()
         stamps = await self.config.member(ctx.author).stamps()
-        msg = None
-        if stamp is not None:
-            if stamp in stamps:
-                stamps.remove(stamp)
-            else:
-                stamps.append(stamp)
-            await self.config.member(ctx.author).stamps.set(stamps)
-        if await self.check_stamps(stamps):
-            msg = f"{ctx.author.mention} has a bingo!"
 
-        # perm = self.nth_permutation(ctx.author.id, 24, tiles)
+        # If no tiles are set, inform the user
+        if not tiles:
+             return await ctx.send("The bingo tiles have not been set up yet! Ask a moderator to use `[p]bingoset tiles`.")
+
         seed = int(await self.config.guild(ctx.guild).seed()) + ctx.author.id
         random.seed(seed)
         random.shuffle(tiles)
         card_settings = await self.get_card_options(ctx)
+        
         temp = await self.create_bingo_card(
             tiles, stamps=stamps, guild_name=ctx.guild.name, **card_settings
         )
         await ctx.send(
-            content=msg,
+            content=message,
             file=temp,
             allowed_mentions=discord.AllowedMentions(users=False),
         )
@@ -475,10 +496,10 @@ class Bingo(commands.Cog):
         background_tile: Optional[Image.Image] = None,
         stamps: List[Tuple[int, int]] = [],
     ):
-        base_height, base_width = 1000, 800  # Increased width for row numbers
+        base_height, base_width = 1000, 800
         
         # New constants for grid position
-        GRID_OFFSET_X = 75 # Shift the grid right to make space for left row numbers
+        GRID_OFFSET_X = 75
         GRID_OFFSET_Y = 250
         SCALE = 130
         
@@ -494,7 +515,7 @@ class Bingo(commands.Cog):
         font = ImageFont.truetype(font=font_path, size=180)
         font2 = ImageFont.truetype(font=font_path, size=20)
         font3 = ImageFont.truetype(font=font_path, size=30)
-        font_row_number = ImageFont.truetype(font=font_path, size=30) # Font for row numbers
+        font_row_number = ImageFont.truetype(font=font_path, size=30)
         credit_font = ImageFont.truetype(font=font_path, size=10)
         
         # Adjusted credit text position for new width
@@ -568,7 +589,7 @@ class Bingo(commands.Cog):
                 y0 = GRID_OFFSET_Y + (scale * y)
                 y1 = y0 + scale
                 
-                # --- ADDED: Draw Row Numbers (1-5) on left and right ---
+                # --- Draw Row Numbers (1-5) on left and right ---
                 if x == 0:
                     row_number = str(y + 1)
                     mid_y = y0 + (scale / 2)
