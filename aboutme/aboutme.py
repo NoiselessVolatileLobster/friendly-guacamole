@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import json
 
 class AboutMe(commands.Cog):
-    """A cog to show how long you have been in the server and track role progress."""
+    """A cog to show you information about yourself, the server, its channels and users.."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -251,20 +251,15 @@ class AboutMe(commands.Cog):
     async def about(self, ctx, *, argument: str = None):
         """
         Check information about me, a user, the server, or channels.
-        
-        Usage:
-        [p]about me
-        [p]about @User
-        [p]about server
-        [p]about channel
         """
         
         if argument is None:
+            p = ctx.clean_prefix
             return await ctx.send(
-                "`[p]about me` -> See information about yourself.\n"
-                "`[p]about @user` -> See information about another user.\n"
-                "`[p]about channel` -> See information about channels in this server.\n"
-                "`[p]about server` -> See information about this server."
+                f"`{p}about me` -> See information about yourself.\n"
+                f"`{p}about @user` -> See information about another user.\n"
+                f"`{p}about channel` -> See information about channels in this server.\n"
+                f"`{p}about server` -> See information about this server."
             )
 
         arg_lower = argument.lower()
@@ -294,7 +289,8 @@ class AboutMe(commands.Cog):
             if embed:
                 await ctx.send(embed=embed)
         except commands.BadArgument:
-            await ctx.send("Could not find that user or recognize the command argument. Options are: `me`, `server`, `channel`, or a member.")
+            p = ctx.clean_prefix
+            await ctx.send(f"Could not find that user or recognize the command argument. Options are: `me`, `server`, `channel`, or a member. Try `{p}about` for help.")
 
     # ------------------------------------------------------------------
     # ADMIN COMMANDS
