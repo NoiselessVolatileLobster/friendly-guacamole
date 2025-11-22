@@ -1,7 +1,7 @@
 import discord
 from redbot.core import Config, commands
 from redbot.core.utils.menus import menu, DEFAULT_CONTROLS
-from typing import Dict, Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple, Any
 
 # Identifier used for the Config instance to ensure unique storage
 # This should be a unique number for the cog.
@@ -21,28 +21,25 @@ class WhereAreWe(commands.Cog):
             tracked_roles={} # Changed to a dictionary to store role ID and emoji pairing
         )
 
-    @commands.guild_only()
-    @commands.command(name="wherearewe")
-    async def wherearewe_command(self, ctx: commands.Context):
+    # --- Public API Method ---
+    async def get_tracked_role_member_counts(self, guild: discord.Guild) -> List[Dict[str, Any]]:
         """
-        Displays an embed with the member count for all tracked roles in this server,
-        sorted by member count (highest first).
+        Public API method to retrieve member counts for all tracked roles in a guild.
+
+        Returns a list of dictionaries, sorted by member count (descending).
+        Each dictionary contains: 'role_name', 'member_count', and 'emoji'.
+
+        Example Output Structure:
+        [
+            {'role_name': 'North America', 'member_count': 420, 'emoji': '🇺🇸'},
+            {'role_name': 'Europe', 'member_count': 300, 'emoji': '🇪🇺'},
+            ...
+        ]
         """
-        guild: discord.Guild = ctx.guild
-        # Retrieve the dictionary: {role_id_str: emoji_string}
         tracked_data: Dict[str, str] = await self.config.guild(guild).tracked_roles()
 
-        if not tracked_data:
-            return await ctx.send(
-                "No roles are currently configured for tracking. "
-                f"An administrator must use `{ctx.prefix}wherearesettings add <role> [emoji]` first."
-            )
-
-        # Structure to hold temporary role data for sorting: (role_name, emoji, count)
         role_data_unsorted: List[Tuple[str, str, int]] = []
-        found_roles = 0
         
-        # 1. Collect data
         for role_id_str, emoji in tracked_data.items():
             role_id = int(role_id_str)
             role: discord.Role = guild.get_role(role_id)
@@ -50,47 +47,71 @@ class WhereAreWe(commands.Cog):
             if role:
                 member_count = len(role.members)
                 role_data_unsorted.append((role.name, emoji, member_count))
-                found_roles += 1
             else:
-                # Role not found (deleted) - count is 0, will be filtered out below
+                # Still include deleted roles in the list for completeness, but with 0 count
                 role_data_unsorted.append((f"Deleted Role (ID: {role_id})", "❌", 0))
 
-        if not found_roles and tracked_data:
-             # Only respond with this if the list isn't empty, but all roles are deleted/missing
-             await ctx.send("The tracked role list contains only deleted roles.")
-             return
-
-        # 2. Sort data: sort by member count (index 2) in descending order (reverse=True)
+        # Sort data: sort by member count (index 2) in descending order (reverse=True)
         role_data_sorted = sorted(role_data_unsorted, key=lambda item: item[2], reverse=True)
+
+        # Convert the sorted tuple list into the final dictionary format
+        result = []
+        for role_name, emoji, count in role_data_sorted:
+            # We filter out deleted roles and zero-member roles here for clean API output,
+            # as is done in the main command.
+            if count > 0 and emoji != "❌":
+                 result.append({
+                    "role_name": role_name,
+                    "member_count": count,
+                    "emoji": emoji
+                })
         
+        return result
+
+    # --- Command Logic ---
+    @commands.guild_only()
+    @commands.command(name="wherearewe")
+    async def wherearewe_command(self, ctx: commands.Context):
+        """
+        Displays an embed with the member count for all tracked roles in this server,
+        sorted by member count (highest first).
+        """
+        # Use the new API method to retrieve and process the data
+        role_data_list = await self.get_tracked_role_member_counts(ctx.guild)
+        
+        if not role_data_list:
+            # Check for no roles configured (config empty)
+            tracked_data: Dict[str, str] = await self.config.guild(ctx.guild).tracked_roles()
+            if not tracked_data:
+                 return await ctx.send(
+                    "No roles are currently configured for tracking. "
+                    f"An administrator must use `{ctx.prefix}wherearesettings add <role> [emoji]` first."
+                )
+            # Check for roles configured but all have 0 members
+            else:
+                return await ctx.send("All tracked roles currently have 0 members.")
+
+
         # 3. Build the Embed
         embed = discord.Embed(
-            # CHANGE 1: Title simplified
             title="🌎 Where are we?",
-            # Set the list context in the description
             description="Number of members per continent:",
             color=0xB4C6FF # The integer representation of #B4C6FF
         )
         
-        # 4. Build a single string for the list content using the new format and filter
+        # 4. Build a single string for the list content using the new format
         content_lines = []
-        for role_name, emoji, count in role_data_sorted:
-            # CHANGE 3: Only include roles with a member count greater than zero.
-            if count == 0:
-                continue
-
+        for data in role_data_list:
+            role_name = data['role_name']
+            emoji = data['emoji']
+            count = data['member_count']
+            
             # Requested Format: "{emoji} **Role Name**: #"
             line = f"{emoji} **{role_name}**: {count}"
-                
             content_lines.append(line)
         
-        if not content_lines:
-            # This handles the case where there were roles, but they all had 0 members.
-            return await ctx.send("All tracked roles currently have 0 members.")
-
         # Add the entire list as the value of a single, non-inline field
         embed.add_field(
-            # CHANGE 2: Field name replaced with a zero-width space (\u200b) to effectively hide it
             name='\u200b', 
             value='\n'.join(content_lines),
             inline=False
