@@ -2,6 +2,114 @@ import discord
 from redbot.core import commands, Config
 from datetime import datetime, timezone
 import json
+from typing import Literal
+
+class ChannelNavigatorView(discord.ui.View):
+    """View for interactive channel navigation."""
+    def __init__(self, ctx, config_data):
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.config_data = config_data
+        self.guild = ctx.guild
+        
+        self.setup_buttons()
+
+    def setup_buttons(self):
+        # 1. Add Green Buttons for Public Categories
+        sorted_items = sorted(self.config_data.items(), key=lambda x: x[1]['label'])
+
+        for cat_id, data in sorted_items:
+            if data['type'] == 'public':
+                button = discord.ui.Button(
+                    style=discord.ButtonStyle.success,
+                    label=data['label'],
+                    custom_id=f"public_{cat_id}"
+                )
+                button.callback = self.make_callback_public(cat_id, data['label'])
+                self.add_item(button)
+
+        # 2. Add Red "Secret" Button
+        secret_btn = discord.ui.Button(
+            style=discord.ButtonStyle.danger,
+            label="Secret",
+            custom_id="secret_btn",
+            row=4 # Push to bottom row if possible
+        )
+        secret_btn.callback = self.secret_callback
+        self.add_item(secret_btn)
+
+        # 3. Add Grey "Voice" Button
+        voice_btn = discord.ui.Button(
+            style=discord.ButtonStyle.secondary,
+            label="Voice",
+            custom_id="voice_btn",
+            row=4
+        )
+        voice_btn.callback = self.voice_callback
+        self.add_item(voice_btn)
+
+    def make_callback_public(self, cat_id, label):
+        """Factory to create specific callbacks for loop variables."""
+        async def callback(interaction: discord.Interaction):
+            category = self.guild.get_channel(int(cat_id))
+            
+            if not category:
+                return await interaction.response.send_message("This category no longer exists.", ephemeral=True)
+            
+            channels_list = []
+            # Filter for text-like channels that can be mentioned
+            for channel in category.channels:
+                if isinstance(channel, (discord.TextChannel, discord.ForumChannel, discord.StageChannel, discord.VoiceChannel)):
+                     channels_list.append(channel.mention)
+            
+            desc = "\n".join(channels_list) if channels_list else "No channels found."
+            
+            embed = discord.Embed(
+                title=f"Category: {label}",
+                description=desc,
+                color=discord.Color.green()
+            )
+            # Edit the original message with the new embed, keep the view
+            await interaction.response.edit_message(embed=embed, view=self)
+        
+        return callback
+
+    async def secret_callback(self, interaction: discord.Interaction):
+        count = 0
+        for cat_id, data in self.config_data.items():
+            if data['type'] == 'secret':
+                category = self.guild.get_channel(int(cat_id))
+                if category:
+                    count += len(category.channels)
+        
+        embed = discord.Embed(
+            title="Secret Channels",
+            description=f"There are currently **{count}** secret channels.",
+            color=discord.Color.red()
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    async def voice_callback(self, interaction: discord.Interaction):
+        voice_lines = []
+        
+        for cat_id, data in self.config_data.items():
+            category = self.guild.get_channel(int(cat_id))
+            if category:
+                for channel in category.voice_channels:
+                    voice_lines.append(f"{channel.mention} ({channel.name})")
+                
+                for channel in category.stage_channels:
+                    voice_lines.append(f"{channel.mention} ({channel.name})")
+
+        desc = "\n".join(voice_lines) if voice_lines else "No voice channels found in tracked categories."
+
+        embed = discord.Embed(
+            title="Voice Channels",
+            description=desc,
+            color=discord.Color.light_grey()
+        )
+        await interaction.response.edit_message(embed=embed, view=self)
+
 
 class AboutMe(commands.Cog):
     """A cog to show you information about yourself, the server, its channels and users.."""
@@ -19,7 +127,8 @@ class AboutMe(commands.Cog):
             "helper_roles": [],
             "egg_status_roles": {},
             "house_roles": {},
-            "role_target_overrides": {} 
+            "role_target_overrides": {},
+            "channel_categories": {} # NEW: {category_id: {'type': 'public'|'secret', 'label': 'Name'}}
         }
         self.config.register_guild(**default_guild)
 
@@ -234,13 +343,23 @@ class AboutMe(commands.Cog):
         await ctx.send(embed=embed)
 
     async def _display_channel_info(self, ctx):
-        """Placeholder function for Channel Information embed."""
+        """Displays interactive channel navigator view."""
+        categories_config = await self.config.guild(ctx.guild).channel_categories()
+        
+        if not categories_config:
+            return await ctx.send("No channels have been configured by the admins yet.")
+
+        view = ChannelNavigatorView(ctx, categories_config)
+        
+        # Default embed (Landing page)
         embed = discord.Embed(
-            title="Channel Information",
-            description="Channel Information content will go here.",
-            color=await ctx.embed_color()
+            title="Channel Navigator", 
+            description="Select a category below to view channels.", 
+            color=discord.Color.dark_theme()
         )
-        await ctx.send(embed=embed)
+        embed.set_footer(text="Navigate using the buttons below.")
+        
+        await ctx.send(embed=embed, view=view)
 
     # ------------------------------------------------------------------
     # USER COMMANDS
@@ -315,6 +434,50 @@ class AboutMe(commands.Cog):
             await ctx.send(f"Raw Data for **{member.display_name}**:\n```json\n{formatted_data}\n```")
         except Exception as e:
             await ctx.send(f"Error: `{e}`")
+
+    # --- Channel/Category Management ---
+    @aboutmeset.group(name="channel")
+    async def aboutmeset_channel(self, ctx):
+        """Manage channel categories for the navigator."""
+        pass
+
+    @aboutmeset_channel.command(name="add")
+    async def channel_add(self, ctx, category: discord.CategoryChannel, type: Literal["public", "secret"], *, label: str):
+        """
+        Add a category to the channel navigator.
+        Type must be 'public' or 'secret'. Label is the button text.
+        """
+        async with self.config.guild(ctx.guild).channel_categories() as cats:
+            cats[str(category.id)] = {
+                "type": type.lower(),
+                "label": label
+            }
+        await ctx.send(f"Added category **{category.name}** as `{type}` with label **{label}**.")
+
+    @aboutmeset_channel.command(name="remove")
+    async def channel_remove(self, ctx, category: discord.CategoryChannel):
+        """Remove a category from the channel navigator."""
+        async with self.config.guild(ctx.guild).channel_categories() as cats:
+            if str(category.id) in cats:
+                del cats[str(category.id)]
+                await ctx.send(f"Removed **{category.name}** from tracking.")
+            else:
+                await ctx.send("That category is not currently tracked.")
+
+    @aboutmeset_channel.command(name="list")
+    async def channel_list(self, ctx):
+        """List configured channel categories."""
+        cats = await self.config.guild(ctx.guild).channel_categories()
+        if not cats:
+            return await ctx.send("No channel categories configured.")
+        
+        msg = ""
+        for cat_id, data in cats.items():
+            cat_obj = ctx.guild.get_channel(int(cat_id))
+            cat_name = cat_obj.name if cat_obj else "Unknown/Deleted"
+            msg += f"**{data['label']}** ({cat_name}) - Type: `{data['type']}`\n"
+        
+        await ctx.send(embed=discord.Embed(title="Tracked Channel Categories", description=msg, color=discord.Color.blue()))
 
     # --- Location Role Management ---
     @aboutmeset.group(name="locations")
