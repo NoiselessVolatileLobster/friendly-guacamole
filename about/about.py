@@ -140,7 +140,10 @@ class About(commands.Cog):
             "role_target_overrides": {},
             "channel_categories": {},
             "first_day_channels": [],
-            "first_day_description": "Welcome! Here are some channels to get you started:" # NEW: Default description
+            "first_day_title": "First Day Channels",
+            "first_day_description": "Welcome! Here are some channels to get you started:",
+            "first_day_thumbnail": "",
+            "first_day_image": ""
         }
         self.config.register_guild(**default_guild)
 
@@ -359,8 +362,6 @@ class About(commands.Cog):
             if not category:
                 continue
             
-            # Count text-based channels (Text, News, Forum) excluding Voice/Stage
-            # This logic ensures we count "readable" channels for the Public/Secret stats
             c_count = 0
             for c in category.channels:
                 if isinstance(c, (discord.TextChannel, discord.ForumChannel)):
@@ -415,7 +416,6 @@ class About(commands.Cog):
                         member_count = item['member_count']
                         emoji = item['emoji']
                         
-                        # Only display if count is not zero
                         if member_count > 0:
                             location_lines.append(f"{emoji} **{role_name}**: {member_count}")
                             total_tracked += member_count
@@ -424,9 +424,7 @@ class About(commands.Cog):
                         locations_output = "\n\n**Member Locations:**\n" + "\n".join(location_lines)
             except Exception as e:
                 print(f"Error fetching WhereAreWe data: {e}")
-                # Fail silently or log error, don't break the whole embed
 
-        # Append locations to description
         description += locations_output
 
         embed = discord.Embed(
@@ -464,16 +462,15 @@ class About(commands.Cog):
 
     async def _display_first_day_info(self, ctx):
         """Displays the first day info embed."""
-        channel_ids = await self.config.guild(ctx.guild).first_day_channels()
-        description_text = await self.config.guild(ctx.guild).first_day_description()
+        settings = await self.config.guild(ctx.guild).all()
+        channel_ids = settings['first_day_channels']
+        description_text = settings['first_day_description']
+        title_text = settings['first_day_title']
+        thumb_url = settings['first_day_thumbnail']
+        img_url = settings['first_day_image']
         
-        if not channel_ids:
-            # Even if channels are missing, we might want to show the description,
-            # but usually channels are the main point.
-            # For now, let's just warn if no channels are set but still show description if present?
-            # Or just return message.
-            if not description_text:
-                return await ctx.send("No First Day channels or description have been configured.")
+        if not channel_ids and not description_text:
+            return await ctx.send("No First Day content has been configured.")
 
         lines = []
         for ch_id in channel_ids:
@@ -487,12 +484,18 @@ class About(commands.Cog):
         final_desc = f"{description_text}\n\n{channel_list_str}"
 
         embed = discord.Embed(
-            title="First Day Channels",
+            title=title_text,
             description=final_desc,
             color=await ctx.embed_color()
         )
         
-        # Removed button view as requested
+        if thumb_url:
+            embed.set_thumbnail(url=thumb_url)
+        
+        if img_url:
+            embed.set_image(url=img_url)
+        
+        # Removed button view
         await ctx.send(embed=embed)
 
     # ------------------------------------------------------------------
@@ -617,7 +620,7 @@ class About(commands.Cog):
     # --- First Day Channel Management ---
     @aboutset.group(name="firstday")
     async def aboutset_firstday(self, ctx):
-        """Manage First Day channels."""
+        """Manage First Day channels and embed."""
         pass
 
     @aboutset_firstday.command(name="add")
@@ -662,12 +665,33 @@ class About(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    # NEW: Description configuration
     @aboutset_firstday.command(name="description")
     async def firstday_description(self, ctx, *, text: str):
         """Set the description for the First Day embed."""
         await self.config.guild(ctx.guild).first_day_description.set(text)
         await ctx.send("First Day embed description updated.")
+
+    @aboutset_firstday.command(name="title")
+    async def firstday_title(self, ctx, *, text: str):
+        """Set the title for the First Day embed."""
+        await self.config.guild(ctx.guild).first_day_title.set(text)
+        await ctx.send("First Day embed title updated.")
+
+    @aboutset_firstday.command(name="thumbnail")
+    async def firstday_thumbnail(self, ctx, url: str):
+        """Set the thumbnail URL for the First Day embed. Use 'none' or 'clear' to remove."""
+        if url.lower() in ["none", "clear"]:
+            url = ""
+        await self.config.guild(ctx.guild).first_day_thumbnail.set(url)
+        await ctx.send("First Day embed thumbnail updated.")
+
+    @aboutset_firstday.command(name="image")
+    async def firstday_image(self, ctx, url: str):
+        """Set the image URL for the First Day embed. Use 'none' or 'clear' to remove."""
+        if url.lower() in ["none", "clear"]:
+            url = ""
+        await self.config.guild(ctx.guild).first_day_image.set(url)
+        await ctx.send("First Day embed image updated.")
 
     # --- Location Role Management ---
     @aboutset.group(name="locations")
