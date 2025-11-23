@@ -1,0 +1,8 @@
+{
+    "author": "NoiselessVolatileLobster",
+    "version": "0.0.1",
+    "min_bot_version": "3.5.0",
+    "description": "A cog to show you information about yourself, the server, its channels and users.",
+    "short": "Server and User Information.",
+    "tags": ["utility", "userinfo"]
+}

@@ -111,7 +111,7 @@ class ChannelNavigatorView(discord.ui.View):
         await interaction.response.edit_message(embed=embed, view=self)
 
 
-class AboutMe(commands.Cog):
+class About(commands.Cog):
     """A cog to show you information about yourself, the server, its channels and users.."""
 
     def __init__(self, bot):
@@ -128,7 +128,7 @@ class AboutMe(commands.Cog):
             "egg_status_roles": {},
             "house_roles": {},
             "role_target_overrides": {},
-            "channel_categories": {} # {category_id: {'type': 'public'|'secret', 'label': 'Name'}}
+            "channel_categories": {} 
         }
         self.config.register_guild(**default_guild)
 
@@ -347,8 +347,6 @@ class AboutMe(commands.Cog):
             if not category:
                 continue
             
-            # Count text-based channels (Text, News, Forum) excluding Voice/Stage
-            # This logic ensures we count "readable" channels for the Public/Secret stats
             c_count = 0
             for c in category.channels:
                 if isinstance(c, (discord.TextChannel, discord.ForumChannel)):
@@ -392,31 +390,23 @@ class AboutMe(commands.Cog):
         locations_output = ""
         if wherearewe_cog and hasattr(wherearewe_cog, "get_tracked_role_member_counts"):
             try:
-                # Note: get_tracked_role_member_counts is async, so we await it
                 location_data = await wherearewe_cog.get_tracked_role_member_counts(guild)
                 
                 if location_data:
                     location_lines = []
-                    total_tracked = 0
                     for item in location_data:
                         role_name = item['role_name']
                         member_count = item['member_count']
                         emoji = item['emoji']
                         
-                        # Only display if count is not zero
                         if member_count > 0:
                             location_lines.append(f"{emoji} **{role_name}**: {member_count}")
-                            total_tracked += member_count
                     
                     if location_lines:
                         locations_output = "\n\n**Member Locations:**\n" + "\n".join(location_lines)
-                        # Optional: Add total count if desired
-                        # locations_output += f"\n*Total Tracked: {total_tracked}*"
             except Exception as e:
                 print(f"Error fetching WhereAreWe data: {e}")
-                # Fail silently or log error, don't break the whole embed
 
-        # Append locations to description
         description += locations_output
 
         embed = discord.Embed(
@@ -442,7 +432,6 @@ class AboutMe(commands.Cog):
 
         view = ChannelNavigatorView(ctx, categories_config)
         
-        # Default embed (Landing page)
         embed = discord.Embed(
             title="Channel Navigator", 
             description="Select a category below to view channels.", 
@@ -474,24 +463,20 @@ class AboutMe(commands.Cog):
 
         arg_lower = argument.lower()
 
-        # Case 1: "me"
         if arg_lower == "me":
             embed = await self._process_member_status(ctx, ctx.author)
             if embed:
                 await ctx.send(embed=embed)
             return
 
-        # Case 2: "server"
         if arg_lower == "server":
             await self._display_server_info(ctx)
             return
 
-        # Case 3: "channel" or "channels"
         if arg_lower in ["channel", "channels"]:
             await self._display_channel_info(ctx)
             return
 
-        # Case 4: Member (Mention, ID, or Name)
         try:
             converter = commands.MemberConverter()
             member = await converter.convert(ctx, argument)
@@ -509,12 +494,12 @@ class AboutMe(commands.Cog):
     @commands.group()
     @commands.guild_only()
     @commands.admin_or_permissions(administrator=True)
-    async def aboutmeset(self, ctx):
-        """Settings for the AboutMe cog."""
+    async def aboutset(self, ctx):
+        """Settings for the About cog."""
         pass
 
-    @aboutmeset.command(name="debugactivity")
-    async def aboutmeset_debugactivity(self, ctx, member: discord.Member):
+    @aboutset.command(name="debugactivity")
+    async def aboutset_debugactivity(self, ctx, member: discord.Member):
         """[ADMIN] Displays raw OuijaPoke activity data."""
         ouija_cog = self.bot.get_cog("OuijaPoke")
         if not ouija_cog or not hasattr(ouija_cog, "get_member_activity_state"):
@@ -527,17 +512,14 @@ class AboutMe(commands.Cog):
             await ctx.send(f"Error: `{e}`")
 
     # --- Channel/Category Management ---
-    @aboutmeset.group(name="channel")
-    async def aboutmeset_channel(self, ctx):
+    @aboutset.group(name="channel")
+    async def aboutset_channel(self, ctx):
         """Manage channel categories for the navigator."""
         pass
 
-    @aboutmeset_channel.command(name="add")
+    @aboutset_channel.command(name="add")
     async def channel_add(self, ctx, category: discord.CategoryChannel, type: Literal["public", "secret"], *, label: str):
-        """
-        Add a category to the channel navigator.
-        Type must be 'public' or 'secret'. Label is the button text.
-        """
+        """Add a category to the channel navigator."""
         async with self.config.guild(ctx.guild).channel_categories() as cats:
             cats[str(category.id)] = {
                 "type": type.lower(),
@@ -545,7 +527,7 @@ class AboutMe(commands.Cog):
             }
         await ctx.send(f"Added category **{category.name}** as `{type}` with label **{label}**.")
 
-    @aboutmeset_channel.command(name="remove")
+    @aboutset_channel.command(name="remove")
     async def channel_remove(self, ctx, category: discord.CategoryChannel):
         """Remove a category from the channel navigator."""
         async with self.config.guild(ctx.guild).channel_categories() as cats:
@@ -555,7 +537,7 @@ class AboutMe(commands.Cog):
             else:
                 await ctx.send("That category is not currently tracked.")
 
-    @aboutmeset_channel.command(name="list")
+    @aboutset_channel.command(name="list")
     async def channel_list(self, ctx):
         """List configured channel categories."""
         cats = await self.config.guild(ctx.guild).channel_categories()
@@ -571,19 +553,19 @@ class AboutMe(commands.Cog):
         await ctx.send(embed=discord.Embed(title="Tracked Channel Categories", description=msg, color=discord.Color.blue()))
 
     # --- Location Role Management ---
-    @aboutmeset.group(name="locations")
-    async def aboutmeset_locations(self, ctx):
+    @aboutset.group(name="locations")
+    async def aboutset_locations(self, ctx):
         """Manage location roles."""
         pass
 
-    @aboutmeset_locations.command(name="add")
+    @aboutset_locations.command(name="add")
     async def locations_add(self, ctx, role: discord.Role, emoji: str):
         """Add location role."""
         async with self.config.guild(ctx.guild).location_roles() as locations:
             locations[str(role.id)] = emoji
         await ctx.send(f"Added location role **{role.name}** with {emoji}")
 
-    @aboutmeset_locations.command(name="remove")
+    @aboutset_locations.command(name="remove")
     async def locations_remove(self, ctx, role: discord.Role):
         """Remove location role."""
         async with self.config.guild(ctx.guild).location_roles() as locations:
@@ -593,7 +575,7 @@ class AboutMe(commands.Cog):
             else:
                 await ctx.send("Role not found in locations.")
 
-    @aboutmeset_locations.command(name="list")
+    @aboutset_locations.command(name="list")
     async def locations_list(self, ctx):
         """List location roles."""
         locations = await self.config.guild(ctx.guild).location_roles()
@@ -603,19 +585,19 @@ class AboutMe(commands.Cog):
         await ctx.send(embed=discord.Embed(title="Location Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
     # --- DM Status Management ---
-    @aboutmeset.group(name="dmstatus")
-    async def aboutmeset_dmstatus(self, ctx):
+    @aboutset.group(name="dmstatus")
+    async def aboutset_dmstatus(self, ctx):
         """Manage DM Status roles."""
         pass
 
-    @aboutmeset_dmstatus.command(name="add")
+    @aboutset_dmstatus.command(name="add")
     async def dmstatus_add(self, ctx, role: discord.Role, emoji: str):
         """Add DM status role."""
         async with self.config.guild(ctx.guild).dm_status_roles() as statuses:
             statuses[str(role.id)] = emoji
         await ctx.send(f"Added DM status role **{role.name}** with {emoji}")
 
-    @aboutmeset_dmstatus.command(name="remove")
+    @aboutset_dmstatus.command(name="remove")
     async def dmstatus_remove(self, ctx, role: discord.Role):
         """Remove DM status role."""
         async with self.config.guild(ctx.guild).dm_status_roles() as statuses:
@@ -625,7 +607,7 @@ class AboutMe(commands.Cog):
             else:
                 await ctx.send("Role not found in DM statuses.")
 
-    @aboutmeset_dmstatus.command(name="list")
+    @aboutset_dmstatus.command(name="list")
     async def dmstatus_list(self, ctx):
         """List DM status roles."""
         statuses = await self.config.guild(ctx.guild).dm_status_roles()
@@ -635,12 +617,12 @@ class AboutMe(commands.Cog):
         await ctx.send(embed=discord.Embed(title="DM Status Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
     # --- Award Role Management ---
-    @aboutmeset.group(name="award")
-    async def aboutmeset_award(self, ctx):
+    @aboutset.group(name="award")
+    async def aboutset_award(self, ctx):
         """Manage Award roles."""
         pass
 
-    @aboutmeset_award.command(name="add")
+    @aboutset_award.command(name="add")
     async def award_add(self, ctx, role: discord.Role):
         """Add award role."""
         async with self.config.guild(ctx.guild).award_roles() as awards:
@@ -650,7 +632,7 @@ class AboutMe(commands.Cog):
             else:
                 await ctx.send("Role already in awards.")
 
-    @aboutmeset_award.command(name="remove")
+    @aboutset_award.command(name="remove")
     async def award_remove(self, ctx, role: discord.Role):
         """Remove award role."""
         async with self.config.guild(ctx.guild).award_roles() as awards:
@@ -660,7 +642,7 @@ class AboutMe(commands.Cog):
             else:
                 await ctx.send("Role not found in awards.")
 
-    @aboutmeset_award.command(name="list")
+    @aboutset_award.command(name="list")
     async def award_list(self, ctx):
         """List award roles."""
         awards = await self.config.guild(ctx.guild).award_roles()
@@ -670,12 +652,12 @@ class AboutMe(commands.Cog):
         await ctx.send(embed=discord.Embed(title="Award Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
     # --- Helper Role Management ---
-    @aboutmeset.group(name="helper")
-    async def aboutmeset_helper(self, ctx):
+    @aboutset.group(name="helper")
+    async def aboutset_helper(self, ctx):
         """Manage Helper roles."""
         pass
 
-    @aboutmeset_helper.command(name="add")
+    @aboutset_helper.command(name="add")
     async def helper_add(self, ctx, role: discord.Role):
         """Add helper role."""
         async with self.config.guild(ctx.guild).helper_roles() as helpers:
@@ -685,7 +667,7 @@ class AboutMe(commands.Cog):
             else:
                 await ctx.send("Role already in helpers.")
 
-    @aboutmeset_helper.command(name="remove")
+    @aboutset_helper.command(name="remove")
     async def helper_remove(self, ctx, role: discord.Role):
         """Remove helper role."""
         async with self.config.guild(ctx.guild).helper_roles() as helpers:
@@ -695,7 +677,7 @@ class AboutMe(commands.Cog):
             else:
                 await ctx.send("Role not found in helpers.")
 
-    @aboutmeset_helper.command(name="list")
+    @aboutset_helper.command(name="list")
     async def helper_list(self, ctx):
         """List helper roles."""
         helpers = await self.config.guild(ctx.guild).helper_roles()
@@ -705,19 +687,19 @@ class AboutMe(commands.Cog):
         await ctx.send(embed=discord.Embed(title="Helper Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
     # --- House Role Management ---
-    @aboutmeset.group(name="houseroles")
-    async def aboutmeset_houseroles(self, ctx):
+    @aboutset.group(name="houseroles")
+    async def aboutset_houseroles(self, ctx):
         """Manage House roles."""
         pass
 
-    @aboutmeset_houseroles.command(name="add")
+    @aboutset_houseroles.command(name="add")
     async def houseroles_add(self, ctx, role: discord.Role, emoji: str):
         """Add House role."""
         async with self.config.guild(ctx.guild).house_roles() as house_roles:
             house_roles[str(role.id)] = emoji
         await ctx.send(f"Added House role **{role.name}** with {emoji}")
 
-    @aboutmeset_houseroles.command(name="remove")
+    @aboutset_houseroles.command(name="remove")
     async def houseroles_remove(self, ctx, role: discord.Role):
         """Remove House role."""
         async with self.config.guild(ctx.guild).house_roles() as house_roles:
@@ -727,7 +709,7 @@ class AboutMe(commands.Cog):
             else:
                 await ctx.send("Role not found in House roles.")
 
-    @aboutmeset_houseroles.command(name="list")
+    @aboutset_houseroles.command(name="list")
     async def houseroles_list(self, ctx):
         """List House roles."""
         house_roles = await self.config.guild(ctx.guild).house_roles()
@@ -737,19 +719,19 @@ class AboutMe(commands.Cog):
         await ctx.send(embed=discord.Embed(title="House Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
     # --- Egg Status Role Management ---
-    @aboutmeset.group(name="eggroles")
-    async def aboutmeset_eggroles(self, ctx):
+    @aboutset.group(name="eggroles")
+    async def aboutset_eggroles(self, ctx):
         """Manage Egg Status roles."""
         pass
 
-    @aboutmeset_eggroles.command(name="add")
+    @aboutset_eggroles.command(name="add")
     async def eggroles_add(self, ctx, role: discord.Role, emoji: str):
         """Add Egg Status role."""
         async with self.config.guild(ctx.guild).egg_status_roles() as egg_roles:
             egg_roles[str(role.id)] = emoji
         await ctx.send(f"Added Egg Status role **{role.name}** with {emoji}")
 
-    @aboutmeset_eggroles.command(name="remove")
+    @aboutset_eggroles.command(name="remove")
     async def eggroles_remove(self, ctx, role: discord.Role):
         """Remove Egg Status role."""
         async with self.config.guild(ctx.guild).egg_status_roles() as egg_roles:
@@ -759,7 +741,7 @@ class AboutMe(commands.Cog):
             else:
                 await ctx.send("Role not found in Egg Status roles.")
 
-    @aboutmeset_eggroles.command(name="list")
+    @aboutset_eggroles.command(name="list")
     async def eggroles_list(self, ctx):
         """List Egg Status roles."""
         egg_roles = await self.config.guild(ctx.guild).egg_status_roles()
@@ -769,19 +751,19 @@ class AboutMe(commands.Cog):
         await ctx.send(embed=discord.Embed(title="Egg Status Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
     # --- Role Progress Management ---
-    @aboutmeset.group(name="roles")
-    async def aboutmeset_roles(self, ctx):
+    @aboutset.group(name="roles")
+    async def aboutset_roles(self, ctx):
         """Manage role targets."""
         pass
 
-    @aboutmeset_roles.command(name="add")
+    @aboutset_roles.command(name="add")
     async def roles_add(self, ctx, role: discord.Role, days: int):
         """Add role target."""
         async with self.config.guild(ctx.guild).role_targets() as targets:
             targets[str(role.id)] = days
         await ctx.send(f"Configured **{role.name}** with target of **{days}** days.")
 
-    @aboutmeset_roles.command(name="link")
+    @aboutset_roles.command(name="link")
     async def roles_link(self, ctx, base_role: discord.Role, buddy_role: discord.Role):
         """Link buddy role."""
         base_id = str(base_role.id)
@@ -794,7 +776,7 @@ class AboutMe(commands.Cog):
             buddies[base_id].append(str(buddy_role.id))
         await ctx.send(f"Linked **{buddy_role.name}** to **{base_role.name}**.")
 
-    @aboutmeset_roles.command(name="unlink")
+    @aboutset_roles.command(name="unlink")
     async def roles_unlink(self, ctx, base_role: discord.Role, buddy_role: discord.Role):
         """Unlink buddy role."""
         base_id = str(base_role.id)
@@ -806,7 +788,7 @@ class AboutMe(commands.Cog):
             else:
                 await ctx.send("Link not found.")
 
-    @aboutmeset_roles.command(name="linktarget")
+    @aboutset_roles.command(name="linktarget")
     async def roles_linktarget(self, ctx, base_role: discord.Role, target_role: discord.Role):
         """Link target override."""
         base_id = str(base_role.id)
@@ -817,7 +799,7 @@ class AboutMe(commands.Cog):
             overrides[base_id] = str(target_role.id)
         await ctx.send(f"Linked target **{target_role.name}** to **{base_role.name}**.")
 
-    @aboutmeset_roles.command(name="unlinktarget")
+    @aboutset_roles.command(name="unlinktarget")
     async def roles_unlinktarget(self, ctx, base_role: discord.Role):
         """Unlink target override."""
         base_id = str(base_role.id)
@@ -828,7 +810,7 @@ class AboutMe(commands.Cog):
             else:
                 await ctx.send("Target link not found.")
 
-    @aboutmeset_roles.command(name="remove")
+    @aboutset_roles.command(name="remove")
     async def roles_remove(self, ctx, role: discord.Role):
         """Remove role config."""
         role_id = str(role.id)
@@ -845,7 +827,7 @@ class AboutMe(commands.Cog):
                 del overrides[role_id]
         await ctx.send(f"Removed config for **{role.name}**.")
 
-    @aboutmeset_roles.command(name="list")
+    @aboutset_roles.command(name="list")
     async def roles_list(self, ctx):
         """List role configs."""
         targets = await self.config.guild(ctx.guild).role_targets()
