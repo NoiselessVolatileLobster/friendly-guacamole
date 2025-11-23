@@ -128,7 +128,8 @@ class About(commands.Cog):
             "egg_status_roles": {},
             "house_roles": {},
             "role_target_overrides": {},
-            "channel_categories": {} 
+            "channel_categories": {},
+            "first_day_channels": [] # NEW: List of channel IDs for [p]about firstday
         }
         self.config.register_guild(**default_guild)
 
@@ -394,6 +395,7 @@ class About(commands.Cog):
                 
                 if location_data:
                     location_lines = []
+                    total_tracked = 0
                     for item in location_data:
                         role_name = item['role_name']
                         member_count = item['member_count']
@@ -441,6 +443,28 @@ class About(commands.Cog):
         
         await ctx.send(embed=embed, view=view)
 
+    async def _display_first_day_info(self, ctx):
+        """Displays the first day info embed."""
+        channel_ids = await self.config.guild(ctx.guild).first_day_channels()
+        
+        if not channel_ids:
+            return await ctx.send("No First Day channels have been configured.")
+
+        lines = []
+        for ch_id in channel_ids:
+            channel = ctx.guild.get_channel(ch_id)
+            if channel:
+                lines.append(channel.mention)
+        
+        desc = "\n".join(lines) if lines else "No valid channels found."
+
+        embed = discord.Embed(
+            title="First Day Channels",
+            description=desc,
+            color=await ctx.embed_color()
+        )
+        await ctx.send(embed=embed)
+
     # ------------------------------------------------------------------
     # USER COMMANDS
     # ------------------------------------------------------------------
@@ -458,7 +482,8 @@ class About(commands.Cog):
                 f"`{p}about me` -> See information about yourself.\n"
                 f"`{p}about @user` -> See information about another user.\n"
                 f"`{p}about channel` -> See information about channels in this server.\n"
-                f"`{p}about server` -> See information about this server."
+                f"`{p}about server` -> See information about this server.\n"
+                f"`{p}about firstday` -> See the first day channels."
             )
 
         arg_lower = argument.lower()
@@ -475,6 +500,10 @@ class About(commands.Cog):
 
         if arg_lower in ["channel", "channels"]:
             await self._display_channel_info(ctx)
+            return
+
+        if arg_lower in ["firstday", "first", "first day"]:
+            await self._display_first_day_info(ctx)
             return
 
         try:
@@ -551,6 +580,54 @@ class About(commands.Cog):
             msg += f"**{data['label']}** ({cat_name}) - Type: `{data['type']}`\n"
         
         await ctx.send(embed=discord.Embed(title="Tracked Channel Categories", description=msg, color=discord.Color.blue()))
+
+    # --- First Day Channel Management ---
+    @aboutset.group(name="firstday")
+    async def aboutset_firstday(self, ctx):
+        """Manage First Day channels."""
+        pass
+
+    @aboutset_firstday.command(name="add")
+    async def firstday_add(self, ctx, channel: discord.TextChannel):
+        """Add a channel to the First Day list."""
+        async with self.config.guild(ctx.guild).first_day_channels() as channels:
+            if channel.id not in channels:
+                channels.append(channel.id)
+                await ctx.send(f"Added {channel.mention} to First Day channels.")
+            else:
+                await ctx.send("That channel is already in the list.")
+
+    @aboutset_firstday.command(name="remove")
+    async def firstday_remove(self, ctx, channel: discord.TextChannel):
+        """Remove a channel from the First Day list."""
+        async with self.config.guild(ctx.guild).first_day_channels() as channels:
+            if channel.id in channels:
+                channels.remove(channel.id)
+                await ctx.send(f"Removed {channel.mention} from First Day channels.")
+            else:
+                await ctx.send("That channel is not in the list.")
+
+    @aboutset_firstday.command(name="list")
+    async def firstday_list(self, ctx):
+        """List First Day channels."""
+        channel_ids = await self.config.guild(ctx.guild).first_day_channels()
+        if not channel_ids:
+            return await ctx.send("No First Day channels configured.")
+        
+        lines = []
+        for ch_id in channel_ids:
+            channel = ctx.guild.get_channel(ch_id)
+            if channel:
+                lines.append(channel.mention)
+            else:
+                lines.append(f"Deleted-Channel-{ch_id}")
+        
+        embed = discord.Embed(
+            title="First Day Channels",
+            description="\n".join(lines),
+            color=await ctx.embed_color()
+        )
+        await ctx.send(embed=embed)
 
     # --- Location Role Management ---
     @aboutset.group(name="locations")
