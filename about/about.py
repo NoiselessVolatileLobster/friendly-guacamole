@@ -49,12 +49,11 @@ class ChannelNavigatorView(discord.ui.View):
         self.add_item(voice_btn)
 
         # 4. Add Server Guide Link Button (If Onboarding feature is present)
-        # FIX: Changed "ONBOARDING" to "GUILD_ONBOARDING"
         if "GUILD_ONBOARDING" in self.guild.features:
             guide_btn = discord.ui.Button(
                 style=discord.ButtonStyle.link,
                 label="Server Guide",
-                url=f"<id:guide>",
+                url=f"https://discord.com/channels/{self.guild.id}/guide",
                 row=4
             )
             self.add_item(guide_btn)
@@ -140,7 +139,8 @@ class About(commands.Cog):
             "house_roles": {},
             "role_target_overrides": {},
             "channel_categories": {},
-            "first_day_channels": []
+            "first_day_channels": [],
+            "first_day_description": "Welcome! Here are some channels to get you started:" # NEW: Default description
         }
         self.config.register_guild(**default_guild)
 
@@ -359,6 +359,8 @@ class About(commands.Cog):
             if not category:
                 continue
             
+            # Count text-based channels (Text, News, Forum) excluding Voice/Stage
+            # This logic ensures we count "readable" channels for the Public/Secret stats
             c_count = 0
             for c in category.channels:
                 if isinstance(c, (discord.TextChannel, discord.ForumChannel)):
@@ -402,6 +404,7 @@ class About(commands.Cog):
         locations_output = ""
         if wherearewe_cog and hasattr(wherearewe_cog, "get_tracked_role_member_counts"):
             try:
+                # Note: get_tracked_role_member_counts is async, so we await it
                 location_data = await wherearewe_cog.get_tracked_role_member_counts(guild)
                 
                 if location_data:
@@ -412,14 +415,18 @@ class About(commands.Cog):
                         member_count = item['member_count']
                         emoji = item['emoji']
                         
+                        # Only display if count is not zero
                         if member_count > 0:
                             location_lines.append(f"{emoji} **{role_name}**: {member_count}")
+                            total_tracked += member_count
                     
                     if location_lines:
                         locations_output = "\n\n**Member Locations:**\n" + "\n".join(location_lines)
             except Exception as e:
                 print(f"Error fetching WhereAreWe data: {e}")
+                # Fail silently or log error, don't break the whole embed
 
+        # Append locations to description
         description += locations_output
 
         embed = discord.Embed(
@@ -445,6 +452,7 @@ class About(commands.Cog):
 
         view = ChannelNavigatorView(ctx, categories_config)
         
+        # Default embed (Landing page)
         embed = discord.Embed(
             title="Channel Navigator", 
             description="Select a category below to view channels.", 
@@ -457,9 +465,15 @@ class About(commands.Cog):
     async def _display_first_day_info(self, ctx):
         """Displays the first day info embed."""
         channel_ids = await self.config.guild(ctx.guild).first_day_channels()
+        description_text = await self.config.guild(ctx.guild).first_day_description()
         
         if not channel_ids:
-            return await ctx.send("No First Day channels have been configured.")
+            # Even if channels are missing, we might want to show the description,
+            # but usually channels are the main point.
+            # For now, let's just warn if no channels are set but still show description if present?
+            # Or just return message.
+            if not description_text:
+                return await ctx.send("No First Day channels or description have been configured.")
 
         lines = []
         for ch_id in channel_ids:
@@ -467,26 +481,19 @@ class About(commands.Cog):
             if channel:
                 lines.append(channel.mention)
         
-        desc = "\n".join(lines) if lines else "No valid channels found."
+        channel_list_str = "\n".join(lines) if lines else ""
+        
+        # Combine description and channels
+        final_desc = f"{description_text}\n\n{channel_list_str}"
 
         embed = discord.Embed(
             title="First Day Channels",
-            description=desc,
+            description=final_desc,
             color=await ctx.embed_color()
         )
         
-        # NEW: Add Server Guide button if enabled
-        view = None
-        # Fixed feature flag from "ONBOARDING" to "GUILD_ONBOARDING"
-        if "GUILD_ONBOARDING" in ctx.guild.features:
-            view = discord.ui.View()
-            view.add_item(discord.ui.Button(
-                style=discord.ButtonStyle.link,
-                label="Server Guide",
-                url=f"https://discord.com/channels/{ctx.guild.id}/guide"
-            ))
-
-        await ctx.send(embed=embed, view=view)
+        # Removed button view as requested
+        await ctx.send(embed=embed)
 
     # ------------------------------------------------------------------
     # USER COMMANDS
@@ -571,7 +578,10 @@ class About(commands.Cog):
 
     @aboutset_channel.command(name="add")
     async def channel_add(self, ctx, category: discord.CategoryChannel, type: Literal["public", "secret"], *, label: str):
-        """Add a category to the channel navigator."""
+        """
+        Add a category to the channel navigator.
+        Type must be 'public' or 'secret'. Label is the button text.
+        """
         async with self.config.guild(ctx.guild).channel_categories() as cats:
             cats[str(category.id)] = {
                 "type": type.lower(),
@@ -651,6 +661,13 @@ class About(commands.Cog):
             color=await ctx.embed_color()
         )
         await ctx.send(embed=embed)
+
+    # NEW: Description configuration
+    @aboutset_firstday.command(name="description")
+    async def firstday_description(self, ctx, *, text: str):
+        """Set the description for the First Day embed."""
+        await self.config.guild(ctx.guild).first_day_description.set(text)
+        await ctx.send("First Day embed description updated.")
 
     # --- Location Role Management ---
     @aboutset.group(name="locations")
