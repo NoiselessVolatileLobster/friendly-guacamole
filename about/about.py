@@ -49,8 +49,8 @@ class ChannelNavigatorView(discord.ui.View):
         self.add_item(voice_btn)
 
         # 4. Add Server Guide Link Button (If Onboarding feature is present)
-        # Note: 'ONBOARDING' is the feature flag associated with Server Guide
-        if "ONBOARDING" in self.guild.features:
+        # FIX: Changed "ONBOARDING" to "GUILD_ONBOARDING"
+        if "GUILD_ONBOARDING" in self.guild.features:
             guide_btn = discord.ui.Button(
                 style=discord.ButtonStyle.link,
                 label="Server Guide",
@@ -474,7 +474,19 @@ class About(commands.Cog):
             description=desc,
             color=await ctx.embed_color()
         )
-        await ctx.send(embed=embed)
+        
+        # NEW: Add Server Guide button if enabled
+        view = None
+        # Fixed feature flag from "ONBOARDING" to "GUILD_ONBOARDING"
+        if "GUILD_ONBOARDING" in ctx.guild.features:
+            view = discord.ui.View()
+            view.add_item(discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label="Server Guide",
+                url=f"https://discord.com/channels/{ctx.guild.id}/guide"
+            ))
+
+        await ctx.send(embed=embed, view=view)
 
     # ------------------------------------------------------------------
     # USER COMMANDS
