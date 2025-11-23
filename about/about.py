@@ -48,16 +48,6 @@ class ChannelNavigatorView(discord.ui.View):
         voice_btn.callback = self.voice_callback
         self.add_item(voice_btn)
 
-        # 4. Add Server Guide Link Button (If Onboarding feature is present)
-        if "GUILD_ONBOARDING" in self.guild.features:
-            guide_btn = discord.ui.Button(
-                style=discord.ButtonStyle.link,
-                label="Server Guide",
-                url=f"https://discord.com/channels/{self.guild.id}/guide",
-                row=4
-            )
-            self.add_item(guide_btn)
-
     def make_callback_public(self, cat_id, label):
         """Factory to create specific callbacks for loop variables."""
         async def callback(interaction: discord.Interaction):
@@ -362,6 +352,8 @@ class About(commands.Cog):
             if not category:
                 continue
             
+            # Count text-based channels (Text, News, Forum) excluding Voice/Stage
+            # This logic ensures we count "readable" channels for the Public/Secret stats
             c_count = 0
             for c in category.channels:
                 if isinstance(c, (discord.TextChannel, discord.ForumChannel)):
@@ -495,7 +487,6 @@ class About(commands.Cog):
         if img_url:
             embed.set_image(url=img_url)
         
-        # Removed button view
         await ctx.send(embed=embed)
 
     # ------------------------------------------------------------------
