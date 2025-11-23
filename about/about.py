@@ -54,7 +54,7 @@ class ChannelNavigatorView(discord.ui.View):
             guide_btn = discord.ui.Button(
                 style=discord.ButtonStyle.link,
                 label="Server Guide",
-                url=f"https://discord.com/channels/{self.guild.id}/guide",
+                url=f"<id:guide>",
                 row=4
             )
             self.add_item(guide_btn)
