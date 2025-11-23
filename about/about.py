@@ -33,7 +33,7 @@ class ChannelNavigatorView(discord.ui.View):
             style=discord.ButtonStyle.danger,
             label="Secret",
             custom_id="secret_btn",
-            row=4 # Push to bottom row if possible
+            row=4 # Push to bottom row
         )
         secret_btn.callback = self.secret_callback
         self.add_item(secret_btn)
@@ -47,6 +47,17 @@ class ChannelNavigatorView(discord.ui.View):
         )
         voice_btn.callback = self.voice_callback
         self.add_item(voice_btn)
+
+        # 4. Add Server Guide Link Button (If Onboarding feature is present)
+        # Note: 'ONBOARDING' is the feature flag associated with Server Guide
+        if "ONBOARDING" in self.guild.features:
+            guide_btn = discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label="Server Guide",
+                url=f"https://discord.com/channels/{self.guild.id}/guide",
+                row=4
+            )
+            self.add_item(guide_btn)
 
     def make_callback_public(self, cat_id, label):
         """Factory to create specific callbacks for loop variables."""
@@ -129,7 +140,7 @@ class About(commands.Cog):
             "house_roles": {},
             "role_target_overrides": {},
             "channel_categories": {},
-            "first_day_channels": [] # NEW: List of channel IDs for [p]about firstday
+            "first_day_channels": []
         }
         self.config.register_guild(**default_guild)
 
