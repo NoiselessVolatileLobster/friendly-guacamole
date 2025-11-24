@@ -165,10 +165,15 @@ class Birthday(commands.Cog):
         
         self.loop_task = self.bot.loop.create_task(self.birthday_loop())
         
-        # New: Month name mapping for display
+        # Month name mapping for display and export
         self.month_names = {
             1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
             7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"
+        }
+        # Abbreviated month names for export format (MMM)
+        self.month_abbr = {
+            1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
+            7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"
         }
 
 
@@ -381,10 +386,10 @@ class Birthday(commands.Cog):
         
         # Get month name for display
         month_num = user_conf['month']
-        month_name = self.month_names.get(month_num)
         
         # Check if data exists and construct the status message
-        if month_name and user_conf['day']:
+        if month_num and user_conf['day']:
+            month_name = self.month_names.get(month_num)
             # Display format: "MonthName Day"
             current_bday = f"{month_name} {user_conf['day']}"
         else:
@@ -499,6 +504,62 @@ class Birthday(commands.Cog):
         output_text = "\n".join(output)
         for page in pagify(output_text, delims=["\n"], page_length=1900):
             await ctx.send(box(page))
+            
+    @bset.command(name="export")
+    async def bset_export(self, ctx):
+        """
+        Export all registered birthdays and timezones for guild members
+        into a text file that can be used for re-importing.
+        Format: ● MMM-DD: <ID> <username> (<Display Name>) | Time zone: <Region/City>
+        """
+        
+        all_users_data = await self.config.all_users()
+        output_lines = [f"Birthdays in {ctx.guild.name}\n"]
+        
+        exported_count = 0
+        
+        for user_id, u_data in all_users_data.items():
+            month_num = u_data.get("month")
+            day_num = u_data.get("day")
+            
+            if not month_num or not day_num:
+                continue
+            
+            member = ctx.guild.get_member(user_id)
+            if not member:
+                continue
+            
+            # 1. Date (MMM-DD)
+            month_abbr = self.month_abbr.get(month_num)
+            date_part = f"{month_abbr}-{day_num:02}" # Ensure day is 2 digits for consistency
+
+            # 2. User info (ID, username, display name)
+            user_part = f"{user_id} {member.name} ({member.display_name})"
+            
+            # 3. Timezone
+            tz_str = u_data.get("timezone", "UTC")
+            tz_part = f" | Time zone: {tz_str}"
+            
+            # Combine into the import format
+            # Using the '●' as a common start marker, followed by a space
+            line = f"● {date_part}: {user_part}{tz_part}\n"
+            output_lines.append(line)
+            exported_count += 1
+            
+        if exported_count == 0:
+            return await ctx.send("No birthdays registered to export.")
+            
+        filename = f"{ctx.guild.name.replace(' ', '_')}_birthdays_export.txt"
+        file_content = "".join(output_lines)
+        
+        # Create and send the file
+        buffer = discord.File(
+            fp=io.StringIO(file_content), 
+            filename=filename
+        )
+        
+        await ctx.send(f"Successfully exported {exported_count} birthdays.", file=buffer)
+
 
     @bset.command(name="import")
     async def bset_import(self, ctx):
