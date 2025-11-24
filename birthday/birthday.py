@@ -129,7 +129,12 @@ class BirthdayView(discord.ui.View):
     @discord.ui.button(label="Remove Data", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def remove_data(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.config.user(interaction.user).clear()
-        await interaction.response.send_message("Your birthday and timezone data have been removed.", ephemeral=True)
+        # Update the original message to reflect the change
+        await interaction.response.edit_message(
+            content="Your birthday and timezone data have been removed. Use the buttons to set new data.", 
+            embed=None, 
+            view=BirthdayView(self.cog) # Send a fresh view
+        )
 
 
 # --- MAIN COG ---
@@ -361,13 +366,28 @@ class Birthday(commands.Cog):
     @commands.group(name="birthday", aliases=["bday"], invoke_without_command=True)
     async def birthday(self, ctx):
         """Manage birthdays."""
-        # Display the interactive View
-        view = BirthdayView(self)
+        
+        user_conf = await self.config.user(ctx.author).all()
+        
+        # Check if data exists and construct the status message
+        current_bday = f"{user_conf['month']}/{user_conf['day']}" if user_conf['month'] and user_conf['day'] else "Not set"
+        current_tz = user_conf.get("timezone", "UTC")
+        current_year = f"/{user_conf['year']}" if user_conf['year'] else ""
+        
+        status_msg = (
+            f"**Current Settings for {ctx.author.display_name}**:\n"
+            f"🎂 **Birthday**: {current_bday}{current_year}\n"
+            f"🌎 **Timezone**: `{current_tz}`\n\n"
+        )
+        
         desc = (
-            "Use the buttons below to configure your birthday and timezone.\n\n"
+            status_msg + 
+            "Use the buttons below to configure or change your birthday and timezone.\n\n"
             "**Timezones**: You can find your timezone code [here]"
             "(https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)."
         )
+        
+        view = BirthdayView(self)
         embed = discord.Embed(
             title="Birthday Management",
             description=desc,
