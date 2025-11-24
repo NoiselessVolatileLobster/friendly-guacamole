@@ -917,14 +917,19 @@ class QuestionOfTheDay(commands.Cog):
 
     @qotd_schedule_management.command(name="view")
     async def qotd_schedule_view(self, ctx: commands.Context):
-        """Displays all configured schedules."""
+        """Displays all configured schedules in an embed."""
         schedules_data = await self.config.schedules()
         lists_data = await self.config.lists()
         
         if not schedules_data:
             return await ctx.send("No schedules currently configured.")
             
-        msg = "**Configured Schedules:**\n"
+        embed = discord.Embed(
+            title="🗓️ Configured QOTD Schedules",
+            description="Below are all active Question of the Day schedules.",
+            color=discord.Color.blue()
+        )
+        
         for schedule_id, schedule_dict in schedules_data.items():
             try:
                 # FIX: Ensure next_run_time is a proper timezone-aware datetime object
@@ -936,13 +941,14 @@ class QuestionOfTheDay(commands.Cog):
                     schedule_dict['next_run_time'] = dt_obj
 
                 schedule = Schedule.model_validate(schedule_dict)
-            except (ValidationError, ValueError):
-                msg += f"• **ID `{schedule_id}`:** (Invalid/Corrupt Data)\n"
+            except (ValidationError, ValueError) as e:
+                log.error(f"Schedule validation failed for {schedule_id}: {e}")
+                embed.add_field(name=f"ID: `{schedule_id}` (Error)", value="Invalid/Corrupt Data", inline=False)
                 continue
                 
             list_name = lists_data.get(schedule.list_id, {}).get('name', 'UNKNOWN LIST')
             channel = self.bot.get_channel(schedule.channel_id)
-            channel_name = channel.mention if channel else f"UNKNOWN CHANNEL ID ({schedule.channel_id})"
+            channel_mention = channel.mention if channel else f"ID: {schedule.channel_id} (Missing)"
             
             # Ensure next_run_time is timezone-aware for formatting
             run_time = schedule.next_run_time
@@ -951,28 +957,35 @@ class QuestionOfTheDay(commands.Cog):
             
             next_run_str = discord.utils.format_dt(run_time, "R")
             
-            time_info = f"at {schedule.post_time} UTC" if schedule.post_time else ""
+            time_info = f" at **{schedule.post_time} UTC**" if schedule.post_time else ""
             
-            rules_summary = ""
+            # Build the main field value
+            field_value = (
+                f"**List:** `{list_name}`\n"
+                f"**Channel:** {channel_mention}\n"
+                f"**Frequency:** `{schedule.frequency}`{time_info}\n"
+                f"**Next Run:** {next_run_str}"
+            )
+
+            # Add rules summary if present
             if schedule.rules:
-                rules_summary = "\n"
+                rules_summary = "**Rules:**\n"
                 for i, rule in enumerate(schedule.rules):
                     target = f"list `{rule.list_id_override}`" if rule.list_id_override else ""
-                    action_verb = "use list" if rule.action == "use_list" else "skip run"
-                    rules_summary += f"  - Rule {i+1} (`{rule.id}`): **{action_verb}** {target} from {rule.start_month_day} to {rule.end_month_day}\n"
+                    action_verb = "Use List" if rule.action == "use_list" else "Skip Run"
+                    rules_summary += (
+                        f"• {action_verb} {target} from `{rule.start_month_day}` to `{rule.end_month_day}` "
+                        f"(ID: `{rule.id}`)\n"
+                    )
+                field_value += "\n\n" + rules_summary
 
-            msg += (
-                f"• **ID `{schedule_id}`:**\n"
-                f"  - List: **{list_name}**\n"
-                f"  - Channel: {channel_name}\n"
-                f"  - Frequency: **{schedule.frequency}** {time_info}\n"
-                f"  - Next Run: {next_run_str}"
+            embed.add_field(
+                name=f"Schedule ID: `{schedule_id}`", 
+                value=field_value, 
+                inline=False
             )
-            if rules_summary:
-                msg += rules_summary
-            msg += "\n"
             
-        await ctx.send(box(msg))
+        await ctx.send(embed=embed)
 
     # --- New Schedule Rule Management Group ---
 
