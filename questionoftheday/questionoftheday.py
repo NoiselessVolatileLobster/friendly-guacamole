@@ -8,11 +8,11 @@ from pathlib import Path
 from typing import Dict, List, Literal, Optional, Set, Union
 
 import discord
-from discord.ext import commands, tasks
-from red_commons.logging import getLogger
-from redbot.core import Config, app_commands
+from discord.ext import tasks 
+from redbot.core import commands, Config, app_commands 
 from redbot.core.bot import Red
 from redbot.core.utils.chat_formatting import humanize_list, box, bold, warning
+from red_commons.logging import getLogger
 from pydantic import BaseModel, Field, ValidationError
 
 from .config import QuestionList, QuestionData, Schedule, ScheduleRule
@@ -459,8 +459,10 @@ class QuestionOfTheDay(commands.Cog):
         
     # --- Commands ---
 
+    # CORRECTED PERMISSION CHECK ORDER AND DECORATOR
+    @commands.guild_only()
+    @commands.admin() # Replaced admin_or_permissions for robustness
     @commands.group(name="qotd", aliases=["qotdd"])
-    @commands.admin_or_permissions(manage_guild=True)
     async def qotd(self, ctx: commands.Context):
         """Base command for Question of the Day administration."""
         pass
