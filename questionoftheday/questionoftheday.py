@@ -3,7 +3,7 @@ import json # Ensure json is imported for the double-serialization fix
 import logging
 import random
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time
 from typing import Dict, List, Literal, Optional, Set, Union
 from pathlib import Path
 
@@ -208,16 +208,17 @@ class QuestionOfTheDay(commands.Cog):
         schedules_data = await self.config.schedules()
 
         for schedule_id, schedule_dict in schedules_data.items():
+            schedule = None
             try:
-                # FIX: Check for string data and parse it back to a timezone-aware datetime object
+                # 1. Ensure next_run_time is a proper timezone-aware datetime object
                 next_run_time_data = schedule_dict.get('next_run_time')
                 if isinstance(next_run_time_data, str):
                     dt_obj = datetime.fromisoformat(next_run_time_data)
                     if dt_obj.tzinfo is None:
-                        # If the string was saved without timezone info, force it to UTC
                         dt_obj = dt_obj.replace(tzinfo=timezone.utc)
                     schedule_dict['next_run_time'] = dt_obj
-
+                
+                # 2. Validate and load the schedule object
                 schedule = Schedule.model_validate(schedule_dict)
             except ValidationError as e:
                 log.error(f"Failed to validate schedule {schedule_id}: {e}")
@@ -226,15 +227,16 @@ class QuestionOfTheDay(commands.Cog):
                 log.error(f"Failed to parse datetime string for schedule {schedule_id}: {e}")
                 continue # Skip schedule if datetime parsing fails
 
-            # Check if it's time to run based on frequency
-            if now_utc >= schedule.next_run_time:
+            # Check if it's time to run based on the calculated next_run_time
+            if schedule and now_utc >= schedule.next_run_time:
                 # Catch any unexpected serialization errors during the posting process
                 try:
                     await self._post_scheduled_question(schedule_id, schedule)
                 except Exception as e:
                     log.exception(f"Critical error during _post_scheduled_question for {schedule_id}: {e}")
                     # If posting fails, still try to update the next run time to prevent spamming
-                    await self._update_schedule_next_run(schedule_id, schedule) 
+                    await self._update_schedule_next_run(schedule_id, schedule, now_utc)
+
 
     # --- New Helper Methods for Rules ---
 
@@ -285,7 +287,7 @@ class QuestionOfTheDay(commands.Cog):
         target_list_id = await self._get_active_list_id(schedule, now_utc)
         if target_list_id is None:
             log.info(f"Schedule {schedule_id} is set to skip posting on {now_utc.strftime('%m-%d')} due to an active rule.")
-            await self._update_schedule_next_run(schedule_id, schedule)
+            await self._update_schedule_next_run(schedule_id, schedule, now_utc)
             return
 
         # 2. Check for list-specific date exclusions (e.g., "don't ask List X on Feb 14")
@@ -294,17 +296,17 @@ class QuestionOfTheDay(commands.Cog):
             target_list = QuestionList.model_validate(lists_data[target_list_id])
         except KeyError:
              log.warning(f"Target list {target_list_id} for schedule {schedule_id} not found.")
-             await self._update_schedule_next_run(schedule_id, schedule)
+             await self._update_schedule_next_run(schedule_id, schedule, now_utc)
              return
         except ValidationError:
             log.error(f"Target list {target_list_id} validation failed.")
-            await self._update_schedule_next_run(schedule_id, schedule)
+            await self._update_schedule_next_run(schedule_id, schedule, now_utc)
             return
             
         current_md = now_utc.strftime("%m-%d")
         if current_md in target_list.exclusion_dates:
             log.info(f"Skipping schedule {schedule_id}: Target list '{target_list.name}' is excluded on {current_md}.")
-            await self._update_schedule_next_run(schedule_id, schedule)
+            await self._update_schedule_next_run(schedule_id, schedule, now_utc)
             return
 
         # 3. Select the question (Selection logic remains the same)
@@ -329,19 +331,20 @@ class QuestionOfTheDay(commands.Cog):
         if not eligible_q:
             list_name = target_list.name
             log.info(f"No eligible questions found for list {list_name} in schedule {schedule_id}.")
-            await self._update_schedule_next_run(schedule_id, schedule)
+            await self._update_schedule_next_run(schedule_id, schedule, now_utc)
             return
 
         # Prioritize 'not asked'
         not_asked = [q for q in eligible_q.values() if q.status == "not asked"]
         
+        selected_qid = None
         if not_asked:
             selected_q = random.choice(not_asked)
             # Find the QID matching the selected question data
-            # Use tuple comparison (question text and list ID) for safer match in case of duplicate text
             selected_qid = next(
-                qid for qid, q in eligible_q.items() 
-                if q.question == selected_q.question and q.list_id == selected_q.list_id
+                (qid for qid, q in eligible_q.items() 
+                if q.question == selected_q.question and q.list_id == selected_q.list_id), 
+                None
             )
         else:
             # Fallback to 'asked', deprioritize recent ones
@@ -364,12 +367,17 @@ class QuestionOfTheDay(commands.Cog):
             top_5 = asked[:min(5, len(asked))]
             selected_qid, selected_q = random.choice(top_5)
 
+        if not selected_qid:
+             log.error(f"Failed to find QID for selected question in schedule {schedule_id}.")
+             await self._update_schedule_next_run(schedule_id, schedule, now_utc)
+             return
+
 
         # 4. Post the question and update data
         channel = self.bot.get_channel(schedule.channel_id)
         if not channel:
             log.warning(f"Channel {schedule.channel_id} for schedule {schedule_id} not found.")
-            await self._update_schedule_next_run(schedule_id, schedule)
+            await self._update_schedule_next_run(schedule_id, schedule, now_utc)
             return
             
         embed = discord.Embed(
@@ -397,10 +405,14 @@ class QuestionOfTheDay(commands.Cog):
             log.exception(f"Error posting QOTD for schedule {schedule_id}: {e}")
 
         # 5. Update the schedule for the next run
-        await self._update_schedule_next_run(schedule_id, schedule)
+        await self._update_schedule_next_run(schedule_id, schedule, now_utc)
 
-    async def _update_schedule_next_run(self, schedule_id: str, schedule: Schedule):
-        """Calculates and saves the next run time for a schedule."""
+
+    def _calculate_next_run_time(self, schedule: Schedule, last_run: datetime) -> datetime:
+        """
+        Calculates the next run time based on post_time and frequency.
+        All calculations are done in UTC.
+        """
         now_utc = datetime.now(timezone.utc)
         
         try:
@@ -414,11 +426,40 @@ class QuestionOfTheDay(commands.Cog):
             elif unit == 'day': delta = timedelta(days=amount)
             elif unit == 'week': delta = timedelta(weeks=amount)
             else: raise ValueError
-            
-            schedule.next_run_time = now_utc + delta
         except (ValueError, IndexError, TypeError):
-            log.error(f"Invalid frequency format '{schedule.frequency}' for schedule {schedule_id}. Disabling schedule.")
-            schedule.next_run_time = now_utc + timedelta(days=3650) # Far future date
+            # Fallback to 10 years if frequency is completely invalid
+            return now_utc + timedelta(days=3650) 
+            
+        if schedule.post_time:
+            # Handle specific time posting (e.g., 1 day @ 09:00 UTC)
+            try:
+                hour, minute = map(int, schedule.post_time.split(':'))
+                target_time_today = datetime.combine(now_utc.date(), time(hour, minute), tzinfo=timezone.utc)
+            except ValueError:
+                # Should not happen due to Pydantic validation, but defensive check
+                return last_run + delta 
+
+            next_run = target_time_today
+            
+            # If the target time today has already passed, use the target time for the next period (defined by delta)
+            while next_run <= last_run:
+                next_run += delta
+            
+            # Ensure the calculated next run is not in the immediate past if this is the first run
+            if next_run <= now_utc and next_run == target_time_today:
+                next_run += delta
+                
+            return next_run
+        else:
+            # Handle frequency-only posting (simple delta)
+            return last_run + delta
+
+
+    async def _update_schedule_next_run(self, schedule_id: str, schedule: Schedule, last_run: datetime):
+        """Calculates and saves the next run time for a schedule."""
+        
+        # Calculate the next run time using the new helper
+        schedule.next_run_time = self._calculate_next_run_time(schedule, last_run)
             
         # FIX: Double serialize to guarantee only JSON primitives (strings for datetime) are saved
         serialized_schedule = json.loads(schedule.model_dump_json())
@@ -640,21 +681,26 @@ class QuestionOfTheDay(commands.Cog):
         pass
 
     @qotd_schedule_management.command(name="add")
-    async def qotd_schedule_add(self, ctx: commands.Context, list_id: str, channel: discord.TextChannel, *, frequency: str):
+    async def qotd_schedule_add(self, ctx: commands.Context, list_id: str, channel: discord.TextChannel, frequency: str, post_time: Optional[str] = None):
         """
         Adds a new schedule.
         
         `<list_id>`: The ID of the question list to pull from.
         `<channel>`: The channel to post the question in.
-        `<frequency>`: How often to post (e.g., '1 day', '12 hours', '30 minutes').
+        `<frequency>`: How often to post (e.g., '1 day', '12 hours').
+        `[post_time]`: Optional. Specific time of day to post (HH:MM in 24h UTC time).
+        
+        Example: `[p]qotd schedule add general #qotd 1 day 09:00` (Posts daily at 9am UTC)
+        Example: `[p]qotd schedule add daily_questions #channel 8 hours` (Posts every 8 hours)
         """
         lists_data = await self.config.lists()
         if list_id not in lists_data:
             return await ctx.send(warning(f"List ID `{list_id}` not found. Use `[p]qotd list view` to see IDs."))
 
         schedule_id = str(uuid.uuid4()).split('-')[0]
+        now_utc = datetime.now(timezone.utc)
         
-        # Validate frequency format (same logic as in _update_schedule_next_run)
+        # Basic validation for frequency
         try:
             time_unit = frequency.split()
             if len(time_unit) != 2: raise ValueError
@@ -662,15 +708,30 @@ class QuestionOfTheDay(commands.Cog):
             unit = time_unit[1].lower().rstrip('s')
             if unit not in ('minute', 'hour', 'day', 'week'): raise ValueError
         except (ValueError, IndexError):
-            # This is the exact error message the user saw.
             return await ctx.send(warning("Invalid frequency format. Must be like '1 day', '3 hours', or '30 minutes'. **Ensure the unit is separated by one space.**"))
+
+        # Pydantic validation handles post_time format (HH:MM)
+        
+        # Temporarily create the schedule to calculate next_run_time
+        temp_schedule = Schedule(
+            id=schedule_id, 
+            list_id=list_id, 
+            channel_id=channel.id, 
+            frequency=frequency,
+            post_time=post_time,
+            next_run_time=now_utc # Placeholder for calculation
+        )
+        
+        # Calculate the initial run time
+        next_run_time = self._calculate_next_run_time(temp_schedule, now_utc - timedelta(minutes=1)) # Treat the initial run as if it just ran a minute ago
 
         new_schedule = Schedule(
             id=schedule_id, 
             list_id=list_id, 
             channel_id=channel.id, 
             frequency=frequency,
-            next_run_time=datetime.now(timezone.utc) # Start immediately
+            post_time=post_time,
+            next_run_time=next_run_time
         )
         
         # FIX: Double serialize to guarantee only JSON primitives (strings for datetime) are saved
@@ -679,7 +740,8 @@ class QuestionOfTheDay(commands.Cog):
         async with self.config.schedules() as schedules:
             schedules[schedule_id] = serialized_schedule
             
-        await ctx.send(f"Added new schedule: posting from list **{lists_data[list_id]['name']}** to {channel.mention} every **{frequency}** (ID: `{schedule_id}`).")
+        time_str = f"at **{post_time} UTC**" if post_time else ""
+        await ctx.send(f"Added new schedule: posting from list **{lists_data[list_id]['name']}** to {channel.mention} every **{frequency}** {time_str} (ID: `{schedule_id}`). Next run: {discord.utils.format_dt(next_run_time, 'R')}.")
         
     @qotd_schedule_management.command(name="remove")
     async def qotd_schedule_remove(self, ctx: commands.Context, schedule_id: str):
@@ -715,12 +777,11 @@ class QuestionOfTheDay(commands.Cog):
         msg = "**Configured Schedules:**\n"
         for schedule_id, schedule_dict in schedules_data.items():
             try:
-                # FIX: Check for string data and parse it back to a timezone-aware datetime object
+                # FIX: Ensure next_run_time is a proper timezone-aware datetime object
                 next_run_time_data = schedule_dict.get('next_run_time')
                 if isinstance(next_run_time_data, str):
                     dt_obj = datetime.fromisoformat(next_run_time_data)
                     if dt_obj.tzinfo is None:
-                        # If the string was saved without timezone info, force it to UTC
                         dt_obj = dt_obj.replace(tzinfo=timezone.utc)
                     schedule_dict['next_run_time'] = dt_obj
 
@@ -740,6 +801,8 @@ class QuestionOfTheDay(commands.Cog):
             
             next_run_str = discord.utils.format_dt(run_time, "R")
             
+            time_info = f"at {schedule.post_time} UTC" if schedule.post_time else ""
+            
             rules_summary = ""
             if schedule.rules:
                 rules_summary = "\n"
@@ -752,7 +815,7 @@ class QuestionOfTheDay(commands.Cog):
                 f"• **ID `{schedule_id}`:**\n"
                 f"  - List: **{list_name}**\n"
                 f"  - Channel: {channel_name}\n"
-                f"  - Frequency: **{schedule.frequency}**\n"
+                f"  - Frequency: **{schedule.frequency}** {time_info}\n"
                 f"  - Next Run: {next_run_str}"
             )
             if rules_summary:

@@ -1,38 +1,68 @@
 from datetime import datetime
-from typing import Dict, List, Literal, Optional, Set, Union
-from pydantic import BaseModel, Field
+from typing import Dict, List, Literal, Optional
+from pydantic import BaseModel, Field, ValidationError, field_validator
+import re
 
-# --- Pydantic Data Models for structured configuration ---
-
-class ScheduleRule(BaseModel):
-    """Defines a rule for a schedule based on a date range."""
-    id: str
-    start_month_day: str = Field(pattern=r"^\d{2}-\d{2}$", description="MM-DD format")
-    end_month_day: str = Field(pattern=r"^\d{2}-\d{2}$", description="MM-DD format")
-    # Action determines if we skip the run or use a different list
-    action: Literal["skip_run", "use_list"] = "skip_run" 
-    list_id_override: Optional[str] = None # Used only if action is "use_list"
-
-class Schedule(BaseModel):
-    """Defines a single QOTD posting schedule."""
-    id: str
-    list_id: str # The default list ID to use
-    channel_id: int
-    frequency: str # e.g., "1 day", "12 hours"
-    next_run_time: datetime
-    rules: List[ScheduleRule] = Field(default_factory=list)
+# --- Data Models for Configuration ---
 
 class QuestionData(BaseModel):
-    """Defines a single question and its metadata."""
+    """Represents a single question."""
     question: str
+    list_id: str
     suggested_by: Optional[int] = None
-    list_id: str # Which list this question belongs to
     status: Literal["not asked", "asked", "pending"] = "not asked"
-    added_on: datetime
+    added_on: datetime = Field(default_factory=lambda: datetime.now().astimezone(None))
     last_asked: Optional[datetime] = None
 
 class QuestionList(BaseModel):
-    """Defines a group of questions."""
+    """Represents a named collection of questions."""
     id: str
     name: str
-    exclusion_dates: List[str] = Field(default_factory=list, description="List of dates (MM-DD) to skip this list.")
+    # List of dates (MM-DD) when this list should not be used by any schedule
+    exclusion_dates: List[str] = Field(default_factory=list)
+
+class ScheduleRule(BaseModel):
+    """Represents a specific rule for a schedule during a date range."""
+    id: str
+    # Month and day format: MM-DD (e.g., 01-01 for Jan 1st)
+    start_month_day: str
+    end_month_day: str
+    action: Literal["skip_run", "use_list"]
+    # Required if action is "use_list"
+    list_id_override: Optional[str] = None
+    
+    @field_validator('start_month_day', 'end_month_day')
+    def validate_month_day(cls, v):
+        if not re.match(r"^\d{2}-\d{2}$", v):
+            raise ValueError("Date must be in MM-DD format.")
+        try:
+            datetime.strptime(v, "%m-%d")
+        except ValueError:
+            raise ValueError("Invalid month or day in MM-DD format.")
+        return v
+
+class Schedule(BaseModel):
+    """Represents a timed posting schedule."""
+    id: str
+    list_id: str
+    channel_id: int
+    frequency: str
+    next_run_time: datetime
+    # New: Optional time of day (HH:MM) to post, relative to UTC
+    post_time: Optional[str] = None
+    rules: List[ScheduleRule] = Field(default_factory=list)
+    
+    @field_validator('post_time')
+    def validate_post_time(cls, v):
+        if v is None:
+            return v
+        if not re.match(r"^\d{2}:\d{2}$", v):
+            raise ValueError("Post time must be in HH:MM format (24-hour clock).")
+        try:
+            # Check if HH is 00-23 and MM is 00-59
+            hour, minute = map(int, v.split(':'))
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError("Invalid hour or minute in HH:MM format.")
+        except ValueError:
+            raise ValueError("Post time must be in HH:MM format (24-hour clock).")
+        return v
