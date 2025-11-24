@@ -165,6 +165,14 @@ class AdvancedBirthdays(commands.Cog):
 
     # --- HELPERS ---
     
+    def get_ordinal(self, n):
+        """Returns the ordinal string for a number (e.g., 21 -> 21st)."""
+        if 11 <= (n % 100) <= 13:
+            suffix = 'th'
+        else:
+            suffix = {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
+        return f"{n}{suffix}"
+
     def get_next_birthday(self, month, day, now):
         """Calculates the datetime of the next birthday."""
         try:
@@ -247,8 +255,15 @@ class AdvancedBirthdays(commands.Cog):
 
                         # Send Message
                         if channel:
+                            # Calculate Ordinal Age
+                            ordinal_str = ""
+                            if u_conf.get("year"):
+                                age = now_in_tz.year - u_conf["year"]
+                                ordinal_str = self.get_ordinal(age)
+
                             try:
                                 msg = msg_template.replace("{mention}", member.mention)
+                                msg = msg.replace("{ordinal}", ordinal_str)
                                 await channel.send(msg)
                             except discord.Forbidden:
                                 pass
@@ -264,21 +279,8 @@ class AdvancedBirthdays(commands.Cog):
 
     # --- USER COMMANDS ---
 
-    @commands.group(name="birthday", aliases=["bday"])
-    async def birthday(self, ctx):
-        """Manage birthdays."""
-        if ctx.invoked_subcommand is None:
-            # Display the interactive View
-            view = BirthdayView(self)
-            embed = discord.Embed(
-                title="Birthday Management",
-                description="Use the buttons below to configure your birthday and timezone.",
-                color=discord.Color.blue()
-            )
-            await ctx.send(embed=embed, view=view)
-
-    @birthday.command(name="get")
-    async def birthday_get(self, ctx, user: discord.Member = None):
+    @commands.command(name="seebirthday")
+    async def seebirthday(self, ctx, user: discord.Member = None):
         """See when a user's birthday is."""
         if not user:
             user = ctx.author
@@ -300,8 +302,8 @@ class AdvancedBirthdays(commands.Cog):
         
         await ctx.send(embed=embed)
 
-    @birthday.command(name="upcoming")
-    async def birthday_upcoming(self, ctx, count: int = 10):
+    @commands.command(name="listbirthdays")
+    async def listbirthdays(self, ctx, count: int = 10):
         """List the next X upcoming birthdays."""
         if count > 25: count = 25 # Cap to prevent abuse
         
@@ -348,6 +350,24 @@ class AdvancedBirthdays(commands.Cog):
 
         embed = discord.Embed(title=f"Upcoming {len(top_x)} Birthdays", description=msg, color=discord.Color.green())
         await ctx.send(embed=embed)
+
+    @commands.group(name="birthday", aliases=["bday"])
+    async def birthday(self, ctx):
+        """Manage birthdays."""
+        if ctx.invoked_subcommand is None:
+            # Display the interactive View
+            view = BirthdayView(self)
+            desc = (
+                "Use the buttons below to configure your birthday and timezone.\n\n"
+                "**Timezones**: You can find your timezone code [here]"
+                "(https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)."
+            )
+            embed = discord.Embed(
+                title="Birthday Management",
+                description=desc,
+                color=discord.Color.blue()
+            )
+            await ctx.send(embed=embed, view=view)
 
     # --- ADMIN COMMANDS ---
 
