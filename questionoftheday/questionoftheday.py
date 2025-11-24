@@ -5,13 +5,14 @@ import random
 import uuid
 from datetime import datetime, timedelta, timezone, time
 from typing import Dict, List, Literal, Optional, Set, Union
-from pathlib import Path
+from pathlib import Path # Ensure this is imported for Path usage
 
 import discord
 from discord.ext import tasks 
 from redbot.core import commands, Config, app_commands 
 from redbot.core.bot import Red
-from redbot.core.data_manager import file_manager # ADDED: Import file_manager for temp path
+# from redbot.core.data_manager import file_manager # REMOVED: Import is incorrect/deprecated
+from redbot.core.data_manager import cog_data_path # ADDED: Used for guaranteed writable directory
 from redbot.core.utils.chat_formatting import humanize_list, box, bold, warning
 from red_commons.logging import getLogger
 from pydantic import BaseModel, Field, ValidationError
@@ -194,7 +195,7 @@ class QuestionOfTheDay(commands.Cog):
 
     def cog_unload(self):
         self.qotd_poster.cancel()
-        self.bot.remove_view("qotd_suggest_button") 
+        # self.bot.remove_view("qotd_suggest_button") # REMOVED: View cleanup handled automatically by the framework
 
     async def red_delete_data_for_user(self, *, requester: Literal["discord", "owner", "admin", "user"], user_id: int):
         """
@@ -564,7 +565,7 @@ class QuestionOfTheDay(commands.Cog):
         list_names = [v['name'] for v in lists_data.values() if v['id'] != "suggestions"]
         
         # Remove and re-add the persistent view to ensure its context is fresh
-        self.bot.remove_view("qotd_suggest_button")
+        # The bot handles persistent view registration/cleanup automatically via add_view
         self.bot.add_view(SuggestionButton(self, list_names))
         
     # --- Commands ---
@@ -1256,13 +1257,18 @@ class QuestionOfTheDay(commands.Cog):
         # Create the file name
         file_name = f"qotd_export_{list_id}_{datetime.now().strftime('%Y%m%d')}.json"
         
-        # --- MODIFIED: Use file_manager.temp_path for a guaranteed writable location ---
-        temp_dir = file_manager.temp_path / "qotd_exports"
+        # --- MODIFIED: Use cog_data_path for a guaranteed writable location ---
+        # Get the cog's data directory path
+        data_dir = cog_data_path(self)
+        temp_dir = data_dir / "temp_exports"
+        
+        # Ensure the subdirectory exists
         temp_dir.mkdir(parents=True, exist_ok=True)
+        
         temp_path = temp_dir / file_name
 
         try:
-            # Use the Path object from file_manager.temp_path
+            # Write the file to the cog's data directory (guaranteed writable)
             with temp_path.open("w", encoding="utf-8") as f:
                 json.dump(export_data, f, indent=4)
         except Exception as e:
