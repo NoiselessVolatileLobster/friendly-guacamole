@@ -95,15 +95,20 @@ class ApprovalView(discord.ui.View):
             for list_id, list_obj in lists.items() if list_id != "suggestions" # Don't allow approving into the suggestions list
         ]
 
-        self.list_select = discord.ui.Select(
-            placeholder="Select a Question List to Approve Into",
-            options=list_options,
-            min_values=1,
-            max_values=1,
-            custom_id="qotd_approval_list_select"
-        )
-        self.list_select.callback = self.approve_callback
-        self.add_item(self.list_select)
+        # Check if there are any valid lists to approve into
+        if list_options:
+            self.list_select = discord.ui.Select(
+                placeholder="Select a Question List to Approve Into",
+                options=list_options,
+                min_values=1,
+                max_values=1,
+                custom_id="qotd_approval_list_select"
+            )
+            self.list_select.callback = self.approve_callback
+            self.add_item(self.list_select)
+        else:
+             # Add a disabled button or send a message if no lists are available for approval
+             log.warning("No valid non-suggestion lists found for ApprovalView dropdown.")
 
     async def approval_check(self, interaction: discord.Interaction) -> bool:
         # Check for manage_guild permission
@@ -131,14 +136,13 @@ class ApprovalView(discord.ui.View):
         self.question_data.added_on = datetime.now(timezone.utc) 
 
         await self.cog.update_question_data(self.question_id, self.question_data)
-        # Note: We don't need to manually remove from 'suggestions' as the QID now points to a new list_id
-        # The key stays the same, only the list_id field changes.
         
         # Update the approval message
         embed = interaction.message.embeds[0]
         embed.title = "✅ Question Approved!"
         embed.description = f"Approved by {interaction.user.display_name} into list: **{self.lists[selected_list_id].name}**"
         embed.color = discord.Color.green()
+        embed.set_footer(text=f"Processed by: {interaction.user.name}")
 
         # Remove the view
         await interaction.response.edit_message(embed=embed, view=None)
@@ -155,6 +159,7 @@ class ApprovalView(discord.ui.View):
         embed.title = "❌ Question Rejected!"
         embed.description = f"Rejected by {interaction.user.display_name}. Question deleted."
         embed.color = discord.Color.red()
+        embed.set_footer(text=f"Processed by: {interaction.user.name}")
 
         await interaction.response.edit_message(embed=embed, view=None)
 
@@ -581,23 +586,47 @@ class QuestionOfTheDay(commands.Cog):
 
     @qotd_suggest_admin.command(name="list")
     async def qotd_suggest_list(self, ctx: commands.Context):
-        """Lists all pending question suggestions."""
+        """
+        Lists the oldest 5 pending question suggestions and allows inline approval/rejection via buttons.
+        """
         all_questions = await self.config.questions()
-        pending_questions = {
-            qid: QuestionData.model_validate(qdict)
+        lists_data = await self.config.lists()
+        
+        pending_questions_data = {
+            qid: qdict
             for qid, qdict in all_questions.items()
             if qdict.get('list_id') == 'suggestions' and qdict.get('status') == 'pending'
         }
-
+        
+        # Sort by oldest first and validate
+        pending_questions = {}
+        for qid, qdict in pending_questions_data.items():
+            try:
+                # Ensure the 'added_on' field is a datetime object for sorting
+                qdict['added_on'] = datetime.fromisoformat(qdict['added_on']) if isinstance(qdict.get('added_on'), str) else qdict.get('added_on')
+                pending_questions[qid] = QuestionData.model_validate(qdict)
+            except (ValidationError, ValueError):
+                log.warning(f"Skipping invalid pending QuestionData for QID {qid}.")
+                continue
+                
         if not pending_questions:
             return await ctx.send("There are currently no pending question suggestions.")
 
-        message = bold("Pending Question Suggestions:\n")
-        
-        # Sort by oldest first
-        sorted_pending = sorted(pending_questions.items(), key=lambda item: item[1].added_on)
+        # Limit to prevent chat spam
+        limit = 5 
+        suggestions_to_show = sorted(pending_questions.items(), key=lambda item: item[1].added_on)[:limit]
+        remaining_count = len(pending_questions) - len(suggestions_to_show)
 
-        for qid, q_obj in sorted_pending:
+        # Parse lists for the ApprovalView
+        try:
+            lists = {k: QuestionList.model_validate(v) for k, v in lists_data.items()}
+        except ValidationError:
+            await ctx.send(warning("Failed to load question lists. Cannot display approval buttons."))
+            return
+
+        await ctx.send(bold(f"Found {len(pending_questions)} pending suggestions. Displaying the oldest {len(suggestions_to_show)} for inline approval..."))
+        
+        for qid, q_obj in suggestions_to_show:
             suggested_by_id = q_obj.suggested_by
             suggested_by_str = f"User ID: {suggested_by_id}"
             
@@ -605,30 +634,34 @@ class QuestionOfTheDay(commands.Cog):
             if suggested_by_id:
                 user = self.bot.get_user(suggested_by_id)
                 if user:
-                    suggested_by_str = user.display_name
+                    suggested_by_str = user.mention
             
-            # Shorten QID for readability
             short_qid = qid.split('-')[0]
             
-            question_text = q_obj.question
-            if len(question_text) > 100:
-                question_text = question_text[:97] + "..."
+            embed = discord.Embed(
+                title=f"❓ Pending Suggestion (ID: {short_qid})",
+                description=box(q_obj.question, lang="text"),
+                color=discord.Color.orange()
+            )
+            embed.add_field(name="Suggested By", value=suggested_by_str, inline=True)
+            embed.add_field(name="Date Submitted", value=discord.utils.format_dt(q_obj.added_on, 'R'), inline=True)
+            
+            # Send the message with the ApprovalView attached
+            await ctx.send(
+                embed=embed, 
+                view=ApprovalView(self, q_obj, qid, lists)
+            )
 
-            message += f"**ID:** `{short_qid}` (by {suggested_by_str})\n"
-            message += f"**Q:** {question_text}\n"
-
-        # Note: If the list is very long, this might exceed Discord's message limit. 
-        # For simplicity, we just box the output for now.
-        if len(message) > 2000:
-             return await ctx.send(box("Too many suggestions to display in one message.", lang="text"))
-             
-        await ctx.send(box(message, lang="text"))
-        await ctx.send(f"Use `[p]qotd suggest approve <short_id> <list_id>` or `[p]qotd suggest delete <short_id>` to process.")
+        if remaining_count > 0:
+            await ctx.send(f"\n{remaining_count} more suggestions pending. You can run the command again to see the next set, or use the direct commands:\n`[p]qotd suggest approve <short_id> <list_id>`\n`[p]qotd suggest delete <short_id>`")
 
 
     @qotd_suggest_admin.command(name="approve")
     async def qotd_suggest_approve(self, ctx: commands.Context, short_qid: str, list_id: str):
-        """Approves a pending question and moves it to a specified list."""
+        """
+        [Fallback] Approves a pending question by ID and moves it to a specified list.
+        (Prefer using the buttons from `[p]qotd suggest list`).
+        """
         all_questions = await self.config.questions()
         lists_data = await self.config.lists()
 
@@ -642,9 +675,13 @@ class QuestionOfTheDay(commands.Cog):
             return await ctx.send(warning(f"List ID `{list_id}` is invalid. Cannot approve into that list."))
             
         try:
-            question_data = QuestionData.model_validate(all_questions[full_qid])
-        except ValidationError:
-            return await ctx.send(warning(f"Question data for `{short_qid}` is corrupt."))
+            # Re-parse datetimes before validation
+            qdata = all_questions[full_qid]
+            qdata['added_on'] = datetime.fromisoformat(qdata['added_on'])
+            qdata['last_asked'] = datetime.fromisoformat(qdata['last_asked']) if qdata['last_asked'] else None
+            question_data = QuestionData.model_validate(qdata)
+        except (ValidationError, ValueError):
+            return await ctx.send(warning(f"Question data for `{short_qid}` is corrupt or in an old format."))
             
         # 2. Update the question
         question_data.list_id = list_id
@@ -659,7 +696,10 @@ class QuestionOfTheDay(commands.Cog):
 
     @qotd_suggest_admin.command(name="delete")
     async def qotd_suggest_delete(self, ctx: commands.Context, short_qid: str):
-        """Deletes a pending question suggestion."""
+        """
+        [Fallback] Deletes a pending question suggestion by ID.
+        (Prefer using the buttons from `[p]qotd suggest list`).
+        """
         all_questions = await self.config.questions()
 
         # 1. Find the full QID using the short ID
@@ -854,10 +894,19 @@ class QuestionOfTheDay(commands.Cog):
             
         # Optional: Get some data before deleting for confirmation message
         try:
-            schedule = Schedule.model_validate(schedules_data[schedule_id])
+            # FIX: Ensure next_run_time is a proper timezone-aware datetime object before validation
+            schedule_dict = schedules_data[schedule_id]
+            next_run_time_data = schedule_dict.get('next_run_time')
+            if isinstance(next_run_time_data, str):
+                dt_obj = datetime.fromisoformat(next_run_time_data)
+                if dt_obj.tzinfo is None:
+                    dt_obj = dt_obj.replace(tzinfo=timezone.utc)
+                schedule_dict['next_run_time'] = dt_obj
+            
+            schedule = Schedule.model_validate(schedule_dict)
             lists_data = await self.config.lists()
             list_name = lists_data.get(schedule.list_id, {}).get('name', 'UNKNOWN LIST')
-        except (ValidationError, KeyError):
+        except (ValidationError, KeyError, ValueError):
             list_name = "Corrupt Schedule Data"
             
         async with self.config.schedules() as schedules:
@@ -961,7 +1010,16 @@ class QuestionOfTheDay(commands.Cog):
             list_id_override=list_id
         )
 
-        schedule = Schedule.model_validate(schedules_data[schedule_id])
+        # FIX: Ensure next_run_time is a proper timezone-aware datetime object before validation
+        schedule_dict = schedules_data[schedule_id]
+        next_run_time_data = schedule_dict.get('next_run_time')
+        if isinstance(next_run_time_data, str):
+            dt_obj = datetime.fromisoformat(next_run_time_data)
+            if dt_obj.tzinfo is None:
+                dt_obj = dt_obj.replace(tzinfo=timezone.utc)
+            schedule_dict['next_run_time'] = dt_obj
+        
+        schedule = Schedule.model_validate(schedule_dict)
         schedule.rules.append(new_rule)
         
         # FIX: Double serialize to guarantee only JSON primitives (strings for datetime) are saved
@@ -998,7 +1056,16 @@ class QuestionOfTheDay(commands.Cog):
             action="skip_run"
         )
 
-        schedule = Schedule.model_validate(schedules_data[schedule_id])
+        # FIX: Ensure next_run_time is a proper timezone-aware datetime object before validation
+        schedule_dict = schedules_data[schedule_id]
+        next_run_time_data = schedule_dict.get('next_run_time')
+        if isinstance(next_run_time_data, str):
+            dt_obj = datetime.fromisoformat(next_run_time_data)
+            if dt_obj.tzinfo is None:
+                dt_obj = dt_obj.replace(tzinfo=timezone.utc)
+            schedule_dict['next_run_time'] = dt_obj
+
+        schedule = Schedule.model_validate(schedule_dict)
         schedule.rules.append(new_rule)
         
         # FIX: Double serialize to guarantee only JSON primitives (strings for datetime) are saved
@@ -1018,7 +1085,16 @@ class QuestionOfTheDay(commands.Cog):
         if schedule_id not in schedules_data:
             return await ctx.send(warning(f"Schedule ID `{schedule_id}` not found."))
 
-        schedule = Schedule.model_validate(schedules_data[schedule_id])
+        # FIX: Ensure next_run_time is a proper timezone-aware datetime object before validation
+        schedule_dict = schedules_data[schedule_id]
+        next_run_time_data = schedule_dict.get('next_run_time')
+        if isinstance(next_run_time_data, str):
+            dt_obj = datetime.fromisoformat(next_run_time_data)
+            if dt_obj.tzinfo is None:
+                dt_obj = dt_obj.replace(tzinfo=timezone.utc)
+            schedule_dict['next_run_time'] = dt_obj
+            
+        schedule = Schedule.model_validate(schedule_dict)
         
         initial_length = len(schedule.rules)
         schedule.rules = [rule for rule in schedule.rules if rule.id != rule_id]
