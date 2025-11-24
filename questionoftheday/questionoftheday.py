@@ -680,6 +680,28 @@ class QuestionOfTheDay(commands.Cog):
             schedules[schedule_id] = serialized_schedule
             
         await ctx.send(f"Added new schedule: posting from list **{lists_data[list_id]['name']}** to {channel.mention} every **{frequency}** (ID: `{schedule_id}`).")
+        
+    @qotd_schedule_management.command(name="remove")
+    async def qotd_schedule_remove(self, ctx: commands.Context, schedule_id: str):
+        """Removes a schedule by its unique ID."""
+        schedules_data = await self.config.schedules()
+        
+        if schedule_id not in schedules_data:
+            return await ctx.send(warning(f"Schedule ID `{schedule_id}` not found. Use `[p]qotd schedule view` to list IDs."))
+            
+        # Optional: Get some data before deleting for confirmation message
+        try:
+            schedule = Schedule.model_validate(schedules_data[schedule_id])
+            lists_data = await self.config.lists()
+            list_name = lists_data.get(schedule.list_id, {}).get('name', 'UNKNOWN LIST')
+        except (ValidationError, KeyError):
+            list_name = "Corrupt Schedule Data"
+            
+        async with self.config.schedules() as schedules:
+            del schedules[schedule_id]
+            
+        await ctx.send(f"Successfully removed schedule **`{schedule_id}`** (originally posting from list **{list_name}**).")
+
 
     @qotd_schedule_management.command(name="view")
     async def qotd_schedule_view(self, ctx: commands.Context):
