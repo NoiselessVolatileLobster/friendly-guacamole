@@ -80,9 +80,9 @@ class BirthdayModal(discord.ui.Modal, title="Set Your Birthday"):
         await self.cog.config.user(interaction.user).day.set(d_val)
         await self.cog.config.user(interaction.user).year.set(y_val)
 
-        msg = f"Birthday set to: {m_val}/{d_val}"
+        msg = f"Birthday set to: {self.cog.month_names.get(m_val)} {d_val}"
         if y_val:
-            msg += f"/{y_val}"
+            msg += f", {y_val}"
         
         await interaction.response.send_message(msg, ephemeral=True)
 
@@ -164,6 +164,13 @@ class Birthday(commands.Cog):
         self.config.register_user(**default_user)
         
         self.loop_task = self.bot.loop.create_task(self.birthday_loop())
+        
+        # New: Month name mapping for display
+        self.month_names = {
+            1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
+            7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"
+        }
+
 
     def cog_unload(self):
         if self.loop_task:
@@ -301,9 +308,12 @@ class Birthday(commands.Cog):
         if not conf["month"] or not conf["day"]:
             return await ctx.send(f"{user.display_name} hasn't set their birthday yet.")
         
-        date_str = f"{conf['month']}/{conf['day']}"
+        # Use month name in seebirthday too for consistency
+        month_name = self.month_names.get(conf['month'])
+        
+        date_str = f"{month_name} {conf['day']}"
         if conf["year"]:
-            date_str += f"/{conf['year']}"
+            date_str += f", {conf['year']}"
             
         tz_str = conf.get("timezone", "UTC")
         
@@ -369,10 +379,19 @@ class Birthday(commands.Cog):
         
         user_conf = await self.config.user(ctx.author).all()
         
+        # Get month name for display
+        month_num = user_conf['month']
+        month_name = self.month_names.get(month_num)
+        
         # Check if data exists and construct the status message
-        current_bday = f"{user_conf['month']}/{user_conf['day']}" if user_conf['month'] and user_conf['day'] else "Not set"
+        if month_name and user_conf['day']:
+            # Display format: "MonthName Day"
+            current_bday = f"{month_name} {user_conf['day']}"
+        else:
+            current_bday = "Not set"
+        
         current_tz = user_conf.get("timezone", "UTC")
-        current_year = f"/{user_conf['year']}" if user_conf['year'] else ""
+        current_year = f", {user_conf['year']}" if user_conf['year'] else ""
         
         status_msg = (
             f"**Current Settings for {ctx.author.display_name}**:\n"
@@ -459,10 +478,11 @@ class Birthday(commands.Cog):
             
             found_count += 1
             
-            # Format Date
-            date_str = f"{u_data['month']}/{u_data['day']}"
+            # Format Date using month name
+            month_name = self.month_names.get(u_data['month'])
+            date_str = f"{month_name} {u_data['day']}"
             if u_data['year']:
-                date_str += f"/{u_data['year']}"
+                date_str += f", {u_data['year']}"
             
             # Format Output Line
             tz_str = u_data.get('timezone', 'UTC')
