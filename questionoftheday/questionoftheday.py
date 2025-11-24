@@ -1,5 +1,5 @@
 import asyncio
-import json # Ensure json is imported for the double-serialization fix
+import json
 import logging
 import random
 import uuid
@@ -11,6 +11,7 @@ import discord
 from discord.ext import tasks 
 from redbot.core import commands, Config, app_commands 
 from redbot.core.bot import Red
+from redbot.core.data_manager import file_manager # ADDED: Import file_manager for temp path
 from redbot.core.utils.chat_formatting import humanize_list, box, bold, warning
 from red_commons.logging import getLogger
 from pydantic import BaseModel, Field, ValidationError
@@ -329,8 +330,10 @@ class QuestionOfTheDay(commands.Cog):
         for qid, qdata in eligible_q_data.items():
             try:
                 # Use strict validation here to prevent using corrupt data
+                qdata['added_on'] = datetime.fromisoformat(qdata['added_on'])
+                qdata['last_asked'] = datetime.fromisoformat(qdata['last_asked']) if qdata['last_asked'] else None
                 eligible_q[qid] = QuestionData.model_validate(qdata)
-            except ValidationError:
+            except (ValidationError, ValueError):
                 log.warning(f"Skipping invalid QuestionData for QID {qid} in list {target_list_id}.")
                 continue
 
@@ -1250,26 +1253,34 @@ class QuestionOfTheDay(commands.Cog):
         if question_count == 0:
             return await ctx.send(f"The list **{list_name}** is empty.")
 
-        # Create the file
+        # Create the file name
         file_name = f"qotd_export_{list_id}_{datetime.now().strftime('%Y%m%d')}.json"
         
+        # --- MODIFIED: Use file_manager.temp_path for a guaranteed writable location ---
+        temp_dir = file_manager.temp_path / "qotd_exports"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_path = temp_dir / file_name
+
         try:
-            with Path(file_name).open("w", encoding="utf-8") as f:
+            # Use the Path object from file_manager.temp_path
+            with temp_path.open("w", encoding="utf-8") as f:
                 json.dump(export_data, f, indent=4)
         except Exception as e:
-            log.exception("Error writing export file.")
-            return await ctx.send(warning(f"Failed to create the export file: {e}"))
+            log.exception("Error writing export file to temporary location.")
+            return await ctx.send(warning(f"Failed to create the export file in a writable directory: {e}"))
 
         try:
             await ctx.send(
                 f"Exported **{question_count}** questions from **{list_name}**.",
-                file=discord.File(file_name)
+                file=discord.File(temp_path)
             )
         except Exception as e:
             log.exception("Error sending export file.")
             await ctx.send(warning(f"Failed to send the export file: {e}"))
         finally:
-            Path(file_name).unlink(missing_ok=True) # Clean up the file after sending
+            # Clean up the file after sending
+            temp_path.unlink(missing_ok=True)
+        # --- END MODIFIED SECTION ---
 
     # --- User Command for Suggestion ---
     
