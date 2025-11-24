@@ -209,14 +209,22 @@ class QuestionOfTheDay(commands.Cog):
 
         for schedule_id, schedule_dict in schedules_data.items():
             try:
-                # Ensure validation handles potential non-timezone-aware datetimes from older saves
-                if schedule_dict.get('next_run_time') and schedule_dict['next_run_time'].tzinfo is None:
-                    schedule_dict['next_run_time'] = schedule_dict['next_run_time'].replace(tzinfo=timezone.utc)
-                
+                # FIX: Check for string data and parse it back to a timezone-aware datetime object
+                next_run_time_data = schedule_dict.get('next_run_time')
+                if isinstance(next_run_time_data, str):
+                    dt_obj = datetime.fromisoformat(next_run_time_data)
+                    if dt_obj.tzinfo is None:
+                        # If the string was saved without timezone info, force it to UTC
+                        dt_obj = dt_obj.replace(tzinfo=timezone.utc)
+                    schedule_dict['next_run_time'] = dt_obj
+
                 schedule = Schedule.model_validate(schedule_dict)
             except ValidationError as e:
                 log.error(f"Failed to validate schedule {schedule_id}: {e}")
                 continue # Skip invalid schedule
+            except ValueError as e:
+                log.error(f"Failed to parse datetime string for schedule {schedule_id}: {e}")
+                continue # Skip schedule if datetime parsing fails
 
             # Check if it's time to run based on frequency
             if now_utc >= schedule.next_run_time:
@@ -685,12 +693,17 @@ class QuestionOfTheDay(commands.Cog):
         msg = "**Configured Schedules:**\n"
         for schedule_id, schedule_dict in schedules_data.items():
             try:
-                # Need to replace tzinfo=None if data came from a source that dropped it, though Pydantic should handle this.
-                if schedule_dict.get('next_run_time') and schedule_dict['next_run_time'].tzinfo is None:
-                    schedule_dict['next_run_time'] = schedule_dict['next_run_time'].replace(tzinfo=timezone.utc)
-                
+                # FIX: Check for string data and parse it back to a timezone-aware datetime object
+                next_run_time_data = schedule_dict.get('next_run_time')
+                if isinstance(next_run_time_data, str):
+                    dt_obj = datetime.fromisoformat(next_run_time_data)
+                    if dt_obj.tzinfo is None:
+                        # If the string was saved without timezone info, force it to UTC
+                        dt_obj = dt_obj.replace(tzinfo=timezone.utc)
+                    schedule_dict['next_run_time'] = dt_obj
+
                 schedule = Schedule.model_validate(schedule_dict)
-            except ValidationError:
+            except (ValidationError, ValueError):
                 msg += f"• **ID `{schedule_id}`:** (Invalid/Corrupt Data)\n"
                 continue
                 
