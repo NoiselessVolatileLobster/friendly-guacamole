@@ -45,7 +45,7 @@ class SuggestionModal(discord.ui.Modal, title="Submit a Question of the Day"):
         )
 
         try:
-            # This calls add_question_to_data which correctly uses model_dump()
+            # This calls add_question_to_data, which now forces pre-serialization.
             await self.cog.add_question_to_data(new_q)
         except Exception as e:
             # We catch the error here to provide user feedback
@@ -211,6 +211,10 @@ class QuestionOfTheDay(commands.Cog):
 
         for schedule_id, schedule_dict in schedules_data.items():
             try:
+                # Ensure validation handles potential non-timezone-aware datetimes from older saves
+                if schedule_dict.get('next_run_time') and schedule_dict['next_run_time'].tzinfo is None:
+                    schedule_dict['next_run_time'] = schedule_dict['next_run_time'].replace(tzinfo=timezone.utc)
+                
                 schedule = Schedule.model_validate(schedule_dict)
             except ValidationError as e:
                 log.error(f"Failed to validate schedule {schedule_id}: {e}")
@@ -419,9 +423,13 @@ class QuestionOfTheDay(commands.Cog):
     async def add_question_to_data(self, question: QuestionData):
         """Adds a new question to the global questions dict with a UUID."""
         question_id = str(uuid.uuid4())
+        
+        # CRITICAL FIX: Explicitly serialize the Pydantic object to a dictionary 
+        # *outside* the config context to avoid any conflicts with Red's JSON handling.
+        serialized_q = question.model_dump() 
+        
         async with self.config.questions() as questions:
-            # Ensure serialization before saving
-            questions[question_id] = question.model_dump()
+            questions[question_id] = serialized_q
         
         # Handle new suggestion notification if it was added to the 'suggestions' list
         if question.list_id == "suggestions":
@@ -429,9 +437,11 @@ class QuestionOfTheDay(commands.Cog):
 
     async def update_question_data(self, qid: str, question: QuestionData):
         """Updates an existing question."""
+        # CRITICAL FIX: Explicitly serialize before the config context manager.
+        serialized_q = question.model_dump()
+        
         async with self.config.questions() as questions:
-            # Ensure serialization before saving
-            questions[qid] = question.model_dump()
+            questions[qid] = serialized_q
 
     async def delete_question_by_id(self, qid: str):
         """Deletes a question by its ID."""
@@ -889,7 +899,7 @@ class QuestionOfTheDay(commands.Cog):
                     added_on=datetime.now(timezone.utc),
                 )
                 
-                # Ensure serialization before saving
+                # CRITICAL: Serialize before saving
                 global_questions[str(uuid.uuid4())] = new_q.model_dump()
                 imported_count += 1
 
