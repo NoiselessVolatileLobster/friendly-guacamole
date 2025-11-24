@@ -102,7 +102,7 @@ class TimezoneModal(discord.ui.Modal, title="Set Timezone"):
     async def on_submit(self, interaction: discord.Interaction):
         tz_input = self.tz.value.strip()
         
-        if tz_input not in pytz.all_timezones and tz_input != "EST":
+        if tz_input not in pytz.all_timezones and tz_input != "EST" and tz_input != "MST" and tz_input != "GMT":
             # Simple fuzzy check helper could go here, but keeping it strict for safety
             return await interaction.response.send_message(
                 "Invalid Timezone. Please check `https://en.wikipedia.org/wiki/List_of_tz_database_time_zones`", 
@@ -402,6 +402,7 @@ class Birthday(commands.Cog):
     @bset.command(name="messageordinal")
     async def bset_message_ordinal(self, ctx, *, message: str):
         """Set the announcement message when the user HAS a birth year. Use {mention} for the user and {ordinal} for age."""
+        # Fix the method name to match the implementation below
         await self.config.guild(ctx.guild).announce_message_year.set(message)
         await ctx.send(f"Ordinal message set to: {message}")
 
@@ -463,7 +464,7 @@ class Birthday(commands.Cog):
     async def bset_import(self, ctx):
         """
         Import birthdays from a text file attached to the message.
-        Format expected: MMM-DD: ID name ... | Time zone: Region/City
+        Format expected: ● MMM-DD: ID username (Display Name) ... | Time zone: Region/City
         """
         if not ctx.message.attachments:
             return await ctx.send("Please attach a .txt file with the data.")
@@ -478,10 +479,20 @@ class Birthday(commands.Cog):
         except Exception:
             return await ctx.send("Could not read file.")
 
-        # REGEX PATTERN
-        # Captures: Month, Day, ID, (Timezone optional)
-        # Matches: "Jul-24: 105104365890580480" ... "| Time zone: America/Winnipeg"
-        pattern = r"(?P<month>[A-Za-z]{3})-(?P<day>\d{1,2}):\s+(?P<id>\d+).*?(?:\|\s+Time zone:\s+(?P<tz>.*))?"
+        # REGEX PATTERN:
+        # 1. Start of line or non-word char (like ●)
+        # 2. Captures Month (MMM) and Day (DD)
+        # 3. Captures Discord User ID (ID)
+        # 4. Non-greedy match for everything else (.*?)
+        # 5. Optional Time zone section:
+        #    (?: ... )? makes the whole timezone group optional
+        #    \|\s+Time zone:\s+ captures the literal separator
+        #    (?P<tz>.*) captures the rest of the line as the timezone
+        pattern = re.compile(
+            r"^\W*?(?P<month>[A-Za-z]{3})-(?P<day>\d{1,2}):\s+(?P<id>\d+).*?"
+            r"(?:\|\s+Time zone:\s+(?P<tz>.*))?$", 
+            re.IGNORECASE
+        )
         
         month_map = {
             "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, 
@@ -490,12 +501,14 @@ class Birthday(commands.Cog):
 
         imported_count = 0
         errors = 0
+        total_lines = 0
 
         lines = text.splitlines()
         for line in lines:
-            if not line.strip(): continue
+            if not line.strip() or "Birthdays in" in line: continue
+            total_lines += 1
             
-            match = re.search(pattern, line, re.IGNORECASE)
+            match = pattern.search(line)
             if match:
                 m_str = match.group("month").lower()
                 d_str = match.group("day")
@@ -518,21 +531,24 @@ class Birthday(commands.Cog):
                 final_tz = "UTC"
                 if tz_str:
                     clean_tz = tz_str.strip()
-                    if clean_tz in pytz.all_timezones or clean_tz == "EST":
+                    # Accept common abbreviations used in your sample file (EST, MST, GMT) 
+                    # alongside official pytz names.
+                    if clean_tz in pytz.all_timezones or clean_tz in ["EST", "MST", "GMT"]:
                         final_tz = clean_tz
                 
-                # Save to config
+                # Update user config directly using set
                 # Note: The import format provided didn't have years, so year is None
-                async with self.config.user_from_id(uid_int).all() as u_conf:
-                    u_conf["month"] = m_int
-                    u_conf["day"] = d_int
-                    u_conf["year"] = None
-                    u_conf["timezone"] = final_tz
+                await self.config.user_from_id(uid_int).set({
+                    "month": m_int,
+                    "day": d_int,
+                    "year": None,
+                    "timezone": final_tz,
+                    "last_celebrated": None
+                })
                 
                 imported_count += 1
             else:
                 # Regex didn't match line structure
-                if len(line) > 5: # ignore tiny junk lines
-                    errors += 1
+                errors += 1
 
-        await ctx.send(f"Import complete. Imported: {imported_count}. Skipped/Errors: {errors}.")
+        await ctx.send(f"Import complete. Processed {total_lines} data lines. Imported: {imported_count}. Skipped/Errors: {errors}.")
