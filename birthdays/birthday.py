@@ -1,7 +1,7 @@
 import discord
 import re
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 from typing import Optional, List, Dict, Union
 
@@ -134,7 +134,7 @@ class BirthdayView(discord.ui.View):
 
 # --- MAIN COG ---
 
-class AdvancedBirthdays(commands.Cog):
+class Birthday(commands.Cog):
     """Manage birthdays with roles, announcements, and imports."""
 
     def __init__(self, bot: Red):
@@ -351,23 +351,22 @@ class AdvancedBirthdays(commands.Cog):
         embed = discord.Embed(title=f"Upcoming {len(top_x)} Birthdays", description=msg, color=discord.Color.green())
         await ctx.send(embed=embed)
 
-    @commands.group(name="birthday", aliases=["bday"])
+    @commands.group(name="birthday", aliases=["bday"], invoke_without_command=True)
     async def birthday(self, ctx):
         """Manage birthdays."""
-        if ctx.invoked_subcommand is None:
-            # Display the interactive View
-            view = BirthdayView(self)
-            desc = (
-                "Use the buttons below to configure your birthday and timezone.\n\n"
-                "**Timezones**: You can find your timezone code [here]"
-                "(https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)."
-            )
-            embed = discord.Embed(
-                title="Birthday Management",
-                description=desc,
-                color=discord.Color.blue()
-            )
-            await ctx.send(embed=embed, view=view)
+        # Display the interactive View
+        view = BirthdayView(self)
+        desc = (
+            "Use the buttons below to configure your birthday and timezone.\n\n"
+            "**Timezones**: You can find your timezone code [here]"
+            "(https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)."
+        )
+        embed = discord.Embed(
+            title="Birthday Management",
+            description=desc,
+            color=discord.Color.blue()
+        )
+        await ctx.send(embed=embed, view=view)
 
     # --- ADMIN COMMANDS ---
 
@@ -389,7 +388,7 @@ class AdvancedBirthdays(commands.Cog):
 
     @bset.command(name="message")
     async def bset_message(self, ctx, *, message: str):
-        """Set the announcement message. Use {mention} for the user."""
+        """Set the announcement message. Use {mention} for the user and {ordinal} for age."""
         await self.config.guild(ctx.guild).announce_message.set(message)
         await ctx.send(f"Message set to: {message}")
 
