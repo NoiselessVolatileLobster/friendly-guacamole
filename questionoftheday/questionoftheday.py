@@ -11,7 +11,6 @@ import discord
 from discord.ext import tasks 
 from redbot.core import commands, Config, app_commands 
 from redbot.core.bot import Red
-# from redbot.core.data_manager import file_manager # REMOVED: Import is incorrect/deprecated
 from redbot.core.data_manager import cog_data_path # ADDED: Used for guaranteed writable directory
 from redbot.core.utils.chat_formatting import humanize_list, box, bold, warning
 from red_commons.logging import getLogger
@@ -1247,8 +1246,28 @@ class QuestionOfTheDay(commands.Cog):
         question_count = 0
         for qid, qdict in all_questions.items():
             if qdict.get('list_id') == list_id:
-                # Export as a simple object containing just the question text for easy re-import/use
-                export_data.append({"question": qdict.get('question', 'Error: Missing question text')})
+                # Get suggestion info
+                suggested_by_id = qdict.get('suggested_by')
+                suggested_by_name = "System/Unknown"
+                
+                if suggested_by_id:
+                    # Fetch user from cache for name
+                    user = self.bot.get_user(suggested_by_id)
+                    if user:
+                        suggested_by_name = user.display_name
+                    else:
+                        # Fallback if user is not cached (use the ID as a string)
+                        suggested_by_name = f"ID: {suggested_by_id}" 
+                
+                # Export as an object containing question text AND suggested by info
+                export_data.append({
+                    "question": qdict.get('question', 'Error: Missing question text'),
+                    "suggested_by_id": suggested_by_id,
+                    "suggested_by_name": suggested_by_name,
+                    # Optional: Add other metadata for completeness
+                    "added_on": qdict.get('added_on'),
+                    "last_asked": qdict.get('last_asked')
+                })
                 question_count += 1
 
         if question_count == 0:
@@ -1257,7 +1276,6 @@ class QuestionOfTheDay(commands.Cog):
         # Create the file name
         file_name = f"qotd_export_{list_id}_{datetime.now().strftime('%Y%m%d')}.json"
         
-        # --- MODIFIED: Use cog_data_path for a guaranteed writable location ---
         # Get the cog's data directory path
         data_dir = cog_data_path(self)
         temp_dir = data_dir / "temp_exports"
@@ -1277,7 +1295,7 @@ class QuestionOfTheDay(commands.Cog):
 
         try:
             await ctx.send(
-                f"Exported **{question_count}** questions from **{list_name}**.",
+                f"Exported **{question_count}** questions from **{list_name}**. The file now includes the suggested user's name (if available) and ID.",
                 file=discord.File(temp_path)
             )
         except Exception as e:
@@ -1286,22 +1304,3 @@ class QuestionOfTheDay(commands.Cog):
         finally:
             # Clean up the file after sending
             temp_path.unlink(missing_ok=True)
-        # --- END MODIFIED SECTION ---
-
-    # --- User Command for Suggestion ---
-    
-    @commands.hybrid_command(name="suggestqotd")
-    @commands.guild_only()
-    async def suggest_qotd_command(self, ctx: commands.Context):
-        """Opens a form to suggest a Question of the Day."""
-        # Get list names for the SuggestionModal
-        lists_data = await self.config.lists()
-        list_names = [v['name'] for v in lists_data.values() if v['id'] != "suggestions"]
-
-        # Use a persistent view with a button that triggers the modal
-        view = SuggestionButton(self, list_names)
-        
-        await ctx.send(
-            "Click the button below to submit your question for review!", 
-            view=view
-        )
