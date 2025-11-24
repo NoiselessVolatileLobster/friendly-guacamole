@@ -400,7 +400,7 @@ class Birthday(commands.Cog):
         await ctx.send(f"Simple message set to: {message}")
 
     @bset.command(name="messageordinal")
-    async self.config.user_from_id(uid_int).all() as u_conf:
+    async def bset_message_ordinal(self, ctx, *, message: str):
         """Set the announcement message when the user HAS a birth year. Use {mention} for the user and {ordinal} for age."""
         await self.config.guild(ctx.guild).announce_message_year.set(message)
         await ctx.send(f"Ordinal message set to: {message}")
