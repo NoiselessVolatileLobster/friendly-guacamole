@@ -735,29 +735,55 @@ class QuestionOfTheDay(commands.Cog):
 
     @qotd_list_management.command(name="view")
     async def qotd_list_view(self, ctx: commands.Context):
-        """Displays all available question lists."""
+        """Displays all available question lists in an embed."""
         lists_data = await self.config.lists()
+        all_questions = await self.config.questions()
+
         if not lists_data:
             return await ctx.send("No question lists defined.")
             
-        msg = "**Available Question Lists:**\n"
+        embed = discord.Embed(
+            title="📋 Configured Question Lists",
+            description="Use these List IDs when setting up schedules or managing questions.",
+            color=discord.Color.gold()
+        )
+        
         for list_id, list_dict in lists_data.items():
             try:
                 list_obj = QuestionList.model_validate(list_dict)
             except ValidationError:
+                embed.add_field(name=f"ID: `{list_id}` (Error)", value="Invalid/Corrupt Data", inline=False)
                 continue
 
             # Count questions in this list
-            all_questions = await self.config.questions()
             count = sum(1 for q in all_questions.values() if q.get('list_id') == list_id)
             
-            exclusion_str = f"Excluded Dates: {', '.join(list_obj.exclusion_dates)}" if list_obj.exclusion_dates else ""
-
-            msg += f"• **{list_obj.name}** (`{list_id}`) - {count} questions\n"
-            if exclusion_str:
-                msg += f"  - {exclusion_str}\n"
             
-        await ctx.send(box(msg))
+            list_info = (
+                f"**Questions:** {count}\n"
+            )
+            
+            if list_obj.exclusion_dates:
+                # Truncate the list of dates if it's too long
+                dates = sorted(list_obj.exclusion_dates)
+                date_str = humanize_list([f"`{d}`" for d in dates[:5]])
+                if len(dates) > 5:
+                    date_str += f", and {len(dates) - 5} more..."
+                list_info += f"**Exclusions:** {date_str}"
+            else:
+                list_info += "**Exclusions:** None"
+
+            if list_id == "suggestions":
+                list_info = f"**Status:** Pending Approval Queue\n**Questions:** {count}"
+                
+            embed.add_field(
+                name=f"{'🗃️ ' if list_id != 'suggestions' else '📩 '} {list_obj.name} (`{list_id}`)", 
+                value=list_info, 
+                inline=False
+            )
+            
+        await ctx.send(embed=embed)
+
 
     @qotd_list_management.group(name="rule")
     async def qotd_list_rule(self, ctx: commands.Context):
