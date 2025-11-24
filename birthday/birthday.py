@@ -143,7 +143,8 @@ class Birthday(commands.Cog):
 
         default_guild = {
             "announce_channel": None,
-            "announce_message": "Happy Birthday {mention}! 🎉",
+            "announce_message_year": "Happy {ordinal} birthday, {mention}! 🎉",
+            "announce_message_no_year": "Happy Birthday {mention}! 🎉",
             "birthday_role": None,
         }
         default_user = {
@@ -215,7 +216,6 @@ class Birthday(commands.Cog):
             
             channel_id = g_conf.get("announce_channel")
             channel = guild.get_channel(channel_id) if channel_id else None
-            msg_template = g_conf.get("announce_message")
 
             for user_id, u_conf in all_users.items():
                 member = guild.get_member(int(user_id))
@@ -255,11 +255,18 @@ class Birthday(commands.Cog):
 
                         # Send Message
                         if channel:
-                            # Calculate Ordinal Age
                             ordinal_str = ""
-                            if u_conf.get("year"):
+                            has_year = bool(u_conf.get("year"))
+                            
+                            if has_year:
+                                # Use ordinal message and calculate age
                                 age = now_in_tz.year - u_conf["year"]
                                 ordinal_str = self.get_ordinal(age)
+                                msg_template = g_conf.get("announce_message_year", "Happy {ordinal} birthday, {mention}! 🎉")
+                            else:
+                                # Use simple message
+                                msg_template = g_conf.get("announce_message_no_year", "Happy Birthday {mention}! 🎉")
+
 
                             try:
                                 msg = msg_template.replace("{mention}", member.mention)
@@ -386,11 +393,17 @@ class Birthday(commands.Cog):
             await self.config.guild(ctx.guild).announce_channel.set(None)
             await ctx.send("Announcements disabled.")
 
-    @bset.command(name="message")
-    async def bset_message(self, ctx, *, message: str):
-        """Set the announcement message. Use {mention} for the user and {ordinal} for age."""
-        await self.config.guild(ctx.guild).announce_message.set(message)
-        await ctx.send(f"Message set to: {message}")
+    @bset.command(name="messagesimple")
+    async def bset_message_simple(self, ctx, *, message: str):
+        """Set the announcement message when the user has NO birth year (no ordinal). Use {mention} for the user."""
+        await self.config.guild(ctx.guild).announce_message_no_year.set(message)
+        await ctx.send(f"Simple message set to: {message}")
+
+    @bset.command(name="messageordinal")
+    async def bset_message_ordinal(self, ctx, *, message: str):
+        """Set the announcement message when the user HAS a birth year. Use {mention} for the user and {ordinal} for age."""
+        await self.config.guild(ctx.guild).announce_message_year.set(message)
+        await ctx.send(f"Ordinal message set to: {message}")
 
     @bset.command(name="role")
     async def bset_role(self, ctx, role: discord.Role = None):
