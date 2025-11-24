@@ -3,6 +3,7 @@ import re
 import asyncio
 from datetime import datetime
 import pytz
+import io # <-- Fix: Added missing import for StringIO
 from typing import Optional, List, Dict, Union
 
 from redbot.core import commands, Config, checks
