@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Dict, List, Literal, Optional, Set, Union
 
 import discord
-# FIX: Import commands from redbot.core to include RedBot-specific checks like admin_or_permissions
+# FIX: Import tasks from discord.ext
+from discord.ext import tasks 
 from redbot.core import commands, Config, app_commands 
 from redbot.core.bot import Red
 from redbot.core.utils.chat_formatting import humanize_list, box, bold, warning
