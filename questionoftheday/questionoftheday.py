@@ -131,8 +131,9 @@ class ApprovalView(discord.ui.View):
         self.question_data.added_on = datetime.now(timezone.utc) 
 
         await self.cog.update_question_data(self.question_id, self.question_data)
-        await self.cog.remove_question_from_list("suggestions", self.question_id)
-
+        # Note: We don't need to manually remove from 'suggestions' as the QID now points to a new list_id
+        # The key stays the same, only the list_id field changes.
+        
         # Update the approval message
         embed = interaction.message.embeds[0]
         embed.title = "✅ Question Approved!"
@@ -572,6 +573,106 @@ class QuestionOfTheDay(commands.Cog):
         """Sets the channel where new question suggestions are posted for approval."""
         await self.config.approval_channel.set(channel.id)
         await ctx.send(f"Approval channel set to {channel.mention}.")
+        
+    @qotd.group(name="suggest")
+    async def qotd_suggest_admin(self, ctx: commands.Context):
+        """Admin commands for managing pending question suggestions."""
+        pass
+
+    @qotd_suggest_admin.command(name="list")
+    async def qotd_suggest_list(self, ctx: commands.Context):
+        """Lists all pending question suggestions."""
+        all_questions = await self.config.questions()
+        pending_questions = {
+            qid: QuestionData.model_validate(qdict)
+            for qid, qdict in all_questions.items()
+            if qdict.get('list_id') == 'suggestions' and qdict.get('status') == 'pending'
+        }
+
+        if not pending_questions:
+            return await ctx.send("There are currently no pending question suggestions.")
+
+        message = bold("Pending Question Suggestions:\n")
+        
+        # Sort by oldest first
+        sorted_pending = sorted(pending_questions.items(), key=lambda item: item[1].added_on)
+
+        for qid, q_obj in sorted_pending:
+            suggested_by_id = q_obj.suggested_by
+            suggested_by_str = f"User ID: {suggested_by_id}"
+            
+            # Try to fetch the user
+            if suggested_by_id:
+                user = self.bot.get_user(suggested_by_id)
+                if user:
+                    suggested_by_str = user.display_name
+            
+            # Shorten QID for readability
+            short_qid = qid.split('-')[0]
+            
+            question_text = q_obj.question
+            if len(question_text) > 100:
+                question_text = question_text[:97] + "..."
+
+            message += f"**ID:** `{short_qid}` (by {suggested_by_str})\n"
+            message += f"**Q:** {question_text}\n"
+
+        # Note: If the list is very long, this might exceed Discord's message limit. 
+        # For simplicity, we just box the output for now.
+        if len(message) > 2000:
+             return await ctx.send(box("Too many suggestions to display in one message.", lang="text"))
+             
+        await ctx.send(box(message, lang="text"))
+        await ctx.send(f"Use `[p]qotd suggest approve <short_id> <list_id>` or `[p]qotd suggest delete <short_id>` to process.")
+
+
+    @qotd_suggest_admin.command(name="approve")
+    async def qotd_suggest_approve(self, ctx: commands.Context, short_qid: str, list_id: str):
+        """Approves a pending question and moves it to a specified list."""
+        all_questions = await self.config.questions()
+        lists_data = await self.config.lists()
+
+        # 1. Find the full QID using the short ID
+        full_qid = next((qid for qid in all_questions if qid.startswith(short_qid) and all_questions[qid].get('list_id') == 'suggestions' and all_questions[qid].get('status') == 'pending'), None)
+
+        if not full_qid:
+            return await ctx.send(warning(f"No pending suggestion found with short ID `{short_qid}`."))
+            
+        if list_id not in lists_data or list_id == 'suggestions':
+            return await ctx.send(warning(f"List ID `{list_id}` is invalid. Cannot approve into that list."))
+            
+        try:
+            question_data = QuestionData.model_validate(all_questions[full_qid])
+        except ValidationError:
+            return await ctx.send(warning(f"Question data for `{short_qid}` is corrupt."))
+            
+        # 2. Update the question
+        question_data.list_id = list_id
+        question_data.status = "not asked"
+        question_data.added_on = datetime.now(timezone.utc) # Refresh date on approval
+
+        await self.update_question_data(full_qid, question_data)
+
+        list_name = lists_data[list_id]['name']
+        await ctx.send(f"✅ Approved suggestion `{short_qid}` and moved it to the **{list_name}** list.")
+
+
+    @qotd_suggest_admin.command(name="delete")
+    async def qotd_suggest_delete(self, ctx: commands.Context, short_qid: str):
+        """Deletes a pending question suggestion."""
+        all_questions = await self.config.questions()
+
+        # 1. Find the full QID using the short ID
+        full_qid = next((qid for qid in all_questions if qid.startswith(short_qid) and all_questions[qid].get('list_id') == 'suggestions' and all_questions[qid].get('status') == 'pending'), None)
+
+        if not full_qid:
+            return await ctx.send(warning(f"No pending suggestion found with short ID `{short_qid}`."))
+
+        # 2. Delete the question
+        await self.delete_question_by_id(full_qid)
+
+        await ctx.send(f"❌ Deleted pending suggestion with ID `{short_qid}`.")
+
 
     @qotd.group(name="list")
     async def qotd_list_management(self, ctx: commands.Context):
