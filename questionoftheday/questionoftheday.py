@@ -4,8 +4,8 @@ import logging
 import random
 import uuid
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Dict, List, Literal, Optional, Set, Union
+from pathlib import Path
 
 import discord
 from discord.ext import tasks 
@@ -632,7 +632,7 @@ class QuestionOfTheDay(commands.Cog):
         pass
 
     @qotd_schedule_management.command(name="add")
-    async def qotd_schedule_add(self, ctx: commands.Context, list_id: str, channel: discord.TextChannel, frequency: str):
+    async def qotd_schedule_add(self, ctx: commands.Context, list_id: str, channel: discord.TextChannel, *, frequency: str):
         """
         Adds a new schedule.
         
@@ -654,7 +654,8 @@ class QuestionOfTheDay(commands.Cog):
             unit = time_unit[1].lower().rstrip('s')
             if unit not in ('minute', 'hour', 'day', 'week'): raise ValueError
         except (ValueError, IndexError):
-            return await ctx.send(warning("Invalid frequency format. Must be like '1 day', '3 hours', or '30 minutes'."))
+            # This is the exact error message the user saw.
+            return await ctx.send(warning("Invalid frequency format. Must be like '1 day', '3 hours', or '30 minutes'. **Ensure the unit is separated by one space.**"))
 
         new_schedule = Schedule(
             id=schedule_id, 
