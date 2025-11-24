@@ -1157,7 +1157,8 @@ class QuestionOfTheDay(commands.Cog):
         """
         Imports questions from an attached JSON file into a specific question list.
         
-        The file should be attached to the command message.
+        The file should be attached to the command message. It supports the new export format 
+        which preserves `suggested_by_id` and `added_on` date.
         """
         if not ctx.message.attachments:
             return await ctx.send(warning("Please attach a JSON file containing the questions."))
@@ -1183,7 +1184,7 @@ class QuestionOfTheDay(commands.Cog):
         imported_count = 0
         skipped_count = 0
         
-        # Keys to ignore based on user request
+        # Keys to ignore based on user request (e.g., file header identifiers)
         IGNORED_KEYS = ["2s5qal", "e8auv2"]
         
         async with self.config.questions() as global_questions:
@@ -1195,27 +1196,52 @@ class QuestionOfTheDay(commands.Cog):
                 
                 question_text = None
                 
-                # Check for "question" key
+                # 1. Look for the "question" key (preferred format, used by export)
                 if "question" in item and isinstance(item["question"], str):
                     question_text = item["question"]
                 else:
-                    # Fallback for old/unstructured format (like the one user described)
+                    # 2. Fallback for old/unstructured format
                     for key, value in item.items():
                         if key not in IGNORED_KEYS and isinstance(value, str):
                             question_text = value
-                            break # Use the first valid key/value found
+                            break 
                             
                 if not question_text:
                     skipped_count += 1
                     continue
                 
-                # Create a new QuestionData object
+                # --- NEW: Preserve Suggested By ID ---
+                imported_suggested_by_id = item.get("suggested_by_id")
+                suggested_by_id = None
+                if isinstance(imported_suggested_by_id, int):
+                    # Use the imported ID if it's a valid integer
+                    suggested_by_id = imported_suggested_by_id
+                
+                # Fallback: If no valid ID is imported, use the importer's ID
+                if suggested_by_id is None:
+                    suggested_by_id = ctx.author.id
+
+                # --- NEW: Preserve Added On Date ---
+                imported_added_on = item.get("added_on")
+                added_on = datetime.now(timezone.utc)
+                if isinstance(imported_added_on, str):
+                    try:
+                        # Attempt to parse the ISO format string
+                        dt = datetime.fromisoformat(imported_added_on)
+                        # Ensure timezone awareness for the imported date
+                        added_on = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+                    except ValueError:
+                        # If parsing fails, use the current time
+                        log.warning(f"Could not parse 'added_on' date for imported question: {imported_added_on}. Using current time.")
+
+                
+                # 3. Create a new QuestionData object
                 new_q = QuestionData(
                     question=question_text,
-                    suggested_by=ctx.author.id,
+                    suggested_by=suggested_by_id, # Uses imported ID or importer's ID
                     list_id=list_id,
                     status="not asked",
-                    added_on=datetime.now(timezone.utc),
+                    added_on=added_on,           # Uses imported date or current time
                 )
                 
                 # CRITICAL: Double serialize to guarantee no datetime objects remain.
@@ -1224,7 +1250,7 @@ class QuestionOfTheDay(commands.Cog):
                 global_questions[str(uuid.uuid4())] = serialized_q
                 imported_count += 1
 
-        await ctx.send(f"Import complete. Imported **{imported_count}** questions into list **{lists_data[list_id]['name']}**. Skipped {skipped_count} items (including file header identifiers).")
+        await ctx.send(f"Import complete. Imported **{imported_count}** questions into list **{lists_data[list_id]['name']}**. Skipped {skipped_count} items (including file header identifiers).\n\nQuestions now preserve the `suggested_by_id` and `added_on` date from the imported file.")
 
     @qotd.command(name="export")
     async def qotd_export(self, ctx: commands.Context, list_id: str):
