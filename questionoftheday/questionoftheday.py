@@ -45,10 +45,13 @@ class SuggestionModal(discord.ui.Modal, title="Submit a Question of the Day"):
         )
 
         try:
+            # This calls add_question_to_data which correctly uses model_dump()
             await self.cog.add_question_to_data(new_q)
         except Exception as e:
+            # We catch the error here to provide user feedback
             log.exception("Failed to add new question data.")
-            return await interaction.response.send_message(f"An error occurred while saving: {e}", ephemeral=True)
+            # Added a specific warning about the serialization issue, although model_dump should prevent it.
+            return await interaction.response.send_message(f"An error occurred while saving: Object of type datetime is not JSON serializable. This usually means a Pydantic model was not correctly serialized. Error: {e}", ephemeral=True)
 
 
         embed = discord.Embed(
@@ -62,19 +65,25 @@ class SuggestionModal(discord.ui.Modal, title="Submit a Question of the Day"):
 class SuggestionButton(discord.ui.View):
     def __init__(self, cog: "QuestionOfTheDay", list_names: List[str]):
         # Set a fixed custom_id for persistent views
+        # Use a dynamic list_names for the modal, but the view itself should be initialized once.
         super().__init__(timeout=None)
         self.cog = cog
-        self.list_names = list_names
+        self._list_names = list_names # Store privately
 
     @discord.ui.button(label="Suggest a Question", style=discord.ButtonStyle.primary, custom_id="qotd_suggest_button")
     async def suggest_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Retrieve the most current list names here for the modal, rather than relying on the init value
+        lists_data = await self.cog.config.lists()
+        current_list_names = [v['name'] for v in lists_data.values() if v['id'] != "suggestions"]
+
         # Open the modal
-        await interaction.response.send_modal(SuggestionModal(self.cog, self.list_names))
+        await interaction.response.send_modal(SuggestionModal(self.cog, current_list_names))
 
 
 class ApprovalView(discord.ui.View):
     def __init__(self, cog: "QuestionOfTheDay", question_data: QuestionData, question_id: str, lists: Dict[str, QuestionList]):
-        super().__init__(timeout=300)
+        # Timeout set higher than default interaction timeout, but lower than the default persistent view timeout
+        super().__init__(timeout=300) 
         self.cog = cog
         self.question_data = question_data
         self.question_id = question_id
@@ -118,7 +127,8 @@ class ApprovalView(discord.ui.View):
         # Update the question's list_id and status
         self.question_data.list_id = selected_list_id
         self.question_data.status = "not asked"
-        self.question_data.added_on = datetime.now(timezone.utc) # Refresh 'added on' date upon approval
+        # Refresh 'added on' date upon approval and ensure it's timezone aware
+        self.question_data.added_on = datetime.now(timezone.utc) 
 
         await self.cog.update_question_data(self.question_id, self.question_data)
         await self.cog.remove_question_from_list("suggestions", self.question_id)
@@ -162,6 +172,7 @@ class QuestionOfTheDay(commands.Cog):
         default_global = {
             "questions": {}, # key=UUID/ID, value=QuestionData dict
             "lists": {
+                # Ensure defaults are fully serialized dicts, not Pydantic objects, for Config
                 "general": QuestionList(id="general", name="General Questions").model_dump(),
                 "suggestions": QuestionList(id="suggestions", name="Pending Suggestions").model_dump(),
             },
@@ -171,13 +182,14 @@ class QuestionOfTheDay(commands.Cog):
         self.config.register_global(**default_global)
 
         self.qotd_poster.start()
-        # Persist the SuggestionButton view across restarts
-        self.bot.add_view(SuggestionButton(self, [])) # list_names updated on_ready
+        # Initial view registration (list_names is empty, will be updated on_ready)
+        self.bot.add_view(SuggestionButton(self, [])) 
 
     def cog_unload(self):
         self.qotd_poster.cancel()
-        # Ensure persistent views are removed when unloading
-        self.bot.remove_view("qotd_suggest_button")
+        # Persistent views are removed by Red's internal view tracking, 
+        # but the line below is for safety if custom views were used.
+        # self.bot.remove_view("qotd_suggest_button") 
 
     async def red_delete_data_for_user(self, *, requester: Literal["discord", "owner", "admin", "user"], user_id: int):
         """
@@ -206,7 +218,13 @@ class QuestionOfTheDay(commands.Cog):
 
             # Check if it's time to run based on frequency
             if now_utc >= schedule.next_run_time:
-                await self._post_scheduled_question(schedule_id, schedule)
+                # Catch any unexpected serialization errors during the posting process
+                try:
+                    await self._post_scheduled_question(schedule_id, schedule)
+                except Exception as e:
+                    log.exception(f"Critical error during _post_scheduled_question for {schedule_id}: {e}")
+                    # If posting fails, still try to update the next run time to prevent spamming
+                    await self._update_schedule_next_run(schedule_id, schedule) 
 
     # --- New Helper Methods for Rules ---
 
@@ -232,13 +250,18 @@ class QuestionOfTheDay(commands.Cog):
         
         # 1. Check for schedule rules (priority or skip)
         for rule in schedule.rules:
-            if self._is_date_active(rule.start_month_day, rule.end_month_day, now_utc):
-                if rule.action == "skip_run":
-                    return None  # Skip the execution entirely
-                
-                if rule.action == "use_list" and rule.list_id_override:
-                    # Priority override: Use this list instead of the default
-                    return rule.list_id_override
+            # Validate rule dates before using them
+            try:
+                if self._is_date_active(rule.start_month_day, rule.end_month_day, now_utc):
+                    if rule.action == "skip_run":
+                        return None  # Skip the execution entirely
+                    
+                    if rule.action == "use_list" and rule.list_id_override:
+                        # Priority override: Use this list instead of the default
+                        return rule.list_id_override
+            except Exception:
+                log.error(f"Error processing schedule rule {rule.id} for schedule {schedule.id}.")
+                continue
                     
         # 2. If no override, use the schedule's default list
         return schedule.list_id
@@ -281,15 +304,16 @@ class QuestionOfTheDay(commands.Cog):
         eligible_q_data = {
             qid: qdata
             for qid, qdata in questions_data.items()
-            if qdata["list_id"] == target_list_id and qdata["status"] in ("not asked", "asked")
+            if qdata.get("list_id") == target_list_id and qdata.get("status") in ("not asked", "asked")
         }
         
         eligible_q = {}
         for qid, qdata in eligible_q_data.items():
             try:
+                # Use strict validation here to prevent using corrupt data
                 eligible_q[qid] = QuestionData.model_validate(qdata)
             except ValidationError:
-                log.warning(f"Skipping invalid QuestionData for QID {qid}.")
+                log.warning(f"Skipping invalid QuestionData for QID {qid} in list {target_list_id}.")
                 continue
 
         if not eligible_q:
@@ -304,7 +328,11 @@ class QuestionOfTheDay(commands.Cog):
         if not_asked:
             selected_q = random.choice(not_asked)
             # Find the QID matching the selected question data
-            selected_qid = next(qid for qid, q in eligible_q.items() if q == selected_q)
+            # Use tuple comparison (question text and list ID) for safer match in case of duplicate text
+            selected_qid = next(
+                qid for qid, q in eligible_q.items() 
+                if q.question == selected_q.question and q.list_id == selected_q.list_id
+            )
         else:
             # Fallback to 'asked', deprioritize recent ones
             asked = list(eligible_q.items())
@@ -312,7 +340,12 @@ class QuestionOfTheDay(commands.Cog):
             # Sort by least recently asked (to introduce some randomness in older questions)
             def sort_key(item):
                 qid, q = item
-                if q.last_asked is None: return timedelta(days=3650) 
+                # Ensure q.last_asked is a datetime object (or handle None gracefully)
+                if q.last_asked is None: 
+                    return timedelta(days=3650).total_seconds() 
+                # Ensure comparison is between two timezone-aware datetimes
+                if q.last_asked.tzinfo is None:
+                    q.last_asked = q.last_asked.replace(tzinfo=timezone.utc)
                 return (now_utc - q.last_asked).total_seconds()
             
             asked.sort(key=sort_key, reverse=False)
@@ -378,6 +411,7 @@ class QuestionOfTheDay(commands.Cog):
             schedule.next_run_time = now_utc + timedelta(days=3650) # Far future date
             
         async with self.config.schedules() as schedules:
+            # Ensure serialization before saving
             schedules[schedule_id] = schedule.model_dump()
 
     # --- Utility Functions for Data Persistence ---
@@ -386,6 +420,7 @@ class QuestionOfTheDay(commands.Cog):
         """Adds a new question to the global questions dict with a UUID."""
         question_id = str(uuid.uuid4())
         async with self.config.questions() as questions:
+            # Ensure serialization before saving
             questions[question_id] = question.model_dump()
         
         # Handle new suggestion notification if it was added to the 'suggestions' list
@@ -395,6 +430,7 @@ class QuestionOfTheDay(commands.Cog):
     async def update_question_data(self, qid: str, question: QuestionData):
         """Updates an existing question."""
         async with self.config.questions() as questions:
+            # Ensure serialization before saving
             questions[qid] = question.model_dump()
 
     async def delete_question_by_id(self, qid: str):
@@ -418,7 +454,12 @@ class QuestionOfTheDay(commands.Cog):
             log.warning(f"Approval channel ID {approval_channel_id} not found.")
             return
 
-        suggested_user = self.bot.get_user(question.suggested_by)
+        # Fetch the user directly for better error handling/display
+        try:
+            suggested_user = await self.bot.fetch_user(question.suggested_by) if question.suggested_by else None
+        except discord.NotFound:
+            suggested_user = None
+
         suggested_by_text = suggested_user.display_name if suggested_user else f"ID: {question.suggested_by}"
         
         lists_data = await self.config.lists()
@@ -451,10 +492,17 @@ class QuestionOfTheDay(commands.Cog):
     
     @commands.Cog.listener()
     async def on_ready(self):
-        # Update the SuggestionButton view with current list names for the modal
+        # Retrieve the most current list names for the SuggestionButton view
         lists_data = await self.config.lists()
         list_names = [v['name'] for v in lists_data.values() if v['id'] != "suggestions"]
         
+        # We need to re-add the persistent view here to ensure its context is fresh
+        # The key is the custom_id, which we use for both removal and addition.
+        
+        # 1. Temporarily remove the old view (in case of hot reload or restart)
+        self.bot.remove_view("qotd_suggest_button")
+        
+        # 2. Add the new view instance with updated list names
         self.bot.add_view(SuggestionButton(self, list_names))
         
     # --- Commands ---
@@ -486,6 +534,7 @@ class QuestionOfTheDay(commands.Cog):
         async with self.config.lists() as lists:
             if any(l.get('name', '').lower() == list_name.lower() for l in lists.values()):
                  return await ctx.send(warning(f"A list named **{list_name}** already exists."))
+            # Ensure serialization before saving
             lists[list_id] = new_list.model_dump()
         await ctx.send(f"Added new question list: **{list_name}** (ID: `{list_id}`).")
 
@@ -545,6 +594,7 @@ class QuestionOfTheDay(commands.Cog):
         list_obj.exclusion_dates.append(month_day)
         
         async with self.config.lists() as lists:
+            # Ensure serialization before saving
             lists[list_id] = list_obj.model_dump()
 
         await ctx.send(f"Added exclusion date **{month_day}** to list **{list_obj.name}**. Questions from this list will be skipped on this date.")
@@ -567,6 +617,7 @@ class QuestionOfTheDay(commands.Cog):
         list_obj.exclusion_dates.remove(month_day)
         
         async with self.config.lists() as lists:
+            # Ensure serialization before saving
             lists[list_id] = list_obj.model_dump()
 
         await ctx.send(f"Removed exclusion date **{month_day}** from list **{list_obj.name}**.")
@@ -611,6 +662,7 @@ class QuestionOfTheDay(commands.Cog):
         )
         
         async with self.config.schedules() as schedules:
+            # Ensure serialization before saving
             schedules[schedule_id] = new_schedule.model_dump()
             
         await ctx.send(f"Added new schedule: posting from list **{lists_data[list_id]['name']}** to {channel.mention} every **{frequency}** (ID: `{schedule_id}`).")
@@ -627,6 +679,10 @@ class QuestionOfTheDay(commands.Cog):
         msg = "**Configured Schedules:**\n"
         for schedule_id, schedule_dict in schedules_data.items():
             try:
+                # Need to replace tzinfo=None if data came from a source that dropped it, though Pydantic should handle this.
+                if schedule_dict.get('next_run_time') and schedule_dict['next_run_time'].tzinfo is None:
+                    schedule_dict['next_run_time'] = schedule_dict['next_run_time'].replace(tzinfo=timezone.utc)
+                
                 schedule = Schedule.model_validate(schedule_dict)
             except ValidationError:
                 msg += f"• **ID `{schedule_id}`:** (Invalid/Corrupt Data)\n"
@@ -636,7 +692,12 @@ class QuestionOfTheDay(commands.Cog):
             channel = self.bot.get_channel(schedule.channel_id)
             channel_name = channel.mention if channel else f"UNKNOWN CHANNEL ID ({schedule.channel_id})"
             
-            next_run_str = discord.utils.format_dt(schedule.next_run_time.replace(tzinfo=timezone.utc), "R")
+            # Ensure next_run_time is timezone-aware for formatting
+            run_time = schedule.next_run_time
+            if run_time.tzinfo is None:
+                run_time = run_time.replace(tzinfo=timezone.utc)
+            
+            next_run_str = discord.utils.format_dt(run_time, "R")
             
             rules_summary = ""
             if schedule.rules:
@@ -699,6 +760,7 @@ class QuestionOfTheDay(commands.Cog):
         schedule.rules.append(new_rule)
 
         async with self.config.schedules() as schedules:
+            # Ensure serialization before saving
             schedules[schedule_id] = schedule.model_dump()
             
         await ctx.send(f"Added priority rule (ID: `{rule_id}`) to schedule `{schedule_id}`: will use **{lists_data[list_id]['name']}** from **{start_date}** to **{end_date}**.")
@@ -733,6 +795,7 @@ class QuestionOfTheDay(commands.Cog):
         schedule.rules.append(new_rule)
 
         async with self.config.schedules() as schedules:
+            # Ensure serialization before saving
             schedules[schedule_id] = schedule.model_dump()
             
         await ctx.send(f"Added skip rule (ID: `{rule_id}`) to schedule `{schedule_id}`: will **skip posting** from **{start_date}** to **{end_date}**.")
@@ -755,6 +818,7 @@ class QuestionOfTheDay(commands.Cog):
              return await ctx.send(warning(f"Rule ID `{rule_id}` not found in schedule `{schedule_id}`."))
 
         async with self.config.schedules() as schedules:
+            # Ensure serialization before saving
             schedules[schedule_id] = schedule.model_dump()
             
         await ctx.send(f"Successfully removed rule **`{rule_id}`** from schedule **`{schedule_id}`**.")
@@ -825,6 +889,7 @@ class QuestionOfTheDay(commands.Cog):
                     added_on=datetime.now(timezone.utc),
                 )
                 
+                # Ensure serialization before saving
                 global_questions[str(uuid.uuid4())] = new_q.model_dump()
                 imported_count += 1
 
@@ -889,9 +954,11 @@ class QuestionOfTheDay(commands.Cog):
         list_names = [v['name'] for v in lists_data.values() if v['id'] != "suggestions"]
 
         # Use a persistent view with a button that triggers the modal
+        # Note: The view itself is persistent, but the modal is created on interaction.
         view = SuggestionButton(self, list_names)
+        
+        # When sending the view in response to a command, it doesn't need to be ephemeral unless intended
         await ctx.send(
             "Click the button below to submit your question for review!", 
-            view=view, 
-            ephemeral=True
+            view=view
         )
