@@ -1,5 +1,5 @@
 import asyncio
-import json
+import json # Ensure json is imported for the double-serialization fix
 import logging
 import random
 import uuid
@@ -40,17 +40,18 @@ class SuggestionModal(discord.ui.Modal, title="Submit a Question of the Day"):
             question=str(self.question_text),
             suggested_by=interaction.user.id,
             list_id="suggestions", # Temp list for approval
-            status="pending",
             added_on=datetime.now(timezone.utc),
+            status="pending",
         )
 
         try:
-            # This calls add_question_to_data, which now forces pre-serialization.
+            # This calls add_question_to_data, which now uses the guaranteed serialization method
             await self.cog.add_question_to_data(new_q)
         except Exception as e:
-            # We catch the error here to provide user feedback
+            # Catch the error here for immediate user feedback
             log.exception("Failed to add new question data.")
-            # Added a specific warning about the serialization issue, although model_dump should prevent it.
+            # Note: This specific warning might still show if the serialization fails at a deeper level, 
+            # but the code should now prevent it.
             return await interaction.response.send_message(f"An error occurred while saving: Object of type datetime is not JSON serializable. This usually means a Pydantic model was not correctly serialized. Error: {e}", ephemeral=True)
 
 
@@ -65,7 +66,6 @@ class SuggestionModal(discord.ui.Modal, title="Submit a Question of the Day"):
 class SuggestionButton(discord.ui.View):
     def __init__(self, cog: "QuestionOfTheDay", list_names: List[str]):
         # Set a fixed custom_id for persistent views
-        # Use a dynamic list_names for the modal, but the view itself should be initialized once.
         super().__init__(timeout=None)
         self.cog = cog
         self._list_names = list_names # Store privately
@@ -187,9 +187,7 @@ class QuestionOfTheDay(commands.Cog):
 
     def cog_unload(self):
         self.qotd_poster.cancel()
-        # Persistent views are removed by Red's internal view tracking, 
-        # but the line below is for safety if custom views were used.
-        # self.bot.remove_view("qotd_suggest_button") 
+        self.bot.remove_view("qotd_suggest_button") 
 
     async def red_delete_data_for_user(self, *, requester: Literal["discord", "owner", "admin", "user"], user_id: int):
         """
@@ -414,9 +412,11 @@ class QuestionOfTheDay(commands.Cog):
             log.error(f"Invalid frequency format '{schedule.frequency}' for schedule {schedule_id}. Disabling schedule.")
             schedule.next_run_time = now_utc + timedelta(days=3650) # Far future date
             
+        # FIX: Double serialize to guarantee only JSON primitives (strings for datetime) are saved
+        serialized_schedule = json.loads(schedule.model_dump_json())
+            
         async with self.config.schedules() as schedules:
-            # Ensure serialization before saving
-            schedules[schedule_id] = schedule.model_dump()
+            schedules[schedule_id] = serialized_schedule
 
     # --- Utility Functions for Data Persistence ---
 
@@ -424,9 +424,8 @@ class QuestionOfTheDay(commands.Cog):
         """Adds a new question to the global questions dict with a UUID."""
         question_id = str(uuid.uuid4())
         
-        # CRITICAL FIX: Explicitly serialize the Pydantic object to a dictionary 
-        # *outside* the config context to avoid any conflicts with Red's JSON handling.
-        serialized_q = question.model_dump() 
+        # CRITICAL FIX: Double serialization to guarantee no datetime objects remain.
+        serialized_q = json.loads(question.model_dump_json())
         
         async with self.config.questions() as questions:
             questions[question_id] = serialized_q
@@ -437,8 +436,8 @@ class QuestionOfTheDay(commands.Cog):
 
     async def update_question_data(self, qid: str, question: QuestionData):
         """Updates an existing question."""
-        # CRITICAL FIX: Explicitly serialize before the config context manager.
-        serialized_q = question.model_dump()
+        # CRITICAL FIX: Double serialization to guarantee no datetime objects remain.
+        serialized_q = json.loads(question.model_dump_json())
         
         async with self.config.questions() as questions:
             questions[qid] = serialized_q
@@ -506,20 +505,14 @@ class QuestionOfTheDay(commands.Cog):
         lists_data = await self.config.lists()
         list_names = [v['name'] for v in lists_data.values() if v['id'] != "suggestions"]
         
-        # We need to re-add the persistent view here to ensure its context is fresh
-        # The key is the custom_id, which we use for both removal and addition.
-        
-        # 1. Temporarily remove the old view (in case of hot reload or restart)
+        # Remove and re-add the persistent view to ensure its context is fresh
         self.bot.remove_view("qotd_suggest_button")
-        
-        # 2. Add the new view instance with updated list names
         self.bot.add_view(SuggestionButton(self, list_names))
         
     # --- Commands ---
 
-    # CORRECTED PERMISSION CHECK ORDER AND DECORATOR
     @commands.guild_only()
-    @commands.admin() # Replaced admin_or_permissions for robustness
+    @commands.admin()
     @commands.group(name="qotd", aliases=["qotdd"])
     async def qotd(self, ctx: commands.Context):
         """Base command for Question of the Day administration."""
@@ -544,8 +537,10 @@ class QuestionOfTheDay(commands.Cog):
         async with self.config.lists() as lists:
             if any(l.get('name', '').lower() == list_name.lower() for l in lists.values()):
                  return await ctx.send(warning(f"A list named **{list_name}** already exists."))
-            # Ensure serialization before saving
-            lists[list_id] = new_list.model_dump()
+            
+            # QuestionList does not contain datetime, but we ensure serialization just in case
+            lists[list_id] = new_list.model_dump() 
+            
         await ctx.send(f"Added new question list: **{list_name}** (ID: `{list_id}`).")
 
     @qotd_list_management.command(name="view")
@@ -604,7 +599,6 @@ class QuestionOfTheDay(commands.Cog):
         list_obj.exclusion_dates.append(month_day)
         
         async with self.config.lists() as lists:
-            # Ensure serialization before saving
             lists[list_id] = list_obj.model_dump()
 
         await ctx.send(f"Added exclusion date **{month_day}** to list **{list_obj.name}**. Questions from this list will be skipped on this date.")
@@ -627,7 +621,6 @@ class QuestionOfTheDay(commands.Cog):
         list_obj.exclusion_dates.remove(month_day)
         
         async with self.config.lists() as lists:
-            # Ensure serialization before saving
             lists[list_id] = list_obj.model_dump()
 
         await ctx.send(f"Removed exclusion date **{month_day}** from list **{list_obj.name}**.")
@@ -671,9 +664,11 @@ class QuestionOfTheDay(commands.Cog):
             next_run_time=datetime.now(timezone.utc) # Start immediately
         )
         
+        # FIX: Double serialize to guarantee only JSON primitives (strings for datetime) are saved
+        serialized_schedule = json.loads(new_schedule.model_dump_json())
+        
         async with self.config.schedules() as schedules:
-            # Ensure serialization before saving
-            schedules[schedule_id] = new_schedule.model_dump()
+            schedules[schedule_id] = serialized_schedule
             
         await ctx.send(f"Added new schedule: posting from list **{lists_data[list_id]['name']}** to {channel.mention} every **{frequency}** (ID: `{schedule_id}`).")
 
@@ -768,10 +763,12 @@ class QuestionOfTheDay(commands.Cog):
 
         schedule = Schedule.model_validate(schedules_data[schedule_id])
         schedule.rules.append(new_rule)
+        
+        # FIX: Double serialize to guarantee only JSON primitives (strings for datetime) are saved
+        serialized_schedule = json.loads(schedule.model_dump_json())
 
         async with self.config.schedules() as schedules:
-            # Ensure serialization before saving
-            schedules[schedule_id] = schedule.model_dump()
+            schedules[schedule_id] = serialized_schedule
             
         await ctx.send(f"Added priority rule (ID: `{rule_id}`) to schedule `{schedule_id}`: will use **{lists_data[list_id]['name']}** from **{start_date}** to **{end_date}**.")
 
@@ -803,10 +800,12 @@ class QuestionOfTheDay(commands.Cog):
 
         schedule = Schedule.model_validate(schedules_data[schedule_id])
         schedule.rules.append(new_rule)
+        
+        # FIX: Double serialize to guarantee only JSON primitives (strings for datetime) are saved
+        serialized_schedule = json.loads(schedule.model_dump_json())
 
         async with self.config.schedules() as schedules:
-            # Ensure serialization before saving
-            schedules[schedule_id] = schedule.model_dump()
+            schedules[schedule_id] = serialized_schedule
             
         await ctx.send(f"Added skip rule (ID: `{rule_id}`) to schedule `{schedule_id}`: will **skip posting** from **{start_date}** to **{end_date}**.")
 
@@ -826,10 +825,12 @@ class QuestionOfTheDay(commands.Cog):
 
         if len(schedule.rules) == initial_length:
              return await ctx.send(warning(f"Rule ID `{rule_id}` not found in schedule `{schedule_id}`."))
+             
+        # FIX: Double serialize to guarantee only JSON primitives (strings for datetime) are saved
+        serialized_schedule = json.loads(schedule.model_dump_json())
 
         async with self.config.schedules() as schedules:
-            # Ensure serialization before saving
-            schedules[schedule_id] = schedule.model_dump()
+            schedules[schedule_id] = serialized_schedule
             
         await ctx.send(f"Successfully removed rule **`{rule_id}`** from schedule **`{schedule_id}`**.")
 
@@ -899,8 +900,10 @@ class QuestionOfTheDay(commands.Cog):
                     added_on=datetime.now(timezone.utc),
                 )
                 
-                # CRITICAL: Serialize before saving
-                global_questions[str(uuid.uuid4())] = new_q.model_dump()
+                # CRITICAL: Double serialize to guarantee no datetime objects remain.
+                serialized_q = json.loads(new_q.model_dump_json())
+                
+                global_questions[str(uuid.uuid4())] = serialized_q
                 imported_count += 1
 
         await ctx.send(f"Import complete. Imported **{imported_count}** questions into list **{lists_data[list_id]['name']}**. Skipped {skipped_count} items (including file header identifiers).")
@@ -964,10 +967,8 @@ class QuestionOfTheDay(commands.Cog):
         list_names = [v['name'] for v in lists_data.values() if v['id'] != "suggestions"]
 
         # Use a persistent view with a button that triggers the modal
-        # Note: The view itself is persistent, but the modal is created on interaction.
         view = SuggestionButton(self, list_names)
         
-        # When sending the view in response to a command, it doesn't need to be ephemeral unless intended
         await ctx.send(
             "Click the button below to submit your question for review!", 
             view=view
