@@ -400,7 +400,7 @@ class Birthday(commands.Cog):
         await ctx.send(f"Simple message set to: {message}")
 
     @bset.command(name="messageordinal")
-    async def bset_message_ordinal(self, ctx, *, message: str):
+    async self.config.user_from_id(uid_int).all() as u_conf:
         """Set the announcement message when the user HAS a birth year. Use {mention} for the user and {ordinal} for age."""
         await self.config.guild(ctx.guild).announce_message_year.set(message)
         await ctx.send(f"Ordinal message set to: {message}")
@@ -414,6 +414,50 @@ class Birthday(commands.Cog):
         else:
             await self.config.guild(ctx.guild).birthday_role.set(None)
             await ctx.send("Birthday role disabled.")
+
+    @bset.command(name="listall")
+    async def bset_listall(self, ctx):
+        """List all stored birthdays and timezones for guild members."""
+        
+        all_users_data = await self.config.all_users()
+        output = []
+        
+        # Header
+        output.append(f"Registered Birthdays for {ctx.guild.name}:\n")
+        output.append("-" * 40)
+        
+        found_count = 0
+        
+        for user_id, u_data in all_users_data.items():
+            if not u_data["month"] or not u_data["day"]:
+                continue
+            
+            member = ctx.guild.get_member(user_id)
+            if not member:
+                continue # Skip users not in this guild
+            
+            found_count += 1
+            
+            # Format Date
+            date_str = f"{u_data['month']}/{u_data['day']}"
+            if u_data['year']:
+                date_str += f"/{u_data['year']}"
+            
+            # Format Output Line
+            tz_str = u_data.get('timezone', 'UTC')
+            line = f"{member.display_name} (ID: {user_id}): {date_str} | TZ: {tz_str}"
+            output.append(line)
+
+        if not found_count:
+            return await ctx.send("No birthdays are currently registered for members in this guild.")
+            
+        output.append("-" * 40)
+        output.append(f"Total registered members: {found_count}")
+
+        # Use pagify for potentially long output
+        output_text = "\n".join(output)
+        for page in pagify(output_text, delims=["\n"], page_length=1900):
+            await ctx.send(box(page))
 
     @bset.command(name="import")
     async def bset_import(self, ctx):
