@@ -9,7 +9,7 @@ from pathlib import Path
 
 import discord
 from discord.ext import tasks 
-from redbot.core import commands, Config, app_commands, bank # ADDED: bank import
+from redbot.core import commands, Config, app_commands, bank # CRITICAL: bank import is here
 from redbot.core.bot import Red
 from redbot.core.data_manager import cog_data_path
 from redbot.core.utils.chat_formatting import humanize_list, box, bold, warning, error, info, success
@@ -82,14 +82,14 @@ class SuggestionModal(discord.ui.Modal, title="Submit a Question of the Day"):
         try:
             await self.cog.add_question_to_data(new_q)
             
-            # --- NEW: Grant suggestion credits ---
+            # --- Grant suggestion credits ---
             credits = await self.cog.config.suggestion_credit_amount()
             if credits > 0:
                 reason = "Question of the Day suggestion"
                 await self.cog._try_grant_credits(interaction.user.id, credits, reason, interaction.guild)
                 currency_name = await bank.get_currency_name(interaction.guild)
                 credit_msg = f"\n\n**+ {credits}** {currency_name} credited for your suggestion!"
-            # --- END NEW ---
+            # --- END Grant suggestion credits ---
 
         except Exception as e:
             log.exception("Failed to add new question data or grant credits.")
@@ -163,12 +163,12 @@ class ApprovalView(discord.ui.View):
 
         await self.cog.update_question_data(self.question_id, self.question_data)
         
-        # --- NEW: Grant approval credits ---
+        # --- Grant approval credits ---
         credits = await self.cog.config.approval_credit_amount()
         if credits > 0 and self.question_data.suggested_by:
             reason = "Question of the Day approval"
             await self.cog._try_grant_credits(self.question_data.suggested_by, credits, reason, interaction.guild)
-        # --- END NEW ---
+        # --- END Grant approval credits ---
         
         embed = interaction.message.embeds[0]
         embed.title = "✅ Question Approved!"
@@ -208,12 +208,12 @@ class QuestionOfTheDay(commands.Cog):
             "lists": {
                 "general": QuestionList(id="general", name="General Questions").model_dump(),
                 "suggestions": QuestionList(id="suggestions", name="Pending Suggestions").model_dump(),
-                "unassigned": QuestionList(id="unassigned", name="Unassigned").model_dump(), # ADDED: Unassigned list
+                "unassigned": QuestionList(id="unassigned", name="Unassigned").model_dump(),
             },
             "schedules": {}, 
             "approval_channel": None,
-            "suggestion_credit_amount": 0, # NEW: Credits granted on suggestion
-            "approval_credit_amount": 0,   # NEW: Credits granted on approval
+            "suggestion_credit_amount": 0,
+            "approval_credit_amount": 0,
         }
         self.config.register_global(**default_global)
         self.qotd_poster.start()
@@ -231,14 +231,14 @@ class QuestionOfTheDay(commands.Cog):
             for key in keys_to_delete:
                 del questions[key]
 
-    # --- Banking Helper ---
+    # --- Banking Helper (Crucial for credit granting) ---
     async def _try_grant_credits(self, user_id: int, amount: int, reason: str, guild: Optional[discord.Guild]):
-        """Helper to safely grant credits."""
+        """Helper to safely grant credits using Red's bank."""
         if amount <= 0:
+            log.debug(f"Skipping credit grant for {user_id} - amount is 0 or less.")
             return
         
         # Determine the scope (guild for local bank, None for global bank)
-        # Bank API requires a scope check if not global. We pass the guild context here.
         scope = None
         if not await bank.is_global():
             if guild is None:
@@ -247,6 +247,11 @@ class QuestionOfTheDay(commands.Cog):
             scope = guild
         
         try:
+            # Check if the bank is enabled for the current scope
+            if not await bank.is_enabled(scope):
+                 log.info(f"Bank is disabled in scope {scope}. Skipping credit grant.")
+                 return
+                 
             await bank.deposit_credits(user_id, amount, scope=scope)
             log.info(f"Granted {amount} credits to {user_id} for '{reason}' in scope {scope}.")
         except Exception as e:
@@ -680,12 +685,12 @@ class QuestionOfTheDay(commands.Cog):
         question_data.added_on = datetime.now(timezone.utc) 
         await self.update_question_data(full_qid, question_data)
         
-        # --- NEW: Grant approval credits ---
+        # --- Grant approval credits ---
         credits = await self.config.approval_credit_amount()
         if credits > 0 and question_data.suggested_by:
             reason = "Question of the Day approval"
             await self._try_grant_credits(question_data.suggested_by, credits, reason, ctx.guild)
-        # --- END NEW ---
+        # --- END Grant approval credits ---
         
         list_name = lists_data[list_id]['name']
         await ctx.send(f"✅ Approved suggestion `{short_qid}` and moved it to the **{list_name}** list.")
@@ -1027,8 +1032,7 @@ class QuestionOfTheDay(commands.Cog):
     async def qotd_schedule_add(self, ctx: commands.Context, list_id: str, channel: discord.TextChannel, frequency: str, post_time: Optional[str] = None):
         """Adds a new schedule."""
         lists_data = await self.config.lists()
-        if list_id not in lists_data:
-            return await ctx.send(warning(f"List ID `{list_id}` not found."))
+        if list_id not in lists_data: return await ctx.send(warning(f"List ID `{list_id}` not found."))
         schedule_id = str(uuid.uuid4()).split('-')[0]
         now_utc = datetime.now(timezone.utc)
         try:
@@ -1052,8 +1056,7 @@ class QuestionOfTheDay(commands.Cog):
     async def qotd_schedule_remove(self, ctx: commands.Context, schedule_id: str):
         """Removes a schedule."""
         schedules_data = await self.config.schedules()
-        if schedule_id not in schedules_data:
-            return await ctx.send(warning(f"Schedule ID `{schedule_id}` not found."))
+        if schedule_id not in schedules_data: return await ctx.send(warning(f"Schedule ID `{schedule_id}` not found."))
         async with self.config.schedules() as schedules:
             del schedules[schedule_id]
         await ctx.send(f"Successfully removed schedule **`{schedule_id}`**.")
