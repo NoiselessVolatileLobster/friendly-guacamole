@@ -233,33 +233,22 @@ class QuestionOfTheDay(commands.Cog):
 
     # --- Banking Helper (Crucial for credit granting) ---
     async def _try_grant_credits(self, user_id: int, amount: int, reason: str, guild: Optional[discord.Guild]):
-        """Helper to safely grant credits using Red's bank."""
+        """Helper to safely grant credits using Red's bank. Optimized for Red V3.5.x."""
         if amount <= 0:
             log.debug(f"Skipping credit grant for {user_id} - amount is 0 or less.")
             return
-        
-        # Determine the scope (guild for local bank, None for global bank)
-        scope = None
-        # Check if the bank is global first
-        try:
-             is_global = await bank.is_global()
-        except AttributeError:
-             # Red 3.5.22 might not have bank.is_global, assume local for safety if in guild context
-             is_global = False # We default to local logic below if global check fails
-             
-        if not is_global:
-            if guild is None:
-                log.warning(f"Bank credits not granted to {user_id} for '{reason}': Guild is required for local bank.")
-                return
-            scope = guild
+
+        # NOTE: For Red V3.5.x compatibility, we must remove the 'scope' argument,
+        # as it was introduced in later versions and causes 'unexpected keyword argument' error.
+        # The deposit function in 3.5 will implicitly use the current bank setup (global or local).
+        # We also removed bank.is_global() check as it may not exist in 3.5.x.
         
         try:
-            # We are removing the bank.is_enabled() check (missing in 3.5.x)
-            # and letting deposit_credits handle any configuration errors.
-            await bank.deposit_credits(user_id, amount, scope=scope)
-            log.info(f"Granted {amount} credits to {user_id} for '{reason}' in scope {scope}.")
+            # Attempt to deposit credits without the 'scope' keyword
+            await bank.deposit_credits(user_id, amount) 
+            log.info(f"Granted {amount} credits to {user_id} for '{reason}'.")
         except Exception as e:
-            # This catches the original error and potential errors if the bank is not configured/enabled.
+            # This catches potential errors if the bank is not configured/enabled or other Red-specific issues.
             log.error(f"Failed to grant credits to {user_id} for '{reason}': {e}")
             
     # --- Loop ---
