@@ -16,7 +16,7 @@ from redbot.core.utils.chat_formatting import humanize_list, box, bold, warning,
 from red_commons.logging import getLogger
 from pydantic import BaseModel, Field, ValidationError
 
-# --- Pydantic Models ---
+# --- Pydantic Models (Defining here for self-contained structure as requested) ---
 
 class ScheduleRule(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()).split('-')[0])
