@@ -86,6 +86,7 @@ class SuggestionModal(discord.ui.Modal, title="Submit a Question of the Day"):
             credits = await self.cog.config.suggestion_credit_amount()
             if credits > 0:
                 reason = "Question of the Day suggestion"
+                # Pass interaction.guild for bank context
                 await self.cog._try_grant_credits(interaction.user.id, credits, reason, interaction.guild)
                 currency_name = await bank.get_currency_name(interaction.guild)
                 credit_msg = f"\n\n**+ {credits}** {currency_name} credited for your suggestion!"
@@ -167,6 +168,7 @@ class ApprovalView(discord.ui.View):
         credits = await self.cog.config.approval_credit_amount()
         if credits > 0 and self.question_data.suggested_by:
             reason = "Question of the Day approval"
+            # Pass interaction.guild for bank context
             await self.cog._try_grant_credits(self.question_data.suggested_by, credits, reason, interaction.guild)
         # --- END Grant approval credits ---
         
@@ -233,19 +235,28 @@ class QuestionOfTheDay(commands.Cog):
 
     # --- Banking Helper (Crucial for credit granting) ---
     async def _try_grant_credits(self, user_id: int, amount: int, reason: str, guild: Optional[discord.Guild]):
-        """Helper to safely grant credits using Red's bank. Optimized for Red V3.5.x."""
+        """
+        Helper to safely grant credits using Red's bank. Optimized for Red V3.5.x.
+        
+        This version addresses the 'int' object has no attribute 'guild' error by 
+        explicitly passing the 'guild' object as a keyword argument to the bank API.
+        """
         if amount <= 0:
             log.debug(f"Skipping credit grant for {user_id} - amount is 0 or less.")
             return
 
-        # NOTE: For Red V3.5.x compatibility, we must remove the 'scope' argument,
-        # as it was introduced in later versions and causes 'unexpected keyword argument' error.
-        # The deposit function in 3.5 will implicitly use the current bank setup (global or local).
-        # We also removed bank.is_global() check as it may not exist in 3.5.x.
+        bank_kwargs = {}
+        # Explicitly pass guild as a keyword argument if it exists. 
+        # This addresses the 'int' object has no attribute 'guild' error by 
+        # ensuring the bank API receives the guild context correctly for local banks.
+        if guild:
+            bank_kwargs['guild'] = guild 
+
+        # NOTE: We do NOT pass 'scope' to maintain compatibility with Red V3.5.x (3.5.22)
         
         try:
-            # Attempt to deposit credits without the 'scope' keyword
-            await bank.deposit_credits(user_id, amount) 
+            # Attempt to deposit credits using the constructed keyword arguments
+            await bank.deposit_credits(user_id, amount, **bank_kwargs) 
             log.info(f"Granted {amount} credits to {user_id} for '{reason}'.")
         except Exception as e:
             # This catches potential errors if the bank is not configured/enabled or other Red-specific issues.
@@ -683,6 +694,7 @@ class QuestionOfTheDay(commands.Cog):
         credits = await self.config.approval_credit_amount()
         if credits > 0 and question_data.suggested_by:
             reason = "Question of the Day approval"
+            # Pass ctx.guild for bank context
             await self._try_grant_credits(question_data.suggested_by, credits, reason, ctx.guild)
         # --- END Grant approval credits ---
         
