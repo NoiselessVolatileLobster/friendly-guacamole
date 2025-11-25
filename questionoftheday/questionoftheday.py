@@ -9,7 +9,7 @@ from pathlib import Path
 
 import discord
 from discord.ext import tasks 
-from redbot.core import commands, Config, app_commands 
+from redbot.core import commands, Config, app_commands, bank # ADDED: bank import
 from redbot.core.bot import Red
 from redbot.core.data_manager import cog_data_path
 from redbot.core.utils.chat_formatting import humanize_list, box, bold, warning, error, info, success
@@ -68,25 +68,39 @@ class SuggestionModal(discord.ui.Modal, title="Submit a Question of the Day"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True, ephemeral=True)
+        
         new_q = QuestionData(
             question=str(self.question_text),
             suggested_by=interaction.user.id,
             list_id="suggestions", 
             status="pending",
         )
-
+        
+        credit_msg = ""
+        
         try:
             await self.cog.add_question_to_data(new_q)
+            
+            # --- NEW: Grant suggestion credits ---
+            credits = await self.cog.config.suggestion_credit_amount()
+            if credits > 0:
+                reason = "Question of the Day suggestion"
+                await self.cog._try_grant_credits(interaction.user.id, credits, reason, interaction.guild)
+                currency_name = await bank.get_currency_name(interaction.guild)
+                credit_msg = f"\n\n**+ {credits}** {currency_name} credited for your suggestion!"
+            # --- END NEW ---
+
         except Exception as e:
-            log.exception("Failed to add new question data.")
-            return await interaction.response.send_message(f"Error saving question: {e}", ephemeral=True)
+            log.exception("Failed to add new question data or grant credits.")
+            return await interaction.followup.send(f"Error saving question: {e}", ephemeral=True)
 
         embed = discord.Embed(
             title="✅ Question Submitted!",
-            description=f"Your question has been added to the review queue.",
+            description=f"Your question has been added to the review queue.{credit_msg}",
             color=discord.Color.green()
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 class SuggestionButton(discord.ui.View):
@@ -149,6 +163,13 @@ class ApprovalView(discord.ui.View):
 
         await self.cog.update_question_data(self.question_id, self.question_data)
         
+        # --- NEW: Grant approval credits ---
+        credits = await self.cog.config.approval_credit_amount()
+        if credits > 0 and self.question_data.suggested_by:
+            reason = "Question of the Day approval"
+            await self.cog._try_grant_credits(self.question_data.suggested_by, credits, reason, interaction.guild)
+        # --- END NEW ---
+        
         embed = interaction.message.embeds[0]
         embed.title = "✅ Question Approved!"
         embed.description = f"Approved by {interaction.user.display_name} into list: **{self.lists[selected_list_id].name}**"
@@ -191,6 +212,8 @@ class QuestionOfTheDay(commands.Cog):
             },
             "schedules": {}, 
             "approval_channel": None,
+            "suggestion_credit_amount": 0, # NEW: Credits granted on suggestion
+            "approval_credit_amount": 0,   # NEW: Credits granted on approval
         }
         self.config.register_global(**default_global)
         self.qotd_poster.start()
@@ -208,6 +231,27 @@ class QuestionOfTheDay(commands.Cog):
             for key in keys_to_delete:
                 del questions[key]
 
+    # --- Banking Helper ---
+    async def _try_grant_credits(self, user_id: int, amount: int, reason: str, guild: Optional[discord.Guild]):
+        """Helper to safely grant credits."""
+        if amount <= 0:
+            return
+        
+        # Determine the scope (guild for local bank, None for global bank)
+        # Bank API requires a scope check if not global. We pass the guild context here.
+        scope = None
+        if not await bank.is_global():
+            if guild is None:
+                log.warning(f"Bank credits not granted to {user_id} for '{reason}': Guild is required for local bank.")
+                return
+            scope = guild
+        
+        try:
+            await bank.deposit_credits(user_id, amount, scope=scope)
+            log.info(f"Granted {amount} credits to {user_id} for '{reason}' in scope {scope}.")
+        except Exception as e:
+            log.error(f"Failed to grant credits to {user_id} for '{reason}': {e}")
+            
     # --- Loop ---
 
     @tasks.loop(minutes=1)
@@ -295,10 +339,12 @@ class QuestionOfTheDay(commands.Cog):
         eligible_q = {}
         for qid, qdata in eligible_q_data.items():
             try:
-                qdata['added_on'] = datetime.fromisoformat(qdata['added_on'])
-                qdata['last_asked'] = datetime.fromisoformat(qdata['last_asked']) if qdata['last_asked'] else None
-                qdata['id'] = qid
-                eligible_q[qid] = QuestionData.model_validate(qdata)
+                # Ensure datetime objects are created from strings stored in config
+                qdata_copy = qdata.copy()
+                qdata_copy['added_on'] = datetime.fromisoformat(qdata['added_on'])
+                qdata_copy['last_asked'] = datetime.fromisoformat(qdata['last_asked']) if qdata['last_asked'] else None
+                qdata_copy['id'] = qid
+                eligible_q[qid] = QuestionData.model_validate(qdata_copy)
             except (ValidationError, ValueError):
                 continue
 
@@ -455,6 +501,38 @@ class QuestionOfTheDay(commands.Cog):
     async def qotd(self, ctx: commands.Context):
         """Base command for Question of the Day administration."""
         pass
+        
+    @qotd.group(name="set")
+    async def qotd_set(self, ctx: commands.Context):
+        """Configuration settings for Question of the Day."""
+        pass
+
+    @qotd_set.command(name="suggestioncredits")
+    async def qotd_set_suggestion_credits(self, ctx: commands.Context, amount: int):
+        """
+        Sets the amount of bank credits granted when a user suggests a question.
+        
+        Set to 0 to disable.
+        """
+        if amount < 0:
+            return await ctx.send(warning("The amount must be zero or positive."))
+            
+        await self.config.suggestion_credit_amount.set(amount)
+        await ctx.send(success(f"Suggestion credit reward set to **{amount}** {await bank.get_currency_name(ctx.guild)}."))
+        
+    @qotd_set.command(name="approvalcredits")
+    async def qotd_set_approval_credits(self, ctx: commands.Context, amount: int):
+        """
+        Sets the amount of bank credits granted when a user's suggested question is approved.
+        
+        Set to 0 to disable.
+        """
+        if amount < 0:
+            return await ctx.send(warning("The amount must be zero or positive."))
+            
+        await self.config.approval_credit_amount.set(amount)
+        await ctx.send(success(f"Approval credit reward set to **{amount}** {await bank.get_currency_name(ctx.guild)}."))
+
 
     @qotd.command(name="configchannel")
     async def qotd_config_channel(self, ctx: commands.Context, channel: discord.TextChannel):
@@ -477,10 +555,11 @@ class QuestionOfTheDay(commands.Cog):
         pending_questions = {}
         for qid, qdict in pending_questions_data.items():
             try:
-                qdict['added_on'] = datetime.fromisoformat(qdict['added_on']) if isinstance(qdict.get('added_on'), str) else qdict.get('added_on')
-                qdict['last_asked'] = datetime.fromisoformat(qdict['last_asked']) if qdict.get('last_asked') else None
-                qdict['id'] = qid
-                pending_questions[qid] = QuestionData.model_validate(qdict)
+                qdict_copy = qdict.copy()
+                qdict_copy['added_on'] = datetime.fromisoformat(qdict['added_on']) if isinstance(qdict.get('added_on'), str) else qdict.get('added_on')
+                qdict_copy['last_asked'] = datetime.fromisoformat(qdict['last_asked']) if qdict.get('last_asked') else None
+                qdict_copy['id'] = qid
+                pending_questions[qid] = QuestionData.model_validate(qdict_copy)
             except (ValidationError, ValueError):
                 continue
                 
@@ -514,6 +593,65 @@ class QuestionOfTheDay(commands.Cog):
         if remaining_count > 0:
             await ctx.send(f"\n{remaining_count} more suggestions pending.")
 
+    @qotd_suggest_admin.command(name="listuser")
+    async def qotd_suggest_listuser(self, ctx: commands.Context, user: discord.User):
+        """Lists all questions suggested by a specific user (pending or approved)."""
+        all_questions = await self.config.questions()
+        
+        user_questions = {}
+        for qid, qdict in all_questions.items():
+            if qdict.get('suggested_by') == user.id:
+                try:
+                    qdict_copy = qdict.copy()
+                    qdict_copy['added_on'] = datetime.fromisoformat(qdict['added_on'])
+                    qdict_copy['last_asked'] = datetime.fromisoformat(qdict['last_asked']) if qdict.get('last_asked') else None
+                    qdict_copy['id'] = qid
+                    user_questions[qid] = QuestionData.model_validate(qdict_copy)
+                except (ValidationError, ValueError):
+                    continue
+                    
+        if not user_questions:
+            return await ctx.send(info(f"{user.display_name} has not suggested any questions yet."))
+            
+        # Sort by added date (newest first)
+        sorted_questions = sorted(user_questions.values(), key=lambda q: q.added_on, reverse=True)
+        
+        output = [bold(f"Suggested Questions by {user.display_name} ({len(sorted_questions)} total):")]
+        
+        for q_obj in sorted_questions:
+            short_qid = q_obj.id.split('-')[0]
+            status = q_obj.status.title()
+            list_id = q_obj.list_id
+            
+            # Truncate question for list display
+            q_text = q_obj.question
+            if len(q_text) > 80:
+                q_text = q_text[:77] + "..."
+            
+            output.append(f"`{short_qid}` | **Status:** {status} | **List:** `{list_id}` | {q_text}")
+        
+        output_str = "\n".join(output)
+        
+        # Simple chunking for output > 2000 chars
+        if len(output_str) > 2000:
+             output_chunks = [bold(output[0])]
+             current_chunk = ""
+             for line in output[1:]:
+                 if len(current_chunk) + len(line) + 1 > 1900:
+                     output_chunks.append(box(current_chunk, lang="md"))
+                     current_chunk = line
+                 else:
+                     current_chunk += "\n" + line
+             if current_chunk:
+                 output_chunks.append(box(current_chunk, lang="md"))
+             
+             await ctx.send(f"Found **{len(sorted_questions)}** suggestions for {user.mention}:")
+             for chunk in output_chunks:
+                 await ctx.send(chunk)
+        else:
+            await ctx.send(box(output_str, lang="md"))
+
+
     @qotd_suggest_admin.command(name="approve")
     async def qotd_suggest_approve(self, ctx: commands.Context, short_qid: str, list_id: str):
         """Approves a pending question by ID."""
@@ -529,10 +667,11 @@ class QuestionOfTheDay(commands.Cog):
         try:
             qdata = all_questions[full_qid]
             # Deserialize dates (essential for validation/manipulation)
-            qdata['added_on'] = datetime.fromisoformat(qdata['added_on'])
-            qdata['last_asked'] = datetime.fromisoformat(qdata['last_asked']) if qdata['last_asked'] else None
-            qdata['id'] = full_qid
-            question_data = QuestionData.model_validate(qdata)
+            qdata_copy = qdata.copy()
+            qdata_copy['added_on'] = datetime.fromisoformat(qdata['added_on'])
+            qdata_copy['last_asked'] = datetime.fromisoformat(qdata['last_asked']) if qdata['last_asked'] else None
+            qdata_copy['id'] = full_qid
+            question_data = QuestionData.model_validate(qdata_copy)
         except (ValidationError, ValueError):
             return await ctx.send(warning(f"Question data for `{short_qid}` is corrupt."))
             
@@ -540,6 +679,14 @@ class QuestionOfTheDay(commands.Cog):
         question_data.status = "not asked"
         question_data.added_on = datetime.now(timezone.utc) 
         await self.update_question_data(full_qid, question_data)
+        
+        # --- NEW: Grant approval credits ---
+        credits = await self.config.approval_credit_amount()
+        if credits > 0 and question_data.suggested_by:
+            reason = "Question of the Day approval"
+            await self._try_grant_credits(question_data.suggested_by, credits, reason, ctx.guild)
+        # --- END NEW ---
+        
         list_name = lists_data[list_id]['name']
         await ctx.send(f"✅ Approved suggestion `{short_qid}` and moved it to the **{list_name}** list.")
 
@@ -579,12 +726,13 @@ class QuestionOfTheDay(commands.Cog):
         
         try:
             # Deserialize datetime fields for display
-            if isinstance(qdata.get('added_on'), str):
-                qdata['added_on'] = datetime.fromisoformat(qdata['added_on'])
-            if isinstance(qdata.get('last_asked'), str):
-                qdata['last_asked'] = datetime.fromisoformat(qdata['last_asked'])
+            qdata_copy = qdata.copy()
+            if isinstance(qdata_copy.get('added_on'), str):
+                qdata_copy['added_on'] = datetime.fromisoformat(qdata_copy['added_on'])
+            if isinstance(qdata_copy.get('last_asked'), str):
+                qdata_copy['last_asked'] = datetime.fromisoformat(qdata_copy['last_asked'])
             
-            question = QuestionData.model_validate(qdata)
+            question = QuestionData.model_validate(qdata_copy)
         except (ValidationError, ValueError):
             return await ctx.send(warning(f"Question data for `{matched_qid}` is corrupt."))
 
@@ -675,7 +823,7 @@ class QuestionOfTheDay(commands.Cog):
         else:
             # Use provided ID, validate, and check for uniqueness
             new_id = list_id.lower().replace(" ", "-")
-            if not new_id.isalnum() and "-" not in new_id:
+            if not all(c.isalnum() or c == '-' for c in new_id):
                  return await ctx.send(warning("Provided list ID can only contain letters, numbers, and hyphens (`-`)."))
             if new_id in lists_data:
                 return await ctx.send(warning(f"The list ID `{new_id}` is already in use."))
