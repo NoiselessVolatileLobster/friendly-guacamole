@@ -247,14 +247,14 @@ class QuestionOfTheDay(commands.Cog):
             scope = guild
         
         try:
-            # Check if the bank is enabled for the current scope
-            if not await bank.is_enabled(scope):
-                 log.info(f"Bank is disabled in scope {scope}. Skipping credit grant.")
-                 return
-                 
+            # We are removing the bank.is_enabled() check to maintain compatibility with older Red versions.
+            # If the bank is not configured or disabled, the deposit_credits call will typically
+            # handle it internally or fail gracefully without this explicit check.
             await bank.deposit_credits(user_id, amount, scope=scope)
             log.info(f"Granted {amount} credits to {user_id} for '{reason}' in scope {scope}.")
         except Exception as e:
+            # This catch is now essential to log any failure if bank is disabled/not configured 
+            # and deposit_credits itself raises an exception in older Red versions.
             log.error(f"Failed to grant credits to {user_id} for '{reason}': {e}")
             
     # --- Loop ---
@@ -730,7 +730,7 @@ class QuestionOfTheDay(commands.Cog):
         qdata = all_questions[matched_qid]
         
         try:
-            # Deserialize datetime fields for display
+            # Deserialize dates (essential for validation/manipulation)
             qdata_copy = qdata.copy()
             if isinstance(qdata_copy.get('added_on'), str):
                 qdata_copy['added_on'] = datetime.fromisoformat(qdata_copy['added_on'])
