@@ -98,7 +98,7 @@ class SuggestionButton(discord.ui.View):
     @discord.ui.button(label="Suggest a Question", style=discord.ButtonStyle.primary, custom_id="qotd_suggest_button")
     async def suggest_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         lists_data = await self.cog.config.lists()
-        current_list_names = [v['name'] for v in lists_data.values() if v['id'] != "suggestions"]
+        current_list_names = [v['name'] for v in lists_data.values() if v['id'] not in ["suggestions", "unassigned"]]
         await interaction.response.send_modal(SuggestionModal(self.cog, current_list_names))
 
 
@@ -112,7 +112,7 @@ class ApprovalView(discord.ui.View):
 
         list_options = [
             discord.SelectOption(label=list_obj.name, value=list_id)
-            for list_id, list_obj in lists.items() if list_id != "suggestions" 
+            for list_id, list_obj in lists.items() if list_id not in ["suggestions", "unassigned"]
         ]
 
         if list_options:
@@ -187,6 +187,7 @@ class QuestionOfTheDay(commands.Cog):
             "lists": {
                 "general": QuestionList(id="general", name="General Questions").model_dump(),
                 "suggestions": QuestionList(id="suggestions", name="Pending Suggestions").model_dump(),
+                "unassigned": QuestionList(id="unassigned", name="Unassigned").model_dump(), # ADDED: Unassigned list
             },
             "schedules": {}, 
             "approval_channel": None,
@@ -272,9 +273,9 @@ class QuestionOfTheDay(commands.Cog):
         try:
             target_list = QuestionList.model_validate(lists_data[target_list_id])
         except KeyError:
-             log.warning(f"Target list {target_list_id} for schedule {schedule_id} not found.")
-             await self._update_schedule_next_run(schedule_id, schedule, now_utc)
-             return
+             log.warning(f"Target list {target_list_id} for schedule {schedule_id} not found. Falling back to 'general'.")
+             target_list_id = "general" # Fallback
+             target_list = QuestionList.model_validate(lists_data[target_list_id])
         except ValidationError:
             await self._update_schedule_next_run(schedule_id, schedule, now_utc)
             return
@@ -443,7 +444,7 @@ class QuestionOfTheDay(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self):
         lists_data = await self.config.lists()
-        list_names = [v['name'] for v in lists_data.values() if v['id'] != "suggestions"]
+        list_names = [v['name'] for v in lists_data.values() if v['id'] not in ["suggestions", "unassigned"]]
         self.bot.add_view(SuggestionButton(self, list_names))
         
     # --- Commands ---
@@ -477,6 +478,7 @@ class QuestionOfTheDay(commands.Cog):
         for qid, qdict in pending_questions_data.items():
             try:
                 qdict['added_on'] = datetime.fromisoformat(qdict['added_on']) if isinstance(qdict.get('added_on'), str) else qdict.get('added_on')
+                qdict['last_asked'] = datetime.fromisoformat(qdict['last_asked']) if qdict.get('last_asked') else None
                 qdict['id'] = qid
                 pending_questions[qid] = QuestionData.model_validate(qdict)
             except (ValidationError, ValueError):
@@ -521,11 +523,12 @@ class QuestionOfTheDay(commands.Cog):
 
         if not full_qid:
             return await ctx.send(warning(f"No pending suggestion found with short ID `{short_qid}`."))
-        if list_id not in lists_data or list_id == 'suggestions':
-            return await ctx.send(warning(f"List ID `{list_id}` is invalid."))
+        if list_id not in lists_data or list_id in ['suggestions', 'unassigned']:
+            return await ctx.send(warning(f"List ID `{list_id}` is invalid for approval."))
             
         try:
             qdata = all_questions[full_qid]
+            # Deserialize dates (essential for validation/manipulation)
             qdata['added_on'] = datetime.fromisoformat(qdata['added_on'])
             qdata['last_asked'] = datetime.fromisoformat(qdata['last_asked']) if qdata['last_asked'] else None
             qdata['id'] = full_qid
@@ -550,7 +553,7 @@ class QuestionOfTheDay(commands.Cog):
         await self.delete_question_by_id(full_qid)
         await ctx.send(f"❌ Deleted pending suggestion with ID `{short_qid}`.")
 
-    # --- Question Management Group (NEW) ---
+    # --- Question Management Group ---
 
     @qotd.group(name="question")
     async def qotd_question_management(self, ctx: commands.Context):
@@ -590,8 +593,8 @@ class QuestionOfTheDay(commands.Cog):
         list_name = "Unknown List"
         if question.list_id in lists_data:
             list_name = lists_data[question.list_id]['name']
-        elif question.list_id == 'suggestions':
-            list_name = "Pending Suggestions"
+        else:
+            list_name = question.list_id.title() # Use ID if name is missing
 
         # Get suggester name
         suggested_by_str = "System/Unknown"
@@ -645,21 +648,112 @@ class QuestionOfTheDay(commands.Cog):
         await self.delete_question_by_id(matched_qid)
         await ctx.send(success(f"Question `{matched_qid.split('-')[0]}` has been permanently deleted."))
 
+    # --- List Management Group ---
+
     @qotd.group(name="list")
     async def qotd_list_management(self, ctx: commands.Context):
         """Manage Question Lists."""
         pass
     
     @qotd_list_management.command(name="add")
-    async def qotd_list_add(self, ctx: commands.Context, list_name: str):
-        """Adds a new question list."""
-        list_id = str(uuid.uuid4()).split('-')[0] 
-        new_list = QuestionList(id=list_id, name=list_name)
+    async def qotd_list_add(self, ctx: commands.Context, list_name: str, list_id: Optional[str] = None):
+        """
+        Adds a new question list.
+        
+        Optionally, specify a unique ID for the list (e.g., `fun-qs`).
+        If no ID is provided, one will be generated.
+        """
+        lists_data = await self.config.lists()
+        
+        # Check for duplicate name
+        if any(l.get('name', '').lower() == list_name.lower() for l in lists_data.values()):
+             return await ctx.send(warning(f"A list named **{list_name}** already exists."))
+
+        if list_id is None:
+            # Generate a new ID if none provided
+            new_id = str(uuid.uuid4()).split('-')[0]
+        else:
+            # Use provided ID, validate, and check for uniqueness
+            new_id = list_id.lower().replace(" ", "-")
+            if not new_id.isalnum() and "-" not in new_id:
+                 return await ctx.send(warning("Provided list ID can only contain letters, numbers, and hyphens (`-`)."))
+            if new_id in lists_data:
+                return await ctx.send(warning(f"The list ID `{new_id}` is already in use."))
+            
+        new_list = QuestionList(id=new_id, name=list_name)
         async with self.config.lists() as lists:
-            if any(l.get('name', '').lower() == list_name.lower() for l in lists.values()):
-                 return await ctx.send(warning(f"A list named **{list_name}** already exists."))
-            lists[list_id] = new_list.model_dump() 
-        await ctx.send(f"Added new question list: **{list_name}** (ID: `{list_id}`).")
+            lists[new_id] = new_list.model_dump() 
+            
+        await ctx.send(f"Added new question list: **{list_name}** (ID: `{new_id}`).")
+
+    @qotd_list_management.command(name="remove")
+    async def qotd_list_remove(self, ctx: commands.Context, list_id: str):
+        """
+        Removes a list and moves all its contained questions to the 'Unassigned' list.
+        
+        Cannot remove system lists (`general`, `suggestions`, `unassigned`) 
+        or lists currently attached to an active schedule.
+        """
+        lists_data = await self.config.lists()
+        schedules_data = await self.config.schedules()
+
+        if list_id not in lists_data:
+            return await ctx.send(warning(f"List ID `{list_id}` not found. Use `[p]qotd list view` to see available lists."))
+            
+        # 1. System list check
+        system_lists = ["general", "suggestions", "unassigned"]
+        if list_id in system_lists:
+            return await ctx.send(warning(f"The system list `{list_id}` ({lists_data[list_id]['name']}) cannot be removed."))
+            
+        list_name = lists_data[list_id]['name']
+
+        # 2. Schedule check
+        used_schedules = [
+            sid for sid, sdict in schedules_data.items() 
+            if sdict.get('list_id') == list_id or 
+            any(r.get('list_id_override') == list_id for r in sdict.get('rules', []))
+        ]
+        
+        if used_schedules:
+            schedule_ids_str = humanize_list([f"`{sid}`" for sid in used_schedules])
+            return await ctx.send(warning(
+                f"List **{list_name}** (`{list_id}`) cannot be removed because it is in use by the following schedules: {schedule_ids_str}. "
+                "Please remove the schedules or change their list assignments first."
+            ))
+
+        # 3. Confirmation
+        confirm_msg = await ctx.send(warning(
+            f"⚠️ **WARNING** ⚠️\nAre you sure you want to remove the list **{list_name}** (`{list_id}`) and move all its **{len([qid for qid, qdata in (await self.config.questions()).items() if qdata.get('list_id') == list_id])}** questions to the **Unassigned** list? "
+            "Type `yes` to confirm."
+        ))
+
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == "yes"
+
+        try:
+            await self.bot.wait_for("message", check=check, timeout=30.0)
+        except asyncio.TimeoutError:
+            await confirm_msg.edit(content="Removal cancelled (timeout).", embed=None, view=None)
+            return
+
+        # 4. Move questions to 'unassigned'
+        questions_moved = 0
+        async with self.config.questions() as questions:
+            keys_to_move = [qid for qid, qdata in questions.items() if qdata.get('list_id') == list_id]
+            
+            for qid in keys_to_move:
+                questions[qid]['list_id'] = "unassigned"
+                questions[qid]['status'] = "not asked" 
+                questions_moved += 1
+
+        # 5. Remove the list
+        async with self.config.lists() as lists:
+            del lists[list_id]
+            
+        await ctx.send(success(
+            f"✅ List **{list_name}** (`{list_id}`) has been removed.\n"
+            f"**{questions_moved}** questions were moved to the **Unassigned** list."
+        ))
 
     @qotd_list_management.command(name="view")
     async def qotd_list_view(self, ctx: commands.Context):
@@ -675,20 +769,29 @@ class QuestionOfTheDay(commands.Cog):
             except ValidationError:
                 continue
             count = sum(1 for q in all_questions.values() if q.get('list_id') == list_id)
+            
+            icon = "🗃️"
+            if list_id == "suggestions": icon = "📩"
+            elif list_id == "unassigned": icon = "❓"
+
             list_info = f"**Questions:** {count}\n"
-            if list_obj.exclusion_dates:
-                dates = sorted(list_obj.exclusion_dates)
-                date_str = humanize_list([f"`{d}`" for d in dates[:5]])
-                if len(dates) > 5: date_str += f", and {len(dates) - 5} more..."
-                list_info += f"**Exclusions:** {date_str}"
-            else: list_info += "**Exclusions:** None"
-            if list_id == "suggestions": list_info = f"**Status:** Pending Approval Queue\n**Questions:** {count}"
-            embed.add_field(name=f"{'🗃️ ' if list_id != 'suggestions' else '📩 '} {list_obj.name} (`{list_id}`)", value=list_info, inline=False)
+            if list_id in ["suggestions", "unassigned"]:
+                 list_info = f"**Status:** {'Pending Approval Queue' if list_id == 'suggestions' else 'Questions ready for reassignment'}\n**Questions:** {count}"
+            else:
+                if list_obj.exclusion_dates:
+                    dates = sorted(list_obj.exclusion_dates)
+                    date_str = humanize_list([f"`{d}`" for d in dates[:5]])
+                    if len(dates) > 5: date_str += f", and {len(dates) - 5} more..."
+                    list_info += f"**Exclusions:** {date_str}"
+                else: 
+                    list_info += "**Exclusions:** None"
+
+            embed.add_field(name=f"{icon} {list_obj.name} (`{list_id}`)", value=list_info, inline=False)
         await ctx.send(embed=embed)
 
     @qotd_list_management.command(name="clear")
     async def qotd_list_clear(self, ctx: commands.Context, list_id: str):
-        """Clears all questions from a specific list."""
+        """Clears all questions from a specific list by moving them to 'Unassigned'."""
         lists_data = await self.config.lists()
         
         if list_id not in lists_data:
@@ -696,8 +799,12 @@ class QuestionOfTheDay(commands.Cog):
             
         list_name = lists_data[list_id]['name']
         
+        # Prevent clearing the system lists
+        if list_id in ["suggestions", "unassigned", "general"]:
+            return await ctx.send(warning(f"The system list `{list_id}` ({list_name}) cannot be cleared."))
+            
         # Ask for confirmation
-        confirm_msg = await ctx.send(warning(f"⚠️ **WARNING** ⚠️\nAre you sure you want to delete **ALL** questions from the list **{list_name}** (`{list_id}`)?\nThis action cannot be undone. Type `yes` to confirm."))
+        confirm_msg = await ctx.send(warning(f"⚠️ **WARNING** ⚠️\nYou are about to move **ALL** questions from the list **{list_name}** (`{list_id}`) to the **Unassigned** list.\nThis action is reversible by manually reassigning them. Type `yes` to confirm."))
         
         def check(m):
             return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == "yes"
@@ -705,17 +812,22 @@ class QuestionOfTheDay(commands.Cog):
         try:
             await self.bot.wait_for("message", check=check, timeout=30.0)
         except asyncio.TimeoutError:
-            return await ctx.send("Deletion cancelled (timeout).")
-            
-        # Proceed with deletion
+            await confirm_msg.edit(content="Clear cancelled (timeout).", embed=None, view=None)
+            return
+        
+        # Proceed with moving to 'unassigned'
+        questions_moved = 0
         async with self.config.questions() as questions:
             # Find all keys (question IDs) that belong to this list
-            keys_to_delete = [qid for qid, qdata in questions.items() if qdata.get('list_id') == list_id]
+            keys_to_move = [qid for qid, qdata in questions.items() if qdata.get('list_id') == list_id]
             
-            for qid in keys_to_delete:
-                del questions[qid]
+            for qid in keys_to_move:
+                # Update list_id and status
+                questions[qid]['list_id'] = "unassigned"
+                questions[qid]['status'] = "not asked" # Reset status for fresh usage
+                questions_moved += 1
                 
-        await ctx.send(success(f"Successfully deleted **{len(keys_to_delete)}** questions from list **{list_name}**."))
+        await ctx.send(success(f"Successfully moved **{questions_moved}** questions from list **{list_name}** to **Unassigned**."))
 
     @qotd_list_management.group(name="rule")
     async def qotd_list_rule(self, ctx: commands.Context):
@@ -778,7 +890,7 @@ class QuestionOfTheDay(commands.Cog):
             unit = time_unit[1].lower().rstrip('s')
             if unit not in ('minute', 'hour', 'day', 'week'): raise ValueError
         except (ValueError, IndexError):
-            return await ctx.send(warning("Invalid frequency format."))
+            return await ctx.send(warning("Invalid frequency format. Must be like '1 day' or '3 hours'."))
         temp_schedule = Schedule(id=schedule_id, list_id=list_id, channel_id=channel.id, frequency=frequency, post_time=post_time, next_run_time=now_utc)
         next_run_time = self._calculate_next_run_time(temp_schedule, now_utc - timedelta(minutes=1)) 
         new_schedule = Schedule(id=schedule_id, list_id=list_id, channel_id=channel.id, frequency=frequency, post_time=post_time, next_run_time=next_run_time)
@@ -837,6 +949,11 @@ class QuestionOfTheDay(commands.Cog):
         """Adds a priority rule."""
         schedules_data = await self.config.schedules()
         if schedule_id not in schedules_data: return await ctx.send(warning("Schedule ID not found."))
+        
+        # Validation on dates (simple MM-DD check)
+        if len(start_date) != 5 or start_date[2] != '-' or len(end_date) != 5 or end_date[2] != '-':
+            return await ctx.send(warning("Date format must be `MM-DD`."))
+            
         schedule_dict = schedules_data[schedule_id]
         schedule_dict['next_run_time'] = datetime.fromisoformat(schedule_dict['next_run_time'])
         schedule = Schedule.model_validate(schedule_dict)
@@ -845,13 +962,18 @@ class QuestionOfTheDay(commands.Cog):
         serialized_schedule = json.loads(schedule.model_dump_json())
         async with self.config.schedules() as schedules:
             schedules[schedule_id] = serialized_schedule
-        await ctx.send(f"Added priority rule.")
+        await ctx.send(f"Added priority rule to schedule `{schedule_id}`: use list `{list_id}` from **{start_date}** to **{end_date}**.")
 
     @qotd_schedule_rule.command(name="addskip")
     async def qotd_schedule_rule_add_skip(self, ctx: commands.Context, schedule_id: str, start_date: str, end_date: str):
         """Adds a skip rule."""
         schedules_data = await self.config.schedules()
         if schedule_id not in schedules_data: return await ctx.send(warning("Schedule ID not found."))
+        
+        # Validation on dates (simple MM-DD check)
+        if len(start_date) != 5 or start_date[2] != '-' or len(end_date) != 5 or end_date[2] != '-':
+            return await ctx.send(warning("Date format must be `MM-DD`."))
+
         schedule_dict = schedules_data[schedule_id]
         schedule_dict['next_run_time'] = datetime.fromisoformat(schedule_dict['next_run_time'])
         schedule = Schedule.model_validate(schedule_dict)
@@ -860,21 +982,27 @@ class QuestionOfTheDay(commands.Cog):
         serialized_schedule = json.loads(schedule.model_dump_json())
         async with self.config.schedules() as schedules:
             schedules[schedule_id] = serialized_schedule
-        await ctx.send(f"Added skip rule.")
+        await ctx.send(f"Added skip rule to schedule `{schedule_id}`: skip run from **{start_date}** to **{end_date}**.")
 
     @qotd_schedule_rule.command(name="removerule")
     async def qotd_schedule_rule_remove(self, ctx: commands.Context, schedule_id: str, rule_id: str):
-        """Removes a rule."""
+        """Removes a rule by its short ID."""
         schedules_data = await self.config.schedules()
         if schedule_id not in schedules_data: return await ctx.send(warning("Schedule ID not found."))
         schedule_dict = schedules_data[schedule_id]
         schedule_dict['next_run_time'] = datetime.fromisoformat(schedule_dict['next_run_time'])
         schedule = Schedule.model_validate(schedule_dict)
-        schedule.rules = [rule for rule in schedule.rules if rule.id != rule_id]
+        
+        original_len = len(schedule.rules)
+        schedule.rules = [rule for rule in schedule.rules if not rule.id.startswith(rule_id)]
+        
+        if len(schedule.rules) == original_len:
+            return await ctx.send(warning(f"No rule found with ID `{rule_id}` in schedule `{schedule_id}`."))
+            
         serialized_schedule = json.loads(schedule.model_dump_json())
         async with self.config.schedules() as schedules:
             schedules[schedule_id] = serialized_schedule
-        await ctx.send(f"Removed rule.")
+        await ctx.send(f"Removed rule `{rule_id}` from schedule `{schedule_id}`.")
 
     @qotd.command(name="import")
     async def qotd_import(self, ctx: commands.Context, list_id: str):
@@ -916,7 +1044,7 @@ class QuestionOfTheDay(commands.Cog):
                     skipped += 1
                     continue
 
-                final_id = imported_id if imported_id else str(uuid.uuid4())
+                final_id = imported_id if imported_id and imported_id not in global_questions else str(uuid.uuid4())
                 if final_id in global_questions: final_id = str(uuid.uuid4())
 
                 suggested_by = item.get("suggested_by_id")
@@ -953,13 +1081,20 @@ class QuestionOfTheDay(commands.Cog):
                     if u: s_name = u.display_name
                     else: s_name = f"ID: {s_id}"
                 
+                # Ensure datetimes are serialized to string for JSON compatibility
+                qdict_copy = qdict.copy()
+                if isinstance(qdict_copy.get('added_on'), datetime):
+                    qdict_copy['added_on'] = qdict_copy['added_on'].isoformat()
+                if isinstance(qdict_copy.get('last_asked'), datetime):
+                    qdict_copy['last_asked'] = qdict_copy['last_asked'].isoformat()
+                
                 export_data.append({
                     "id": qid,
-                    "question": qdict.get('question'),
+                    "question": qdict_copy.get('question'),
                     "suggested_by_id": s_id,
                     "suggested_by_name": s_name,
-                    "added_on": qdict.get('added_on'),
-                    "last_asked": qdict.get('last_asked')
+                    "added_on": qdict_copy.get('added_on'),
+                    "last_asked": qdict_copy.get('last_asked')
                 })
                 count += 1
         
@@ -983,6 +1118,6 @@ class QuestionOfTheDay(commands.Cog):
     async def suggest_qotd_command(self, ctx: commands.Context):
         """Suggest a question."""
         lists_data = await self.config.lists()
-        list_names = [v['name'] for v in lists_data.values() if v['id'] != "suggestions"]
+        list_names = [v['name'] for v in lists_data.values() if v['id'] not in ["suggestions", "unassigned"]]
         view = SuggestionButton(self, list_names)
         await ctx.send("Click below to suggest!", view=view)
