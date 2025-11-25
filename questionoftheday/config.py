@@ -550,16 +550,20 @@ class QuestionOfTheDay(commands.Cog):
         await self.delete_question_by_id(full_qid)
         await ctx.send(f"❌ Deleted pending suggestion with ID `{short_qid}`.")
 
-    # --- Question Management (View/Delete) ---
+    # --- Question Management Group (NEW) ---
 
     @qotd.group(name="question")
     async def qotd_question_management(self, ctx: commands.Context):
-        """Manage specific questions."""
+        """Manage individual questions (View or Delete)."""
         pass
 
     @qotd_question_management.command(name="view")
     async def qotd_question_view(self, ctx: commands.Context, question_id: str):
-        """View details of a specific question by its ID (or short ID)."""
+        """
+        View details of a specific question.
+        
+        You can use the full UUID or the short ID (first 8 characters).
+        """
         all_questions = await self.config.questions()
         
         # Find match by short or long ID
@@ -571,7 +575,7 @@ class QuestionOfTheDay(commands.Cog):
         qdata = all_questions[matched_qid]
         
         try:
-            # Deserialize for display
+            # Deserialize datetime fields for display
             if isinstance(qdata.get('added_on'), str):
                 qdata['added_on'] = datetime.fromisoformat(qdata['added_on'])
             if isinstance(qdata.get('last_asked'), str):
@@ -598,18 +602,22 @@ class QuestionOfTheDay(commands.Cog):
             else:
                 suggested_by_str = f"ID: {question.suggested_by}"
 
-        embed = discord.Embed(title=f"Question Details (ID: {matched_qid.split('-')[0]})", color=discord.Color.blue())
+        short_id = matched_qid.split('-')[0]
+        embed = discord.Embed(title=f"Question Details (ID: {short_id})", color=discord.Color.blue())
         embed.description = box(question.question, lang="text")
         
         embed.add_field(name="List", value=f"{list_name} (`{question.list_id}`)", inline=True)
         embed.add_field(name="Status", value=question.status.title(), inline=True)
         embed.add_field(name="Suggested By", value=suggested_by_str, inline=False)
         
+        # Dates
+        if question.added_on.tzinfo is None:
+             question.added_on = question.added_on.replace(tzinfo=timezone.utc)
+        
         added_ts = discord.utils.format_dt(question.added_on, 'f') + f" ({discord.utils.format_dt(question.added_on, 'R')})"
         embed.add_field(name="Created On", value=added_ts, inline=False)
         
         if question.last_asked:
-            # Ensure UTC for display if missing
             if question.last_asked.tzinfo is None:
                 question.last_asked = question.last_asked.replace(tzinfo=timezone.utc)
             asked_ts = discord.utils.format_dt(question.last_asked, 'f') + f" ({discord.utils.format_dt(question.last_asked, 'R')})"
@@ -621,7 +629,11 @@ class QuestionOfTheDay(commands.Cog):
 
     @qotd_question_management.command(name="remove")
     async def qotd_question_remove(self, ctx: commands.Context, question_id: str):
-        """Permanently delete a specific question."""
+        """
+        Permanently delete a specific question.
+        
+        You can use the full UUID or the short ID.
+        """
         all_questions = await self.config.questions()
         
         # Find match by short or long ID
@@ -631,7 +643,9 @@ class QuestionOfTheDay(commands.Cog):
             return await ctx.send(warning(f"Question with ID `{question_id}` not found."))
             
         await self.delete_question_by_id(matched_qid)
-        await ctx.send(success(f"Question `{matched_qid}` has been deleted."))
+        await ctx.send(success(f"Question `{matched_qid.split('-')[0]}` has been permanently deleted."))
+
+    # --- List Management ---
 
     @qotd.group(name="list")
     async def qotd_list_management(self, ctx: commands.Context):
