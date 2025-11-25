@@ -240,21 +240,26 @@ class QuestionOfTheDay(commands.Cog):
         
         # Determine the scope (guild for local bank, None for global bank)
         scope = None
-        if not await bank.is_global():
+        # Check if the bank is global first
+        try:
+             is_global = await bank.is_global()
+        except AttributeError:
+             # Red 3.5.22 might not have bank.is_global, assume local for safety if in guild context
+             is_global = False # We default to local logic below if global check fails
+             
+        if not is_global:
             if guild is None:
                 log.warning(f"Bank credits not granted to {user_id} for '{reason}': Guild is required for local bank.")
                 return
             scope = guild
         
         try:
-            # We are removing the bank.is_enabled() check to maintain compatibility with older Red versions.
-            # If the bank is not configured or disabled, the deposit_credits call will typically
-            # handle it internally or fail gracefully without this explicit check.
+            # We are removing the bank.is_enabled() check (missing in 3.5.x)
+            # and letting deposit_credits handle any configuration errors.
             await bank.deposit_credits(user_id, amount, scope=scope)
             log.info(f"Granted {amount} credits to {user_id} for '{reason}' in scope {scope}.")
         except Exception as e:
-            # This catch is now essential to log any failure if bank is disabled/not configured 
-            # and deposit_credits itself raises an exception in older Red versions.
+            # This catches the original error and potential errors if the bank is not configured/enabled.
             log.error(f"Failed to grant credits to {user_id} for '{reason}': {e}")
             
     # --- Loop ---
