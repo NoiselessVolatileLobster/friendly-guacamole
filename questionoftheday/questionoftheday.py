@@ -82,9 +82,10 @@ class SuggestionModal(discord.ui.Modal, title="Submit a Question of the Day"):
         try:
             await self.cog.add_question_to_data(new_q)
             
-            # Attempt to grant suggestion reward
+            # Attempt Grant Suggestion Reward
             reward = await self.cog.config.suggestion_reward()
             if reward > 0:
+                # We pass the Member object directly
                 paid = await self.cog._attempt_deposit(interaction.user, reward)
                 if paid:
                     currency = await bank.get_currency_name(interaction.guild)
@@ -117,7 +118,7 @@ class SuggestionButton(discord.ui.View):
 
 class ApprovalView(discord.ui.View):
     def __init__(self, cog: "QuestionOfTheDay", question_data: QuestionData, question_id: str, lists: Dict[str, QuestionList]):
-        super().__init__(timeout=300) 
+        super().__init__(timeout=None) # No timeout for persistent view logic
         self.cog = cog
         self.question_data = question_data
         self.question_id = question_id
@@ -134,7 +135,7 @@ class ApprovalView(discord.ui.View):
                 options=list_options,
                 min_values=1,
                 max_values=1,
-                custom_id="qotd_approval_list_select"
+                custom_id=f"qotd_approval_list_select_{question_id}" # Unique ID to avoid conflicts if multiple views exist
             )
             self.list_select.callback = self.approve_callback
             self.add_item(self.list_select)
@@ -162,11 +163,11 @@ class ApprovalView(discord.ui.View):
 
         await self.cog.update_question_data(self.question_id, self.question_data)
         
-        # Attempt to grant approval reward to the suggester
+        # Attempt Grant Approval Reward
         reward_text = ""
         reward_amt = await self.cog.config.approval_reward()
         if reward_amt > 0 and self.question_data.suggested_by:
-            # We need to fetch the member object to deposit credits in Red 3.5
+            # We need to fetch the actual member object for the bank
             guild = interaction.guild
             member = guild.get_member(self.question_data.suggested_by)
             if not member:
@@ -176,10 +177,11 @@ class ApprovalView(discord.ui.View):
                     member = None
             
             if member:
+                # Pass member object directly
                 paid = await self.cog._attempt_deposit(member, reward_amt)
                 if paid:
                     currency = await bank.get_currency_name(guild)
-                    reward_text = f"\n💰 {reward_amt} {currency} awarded to {member.mention}."
+                    reward_text = f"\n💰 **{reward_amt} {currency}** awarded to {member.mention}."
 
         embed = interaction.message.embeds[0]
         embed.title = "✅ Question Approved!"
@@ -223,8 +225,8 @@ class QuestionOfTheDay(commands.Cog):
             },
             "schedules": {}, 
             "approval_channel": None,
-            "suggestion_reward": 0, # Amount to give on suggestion
-            "approval_reward": 0,   # Amount to give on approval
+            "suggestion_reward": 0, # Default 0 (disabled)
+            "approval_reward": 0,   # Default 0 (disabled)
         }
         self.config.register_global(**default_global)
         self.qotd_poster.start()
@@ -242,16 +244,20 @@ class QuestionOfTheDay(commands.Cog):
             for key in keys_to_delete:
                 del questions[key]
 
-    # --- Helpers ---
-    
+    # --- Banking Helper ---
     async def _attempt_deposit(self, member: discord.Member, amount: int) -> bool:
         """
         Safely attempts to deposit credits to a member's bank.
         Compatible with Red 3.5.22.
         Returns True if successful, False otherwise.
         """
+        if amount <= 0:
+            return False
+
         try:
-            # In Red 3.5, passing the member object allows it to handle local/global scope automatically.
+            # Red 3.5.x: Pass member object directly. 
+            # Do NOT pass 'scope', 'guild', or 'reason' as keywords to avoid TypeErrors.
+            # The bank API will infer global/local scope from the member object.
             await bank.deposit_credits(member, amount)
             return True
         except Exception as e:
@@ -345,10 +351,12 @@ class QuestionOfTheDay(commands.Cog):
         eligible_q = {}
         for qid, qdata in eligible_q_data.items():
             try:
-                qdata['added_on'] = datetime.fromisoformat(qdata['added_on'])
-                qdata['last_asked'] = datetime.fromisoformat(qdata['last_asked']) if qdata['last_asked'] else None
-                qdata['id'] = qid
-                eligible_q[qid] = QuestionData.model_validate(qdata)
+                # Ensure datetime objects are created from strings stored in config
+                qdata_copy = qdata.copy()
+                qdata_copy['added_on'] = datetime.fromisoformat(qdata['added_on'])
+                qdata_copy['last_asked'] = datetime.fromisoformat(qdata['last_asked']) if qdata['last_asked'] else None
+                qdata_copy['id'] = qid
+                eligible_q[qid] = QuestionData.model_validate(qdata_copy)
             except (ValidationError, ValueError):
                 continue
 
@@ -512,8 +520,7 @@ class QuestionOfTheDay(commands.Cog):
         await self.config.approval_channel.set(channel.id)
         await ctx.send(f"Approval channel set to {channel.mention}.")
 
-    # --- Settings Group ---
-
+    # --- SETTINGS COMMANDS ---
     @qotd.group(name="set")
     async def qotd_set(self, ctx: commands.Context):
         """Configure QOTD settings, including rewards."""
@@ -537,8 +544,7 @@ class QuestionOfTheDay(commands.Cog):
         currency = await bank.get_currency_name(ctx.guild)
         await ctx.send(success(f"Approval reward set to **{amount} {currency}**."))
 
-    # --- Question Group ---
-    
+    # --- QUESTION COMMANDS (including listuser) ---
     @qotd.group(name="question")
     async def qotd_question(self, ctx: commands.Context):
         """Manage individual questions."""
@@ -567,7 +573,7 @@ class QuestionOfTheDay(commands.Cog):
 
         user_questions.sort(key=lambda q: q.added_on, reverse=True)
 
-        # Build output (pagination logic roughly simplified for single msg, likely needs menus for many qs)
+        # Build output 
         msg = f"**Questions by {user.name}**\n\n"
         for q in user_questions[:15]: # Limit to 15 to prevent overflow
             status_icon = "⏳" if q.status == "pending" else ("✅" if q.status == "not asked" else "📢")
@@ -578,7 +584,63 @@ class QuestionOfTheDay(commands.Cog):
             msg += f"\n...and {len(user_questions) - 15} more."
 
         await ctx.send(box(msg, lang="md"))
+
+    @qotd_question.command(name="view")
+    async def qotd_question_view(self, ctx: commands.Context, question_id: str):
+        """View details of a specific question by ID."""
+        all_questions = await self.config.questions()
+        matched_qid = next((qid for qid in all_questions if qid.startswith(question_id)), None)
         
+        if not matched_qid:
+            return await ctx.send(warning(f"Question with ID `{question_id}` not found."))
+            
+        qdata = all_questions[matched_qid]
+        try:
+            if isinstance(qdata.get('added_on'), str):
+                qdata['added_on'] = datetime.fromisoformat(qdata['added_on'])
+            if isinstance(qdata.get('last_asked'), str):
+                qdata['last_asked'] = datetime.fromisoformat(qdata['last_asked'])
+            question = QuestionData.model_validate(qdata)
+        except (ValidationError, ValueError):
+            return await ctx.send(warning(f"Question data corrupt."))
+
+        lists_data = await self.config.lists()
+        list_name = "Unknown List"
+        if question.list_id in lists_data:
+            list_name = lists_data[question.list_id]['name']
+        elif question.list_id == 'suggestions':
+            list_name = "Pending Suggestions"
+
+        suggested_by_str = "System/Unknown"
+        if question.suggested_by:
+            user = self.bot.get_user(question.suggested_by)
+            if user: suggested_by_str = f"{user.mention} ({user.id})"
+            else: suggested_by_str = f"ID: {question.suggested_by}"
+
+        short_id = matched_qid.split('-')[0]
+        embed = discord.Embed(title=f"Question Details (ID: {short_id})", color=discord.Color.blue())
+        embed.description = box(question.question, lang="text")
+        embed.add_field(name="List", value=f"{list_name} (`{question.list_id}`)", inline=True)
+        embed.add_field(name="Status", value=question.status.title(), inline=True)
+        embed.add_field(name="Suggested By", value=suggested_by_str, inline=False)
+        
+        if question.added_on.tzinfo is None:
+             question.added_on = question.added_on.replace(tzinfo=timezone.utc)
+        added_ts = discord.utils.format_dt(question.added_on, 'f')
+        embed.add_field(name="Created On", value=added_ts, inline=False)
+        
+        await ctx.send(embed=embed)
+
+    @qotd_question.command(name="remove")
+    async def qotd_question_remove(self, ctx: commands.Context, question_id: str):
+        """Permanently delete a specific question."""
+        all_questions = await self.config.questions()
+        matched_qid = next((qid for qid in all_questions if qid.startswith(question_id)), None)
+        if not matched_qid: return await ctx.send(warning(f"Question not found."))
+        await self.delete_question_by_id(matched_qid)
+        await ctx.send(success(f"Question `{matched_qid.split('-')[0]}` deleted."))
+
+    # --- SUGGEST COMMANDS ---
     @qotd.group(name="suggest")
     async def qotd_suggest_admin(self, ctx: commands.Context):
         """Admin commands for managing pending question suggestions."""
@@ -640,7 +702,7 @@ class QuestionOfTheDay(commands.Cog):
 
         if not full_qid:
             return await ctx.send(warning(f"No pending suggestion found with short ID `{short_qid}`."))
-        if list_id not in lists_data or list_id == 'suggestions':
+        if list_id not in lists_data or list_id in ['suggestions', 'unassigned']:
             return await ctx.send(warning(f"List ID `{list_id}` is invalid."))
             
         try:
@@ -657,10 +719,9 @@ class QuestionOfTheDay(commands.Cog):
         question_data.added_on = datetime.now(timezone.utc) 
         await self.update_question_data(full_qid, question_data)
         
-        # --- Grant approval reward ---
+        # Grant approval reward
         reward = await self.config.approval_reward()
         if reward > 0 and question_data.suggested_by:
-            # Try to get member to pay
             guild = ctx.guild
             member = guild.get_member(question_data.suggested_by)
             if not member:
@@ -763,12 +824,15 @@ class QuestionOfTheDay(commands.Cog):
         if not lists_data: return await ctx.send("No question lists defined.")
         embed = discord.Embed(title="📋 Configured Question Lists", color=discord.Color.gold())
         for list_id, list_dict in lists_data.items():
+            try:
+                list_obj = QuestionList.model_validate(list_dict)
+            except ValidationError:
+                continue
             count = sum(1 for q in all_questions.values() if q.get('list_id') == list_id)
             icon = "🗃️"
             if list_id == "suggestions": icon = "📩"
             elif list_id == "unassigned": icon = "❓"
             
-            # Minimal info for brevity
             list_info = f"**Questions:** {count}"
             embed.add_field(name=f"{icon} {list_dict['name']} (`{list_id}`)", value=list_info, inline=False)
         await ctx.send(embed=embed)
@@ -798,11 +862,44 @@ class QuestionOfTheDay(commands.Cog):
 
     @qotd_list_management.group(name="rule")
     async def qotd_list_rule(self, ctx: commands.Context):
-        """Manage list rules."""
+        """Manage list-specific exclusion rules."""
         pass
-    
-    # ... (Skipping repetitive rule commands addexclusion/removeexclusion for brevity as they exist in base) ...
-    # You can re-add them from previous if needed, but for now focusing on requested features.
+        
+    @qotd_list_rule.command(name="addexclusion")
+    async def qotd_list_rule_add(self, ctx: commands.Context, list_id: str, month_day: str):
+        """Adds a single day (MM-DD) when this list should NOT be used."""
+        lists_data = await self.config.lists()
+        if list_id not in lists_data:
+            return await ctx.send(warning(f"List ID `{list_id}` not found."))
+        if not month_day.strip().replace('-', '').isdigit() or len(month_day) != 5 or month_day[2] != '-':
+            return await ctx.send(warning("Date format must be `MM-DD`."))
+        try:
+            list_obj = QuestionList.model_validate(lists_data[list_id])
+        except ValidationError:
+            return await ctx.send(warning(f"List data for `{list_id}` is invalid."))
+        if month_day in list_obj.exclusion_dates:
+            return await ctx.send(warning(f"Date **{month_day}** is already an exclusion."))
+        list_obj.exclusion_dates.append(month_day)
+        async with self.config.lists() as lists:
+            lists[list_id] = list_obj.model_dump()
+        await ctx.send(f"Added exclusion date **{month_day}** to list **{list_obj.name}**.")
+
+    @qotd_list_rule.command(name="removeexclusion")
+    async def qotd_list_rule_remove(self, ctx: commands.Context, list_id: str, month_day: str):
+        """Removes a single exclusion day."""
+        lists_data = await self.config.lists()
+        if list_id not in lists_data:
+            return await ctx.send(warning(f"List ID `{list_id}` not found."))
+        try:
+            list_obj = QuestionList.model_validate(lists_data[list_id])
+        except ValidationError:
+            return await ctx.send(warning(f"List data for `{list_id}` is invalid."))
+        if month_day not in list_obj.exclusion_dates:
+            return await ctx.send(warning(f"Date **{month_day}** is not an exclusion."))
+        list_obj.exclusion_dates.remove(month_day)
+        async with self.config.lists() as lists:
+            lists[list_id] = list_obj.model_dump()
+        await ctx.send(f"Removed exclusion date **{month_day}** from list **{list_obj.name}**.")
 
     @qotd.group(name="schedule")
     async def qotd_schedule_management(self, ctx: commands.Context):
@@ -851,23 +948,111 @@ class QuestionOfTheDay(commands.Cog):
 
     @qotd.command(name="import")
     async def qotd_import(self, ctx: commands.Context, list_id: str):
-        """Imports questions."""
-        # (Existing import logic - simplified for brevity in this response but full logic assumed present)
-        if not ctx.message.attachments: return await ctx.send("No file.")
-        # ... (Standard import implementation) ...
-        await ctx.send("Import functionality placeholder (assumed standard implementation).")
+        """Imports questions from JSON."""
+        if not ctx.message.attachments: return await ctx.send(warning("Attach a JSON file."))
+        lists_data = await self.config.lists()
+        if list_id not in lists_data: return await ctx.send(warning("List ID not found."))
+        file = ctx.message.attachments[0]
+        if not file.filename.endswith('.json'): return await ctx.send(warning("Must be a JSON file."))
+        try:
+            file_data = await file.read()
+            questions_list = json.loads(file_data.decode('utf-8'))
+        except Exception as e: return await ctx.send(warning(f"Error parsing file: {e}"))
+        
+        if not isinstance(questions_list, list): return await ctx.send(warning("JSON must be a list."))
+
+        imported = 0
+        skipped = 0
+        duplicates = 0
+        IGNORED = ["2s5qal", "e8auv2"]
+        
+        async with self.config.questions() as global_questions:
+            for item in questions_list:
+                if not isinstance(item, dict): 
+                    skipped += 1
+                    continue
+                imported_id = item.get("id")
+                if imported_id and imported_id in global_questions:
+                    duplicates += 1
+                    continue
+                
+                q_text = item.get("question")
+                if not q_text:
+                    for k,v in item.items():
+                        if k not in IGNORED and isinstance(v, str):
+                            q_text = v
+                            break
+                if not q_text:
+                    skipped += 1
+                    continue
+
+                final_id = imported_id if imported_id else str(uuid.uuid4())
+                if final_id in global_questions: final_id = str(uuid.uuid4())
+
+                suggested_by = item.get("suggested_by_id")
+                if not isinstance(suggested_by, int): suggested_by = ctx.author.id
+                
+                added_on = datetime.now(timezone.utc)
+                if isinstance(item.get("added_on"), str):
+                    try: added_on = datetime.fromisoformat(item.get("added_on"))
+                    except ValueError: pass
+                
+                new_q = QuestionData(id=final_id, question=q_text, suggested_by=suggested_by, list_id=list_id, status="not asked", added_on=added_on)
+                global_questions[final_id] = json.loads(new_q.model_dump_json())
+                imported += 1
+        await ctx.send(f"Imported {imported}. Skipped {skipped}. Duplicates {duplicates}.")
 
     @qotd.command(name="export")
     async def qotd_export(self, ctx: commands.Context, list_id: str):
-        """Exports questions."""
-        # (Existing export logic)
-        await ctx.send("Export functionality placeholder (assumed standard implementation).")
+        """Exports questions to JSON."""
+        lists_data = await self.config.lists()
+        if list_id not in lists_data: return await ctx.send(warning("List ID not found."))
+        all_q = await self.config.questions()
+        list_name = lists_data.get(list_id, {}).get('name', 'Unknown')
+        export_data = []
+        export_data.append({"2s5qal": f"Export: {list_name}"})
+        export_data.append({"e8auv2": f"List ID: {list_id}"})
+        
+        count = 0
+        for qid, qdict in all_q.items():
+            if qdict.get('list_id') == list_id:
+                s_id = qdict.get('suggested_by')
+                s_name = "System"
+                if s_id:
+                    u = self.bot.get_user(s_id)
+                    if u: s_name = u.display_name
+                    else: s_name = f"ID: {s_id}"
+                
+                export_data.append({
+                    "id": qid,
+                    "question": qdict.get('question'),
+                    "suggested_by_id": s_id,
+                    "suggested_by_name": s_name,
+                    "added_on": qdict.get('added_on'),
+                    "last_asked": qdict.get('last_asked')
+                })
+                count += 1
+        
+        if count == 0: return await ctx.send("List is empty.")
+        
+        filename = f"qotd_{list_id}.json"
+        temp_dir = cog_data_path(self) / "exports"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        path = temp_dir / filename
+        
+        try:
+            with path.open("w", encoding="utf-8") as f: json.dump(export_data, f, indent=4)
+            await ctx.send(f"Exported {count} questions.", file=discord.File(path))
+        except Exception as e:
+            await ctx.send(warning(f"Export failed: {e}"))
+        finally:
+            path.unlink(missing_ok=True)
 
     @commands.hybrid_command(name="suggestqotd")
     @commands.guild_only()
     async def suggest_qotd_command(self, ctx: commands.Context):
         """Suggest a question."""
         lists_data = await self.config.lists()
-        list_names = [v['name'] for v in lists_data.values() if v['id'] not in ["suggestions", "unassigned"]]
+        list_names = [v['name'] for v in lists_data.values() if v['id'] != "suggestions"]
         view = SuggestionButton(self, list_names)
         await ctx.send("Click below to suggest!", view=view)
