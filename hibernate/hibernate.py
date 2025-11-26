@@ -302,3 +302,36 @@ class Hibernate(commands.Cog):
         
         await self.config.member(member).hibernation_end.set(new_ts)
         await ctx.send(f"Extended {member.display_name}'s hibernation by {days} days.\nNew End: <t:{int(new_ts)}:F>")
+
+    @hibernatemanage.command(name="cancel")
+    async def cancel_user(self, ctx, member: discord.Member):
+        """Immediately cancels a user's active hibernation."""
+        current_end = await self.config.member(member).hibernation_end()
+        
+        if not current_end:
+            return await ctx.send(f"**{member.display_name}** is not currently tracked as hibernating.")
+
+        settings = await self.config.guild(ctx.guild).all()
+        target_role_id = settings["target_role_id"]
+        role_removed = False
+
+        # Attempt to remove the role if configured
+        if target_role_id:
+            target_role = ctx.guild.get_role(target_role_id)
+            if target_role and target_role in member.roles:
+                try:
+                    await member.remove_roles(target_role, reason="Hibernation cancelled by admin.")
+                    role_removed = True
+                except discord.Forbidden:
+                    await ctx.send(f"Warning: Could not remove the role **{target_role.name}** due to missing permissions, but hibernation tracking was cleared.")
+                except discord.HTTPException:
+                    pass
+
+        # Clear the config tracking regardless of role removal success
+        await self.config.member(member).hibernation_end.set(None)
+
+        status_msg = "Hibernation tracking cleared."
+        if role_removed:
+            status_msg = f"Hibernation role **{target_role.name}** removed and tracking cleared."
+        
+        await ctx.send(f"**{member.display_name}**'s hibernation has been cancelled. {status_msg}")
