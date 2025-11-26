@@ -133,22 +133,31 @@ class Hibernate(commands.Cog):
         if min_days > 0:
             # handle case where joined_at might be None (API edge case)
             if member.joined_at:
-                days_joined = (datetime.now(timezone.utc) - member.joined_at).days
+                # Ensure comparison is done with aware datetimes
+                joined_at_utc = member.joined_at.replace(tzinfo=timezone.utc) if member.joined_at.tzinfo is None else member.joined_at
+                days_joined = (datetime.now(timezone.utc) - joined_at_utc).days
                 if days_joined < min_days:
                     reasons.append(f"• You have not been a member long enough. (Required: {min_days} days, You: {days_joined} days)")
             else:
                 reasons.append("• Could not determine your join date.")
 
-        # Check Required Roles
+        # Check Required Roles (Must have ANY)
         if req_role_ids:
-            missing_roles = []
-            for rid in req_role_ids:
-                r = guild.get_role(rid)
-                if r and r not in member.roles:
-                    missing_roles.append(r.name)
+            member_role_ids = {r.id for r in member.roles}
             
-            if missing_roles:
-                reasons.append(f"• You are missing the following required roles: {humanize_list(missing_roles)}")
+            # Check if the set of required IDs has any intersection with the set of member's role IDs
+            # This implements the "Must have ANY" logic
+            has_required_role = bool(set(req_role_ids) & member_role_ids)
+            
+            if not has_required_role:
+                # Prepare error message
+                required_role_names = [r.name for rid in req_role_ids if (r := guild.get_role(rid))]
+                
+                if required_role_names:
+                    reasons.append(f"• You must have at least one of these roles to be eligible: {humanize_list(required_role_names)}")
+                else:
+                    reasons.append("• Required roles are configured, but I couldn't verify your eligibility as none of the roles are available in this server. Please contact an admin.")
+
 
         # If Failed Checks
         if reasons:
@@ -240,7 +249,7 @@ class Hibernate(commands.Cog):
             f"**Target Role:** {role.mention if isinstance(role, discord.Role) else role}\n"
             f"**Duration:** {data['duration_days']} days\n"
             f"**Min Join Days:** {data['min_days_joined']}\n"
-            f"**Required Roles (Must have ALL):** {humanize_list(req_roles_names) if req_roles_names else 'None'}"
+            f"**Required Roles (Must have ANY):** {humanize_list(req_roles_names) if req_roles_names else 'None'}"
         )
         embed = discord.Embed(title="Hibernate Settings", description=msg, color=discord.Color.blue())
         await ctx.send(embed=embed)
