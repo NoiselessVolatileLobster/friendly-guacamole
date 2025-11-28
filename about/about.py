@@ -48,6 +48,16 @@ class ChannelNavigatorView(discord.ui.View):
         voice_btn.callback = self.voice_callback
         self.add_item(voice_btn)
 
+        # 4. Add Server Guide Link Button (If Onboarding feature is present)
+        if "GUILD_ONBOARDING" in self.guild.features:
+            guide_btn = discord.ui.Button(
+                style=discord.ButtonStyle.link,
+                label="Server Guide",
+                url=f"https://discord.com/channels/{self.guild.id}/guide",
+                row=4
+            )
+            self.add_item(guide_btn)
+
     def make_callback_public(self, cat_id, label):
         """Factory to create specific callbacks for loop variables."""
         async def callback(interaction: discord.Interaction):
@@ -133,7 +143,14 @@ class About(commands.Cog):
             "first_day_title": "First Day Channels",
             "first_day_description": "Welcome! Here are some channels to get you started:",
             "first_day_thumbnail": "",
-            "first_day_image": ""
+            "first_day_image": "",
+            "new_member_config": {
+                "ephemeral_role": None,
+                "posted_intro_role": None,
+                "no_intro_role": None,
+                "general_only_role": None,
+                "general_only_level": 0
+            }
         }
         self.config.register_guild(**default_guild)
 
@@ -144,14 +161,15 @@ class About(commands.Cog):
             await ctx.send("I couldn't determine when that member joined this server.")
             return None
 
-        # --- 1. Level Retrieval (NEW) ---
+        # --- 1. Level Retrieval (Updated) ---
         level_str = ""
+        user_level = 0 # Default level if cog not loaded or user not found
         levelup_cog = self.bot.get_cog("LevelUp")
         if levelup_cog:
             try:
                 # Based on user info, get_level is async
-                level = await levelup_cog.get_level(member)
-                level_str = f"**Level {level}** • "
+                user_level = await levelup_cog.get_level(member)
+                level_str = f"**Level {user_level}** • "
             except Exception:
                 # Fail silently if user has no profile or other error
                 pass
@@ -281,6 +299,45 @@ class About(commands.Cog):
         if helper_parts:
             helper_output = f"\n**Teams:** {', '.join(helper_parts)}"
 
+        # --- 8. New Member Section (NEW) ---
+        new_member_config = await self.config.guild(ctx.guild).new_member_config()
+        nm_output = ""
+        
+        # Unpack config
+        eph_rid = new_member_config.get("ephemeral_role")
+        intro_rid = new_member_config.get("posted_intro_role")
+        nointro_rid = new_member_config.get("no_intro_role")
+        # gen_rid = new_member_config.get("general_only_role") # Role ID stored for reference/commands
+        gen_level = new_member_config.get("general_only_level", 0)
+
+        # Helpers
+        def has_role(r_id):
+            if r_id is None: return False
+            return member.get_role(int(r_id)) is not None
+
+        is_ephemeral = has_role(eph_rid)
+        has_posted_intro = has_role(intro_rid)
+        has_no_intro = has_role(nointro_rid)
+
+        # Logic
+        if is_ephemeral:
+            nm_output = "\n\n**New Member**\n💨Ephemeral Mode. Cannot see previous messages or reply to users"
+        else:
+            # Not Ephemeral
+            if user_level < gen_level:
+                # Below required level
+                if has_no_intro:
+                    nm_output = "\n\n**New Member**\n🗣️ Chat more and post an intro to unlock the rest of the server"
+                elif has_posted_intro:
+                    nm_output = "\n\n**New Member**\n🗣️ Chat more to unlock the rest of the server"
+            else:
+                # Met required level
+                if has_no_intro:
+                    nm_output = "\n\n**New Member**\n🗣️ Post an intro to unlock the rest of the server"
+                elif has_posted_intro:
+                    # Met level AND has posted intro -> Do not display section
+                    nm_output = ""
+
         # --- Role Progress Calculation ---
         role_targets = await self.config.guild(ctx.guild).role_targets()
         role_buddies = await self.config.guild(ctx.guild).role_buddies()
@@ -338,6 +395,7 @@ class About(commands.Cog):
             activity_output + # Activity Status
             award_output +   # Awards
             helper_output +  # Teams
+            nm_output +      # NEW: New Member Section
             role_progress_output
         )
 
@@ -364,8 +422,6 @@ class About(commands.Cog):
             if not category:
                 continue
             
-            # Count text-based channels (Text, News, Forum) excluding Voice/Stage
-            # This logic ensures we count "readable" channels for the Public/Secret stats
             c_count = 0
             for c in category.channels:
                 if isinstance(c, (discord.TextChannel, discord.ForumChannel)):
@@ -575,6 +631,70 @@ class About(commands.Cog):
             await ctx.send(f"Raw Data for **{member.display_name}**:\n```json\n{formatted_data}\n```")
         except Exception as e:
             await ctx.send(f"Error: `{e}`")
+
+    # NEW: New Member Configuration Group
+    @aboutset.group(name="newmember")
+    async def aboutset_newmember(self, ctx):
+        """Manage 'New Member' section settings."""
+        pass
+
+    @aboutset_newmember.command(name="ephemeral")
+    async def nm_ephemeral(self, ctx, role: discord.Role):
+        """Set the Ephemeral role."""
+        async with self.config.guild(ctx.guild).new_member_config() as conf:
+            conf["ephemeral_role"] = role.id
+        await ctx.send(f"Ephemeral role set to **{role.name}**.")
+
+    @aboutset_newmember.command(name="removeephemeral")
+    async def nm_removeephemeral(self, ctx):
+        """Unset the Ephemeral role."""
+        async with self.config.guild(ctx.guild).new_member_config() as conf:
+            conf["ephemeral_role"] = None
+        await ctx.send("Ephemeral role config cleared.")
+
+    @aboutset_newmember.command(name="postedintro")
+    async def nm_postedintro(self, ctx, role: discord.Role):
+        """Set the 'Posted Intro' role."""
+        async with self.config.guild(ctx.guild).new_member_config() as conf:
+            conf["posted_intro_role"] = role.id
+        await ctx.send(f"Posted Intro role set to **{role.name}**.")
+
+    @aboutset_newmember.command(name="removepostedintro")
+    async def nm_removepostedintro(self, ctx):
+        """Unset the 'Posted Intro' role."""
+        async with self.config.guild(ctx.guild).new_member_config() as conf:
+            conf["posted_intro_role"] = None
+        await ctx.send("Posted Intro role config cleared.")
+
+    @aboutset_newmember.command(name="nointro")
+    async def nm_nointro(self, ctx, role: discord.Role):
+        """Set the 'No Intro' role."""
+        async with self.config.guild(ctx.guild).new_member_config() as conf:
+            conf["no_intro_role"] = role.id
+        await ctx.send(f"No Intro role set to **{role.name}**.")
+
+    @aboutset_newmember.command(name="removenointro")
+    async def nm_removenointro(self, ctx):
+        """Unset the 'No Intro' role."""
+        async with self.config.guild(ctx.guild).new_member_config() as conf:
+            conf["no_intro_role"] = None
+        await ctx.send("No Intro role config cleared.")
+
+    @aboutset_newmember.command(name="general")
+    async def nm_general(self, ctx, role: discord.Role, level: int):
+        """Set the 'General Only' role and level threshold."""
+        async with self.config.guild(ctx.guild).new_member_config() as conf:
+            conf["general_only_role"] = role.id
+            conf["general_only_level"] = level
+        await ctx.send(f"General Only role set to **{role.name}** with required level **{level}**.")
+
+    @aboutset_newmember.command(name="removegeneral")
+    async def nm_removegeneral(self, ctx):
+        """Unset the 'General Only' role and level."""
+        async with self.config.guild(ctx.guild).new_member_config() as conf:
+            conf["general_only_role"] = None
+            conf["general_only_level"] = 0
+        await ctx.send("General Only role/level config cleared.")
 
     # --- Channel/Category Management ---
     @aboutset.group(name="channel")
