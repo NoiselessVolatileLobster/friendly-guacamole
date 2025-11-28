@@ -144,17 +144,29 @@ class About(commands.Cog):
             await ctx.send("I couldn't determine when that member joined this server.")
             return None
 
-        # --- 1. Time Calculation (Line 1) ---
+        # --- 1. Level Retrieval (NEW) ---
+        level_str = ""
+        levelup_cog = self.bot.get_cog("LevelUp")
+        if levelup_cog:
+            try:
+                # Based on user info, get_level is async
+                level = await levelup_cog.get_level(member)
+                level_str = f"**Level {level}** • "
+            except Exception:
+                # Fail silently if user has no profile or other error
+                pass
+
+        # --- 2. Time Calculation (Line 1) ---
         now = datetime.now(timezone.utc)
         joined_at = member.joined_at
         delta = now - joined_at
         days_in_server = delta.days
         date_str = joined_at.strftime("%B %d, %Y")
         
-        # Line 1: Joined on...
-        base_description = f"Joined on {date_str} ({days_in_server} days ago)"
+        # Line 1: Level + Joined on...
+        base_description = f"{level_str}Joined on {date_str} ({days_in_server} days ago)"
 
-        # --- 2. Egg Status | House (Line 2) ---
+        # --- 3. Egg Status | House (Line 2) ---
         egg_roles_config = await self.config.guild(ctx.guild).egg_status_roles()
         egg_parts = []
         for role_id_str, emoji in egg_roles_config.items():
@@ -181,7 +193,7 @@ class About(commands.Cog):
         if line_2_components:
             line_2_output = f"\n{' | '.join(line_2_components)}"
 
-        # --- 3. Location | DM Status (Line 3) ---
+        # --- 4. Location | DM Status (Line 3) ---
         location_roles_config = await self.config.guild(ctx.guild).location_roles()
         location_parts = []
         for role_id_str, emoji in location_roles_config.items():
@@ -208,7 +220,7 @@ class About(commands.Cog):
         if line_3_components:
             line_3_output = f"\n{' | '.join(line_3_components)}"
 
-        # --- 4. Activity Status (Line 4) ---
+        # --- 5. Activity Status (Line 4) ---
         activity_output = ""
         ouija_cog = self.bot.get_cog("OuijaPoke")
         
@@ -243,7 +255,7 @@ class About(commands.Cog):
             except Exception as e:
                 print(f"Warning: Could not get OuijaPoke activity for {member.name}. Error: {e}")
         
-        # --- 5. Awards (Line 5) ---
+        # --- 6. Awards (Line 5) ---
         award_roles_config = await self.config.guild(ctx.guild).award_roles()
         award_parts = []
 
@@ -256,7 +268,7 @@ class About(commands.Cog):
         if award_parts:
             award_output = f"\n**Awards:** {', '.join(award_parts)}"
 
-        # --- 6. Teams (Line 6) ---
+        # --- 7. Teams (Line 6) ---
         helper_roles_config = await self.config.guild(ctx.guild).helper_roles()
         helper_parts = []
 
