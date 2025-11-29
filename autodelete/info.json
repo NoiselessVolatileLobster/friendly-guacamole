@@ -1,0 +1,10 @@
+{
+    "author": ["NoiselessVolatileLobster"],
+    "description": "Automatically deletes old messages and logs them to a text file.",
+    "install_msg": "The AutoDelete cog has been installed.",
+    "short": "Auto-purge messages older than X days.",
+    "tags": ["utility", "moderation", "purge"],
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "end_user_data_statement": "This cog temporarily processes message content to create deletion logs, but does not permanently store data."
+}
