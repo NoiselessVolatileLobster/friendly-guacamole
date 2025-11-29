@@ -17,8 +17,9 @@ class AutoDelete(commands.Cog):
         default_guild = {
             "log_channel": None,
             "channels": {}  
-            # Old Format: {channel_id: days_int}
-            # New Format: {channel_id: {"days": int, "include_pins": bool}}
+            # V1 Format: {channel_id: days_int}
+            # V2 Format: {channel_id: {"days": int, "include_pins": bool}}
+            # V3 Format: {channel_id: {"hours": int, "include_pins": bool}}
         }
         self.config.register_guild(**default_guild)
         
@@ -54,23 +55,35 @@ class AutoDelete(commands.Cog):
                 if not channel:
                     continue
 
-                # Handle data migration (int vs dict)
+                # --- Data Migration Logic ---
+                # Normalize everything to hours
+                include_pins = False
+                hours = 0
+
                 if isinstance(settings, int):
-                    days = settings
-                    include_pins = False
-                else:
-                    days = settings.get("days")
+                    # V1: Just an int (days)
+                    hours = settings * 24
+                elif isinstance(settings, dict):
                     include_pins = settings.get("include_pins", False)
+                    if "hours" in settings:
+                        # V3: New standard
+                        hours = settings["hours"]
+                    elif "days" in settings:
+                        # V2: Old dict standard
+                        hours = settings["days"] * 24
+                
+                if hours <= 0:
+                    continue
+                # -----------------------------
 
                 # Permission check
                 if not channel.permissions_for(guild.me).manage_messages:
                     continue
 
-                cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+                cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
                 
-                # logic to skip pins if needed
+                # Logic to skip pins if needed
                 def check_msg(m):
-                    # If we are NOT including pins, we only return True (delete) if the message is NOT pinned
                     if not include_pins and m.pinned:
                         return False
                     return True
@@ -135,20 +148,36 @@ class AutoDelete(commands.Cog):
         await ctx.send(f"Log channel set to {channel.mention}. \n*Note: No messages will be deleted if this is not set.*")
 
     @autodelete.command(name="set")
-    async def set_channel_config(self, ctx, channel: discord.TextChannel, days: int, include_pins: bool = False):
+    async def set_channel_config(self, ctx, channel: discord.TextChannel, amount: int, unit: str, include_pins: bool = False):
         """
         Configure a channel to auto-delete messages.
         
         Arguments:
         - channel: The channel to monitor.
-        - days: Messages older than this will be deleted.
+        - amount: The number of days or hours.
+        - unit: 'hours', 'hour', 'h', 'days', 'day', or 'd'.
         - include_pins: (Optional) true/false. Whether to delete pinned messages. Defaults to False.
+        
+        Examples:
+        [p]autodelete set #general 12 hours
+        [p]autodelete set #updates 3 days true
         """
-        if days < 1:
-            return await ctx.send("Days must be at least 1.")
+        if amount < 1:
+            return await ctx.send("Amount must be at least 1.")
+
+        # Normalize unit
+        unit = unit.lower()
+        if unit in ["h", "hour", "hours"]:
+            total_hours = amount
+            display_str = f"{amount} hours"
+        elif unit in ["d", "day", "days"]:
+            total_hours = amount * 24
+            display_str = f"{amount} days"
+        else:
+            return await ctx.send("Invalid unit. Please use 'days' or 'hours'.")
 
         settings = {
-            "days": days,
+            "hours": total_hours,
             "include_pins": include_pins
         }
 
@@ -156,7 +185,7 @@ class AutoDelete(commands.Cog):
             channels[str(channel.id)] = settings
 
         pin_status = "including" if include_pins else "excluding"
-        await ctx.send(f"Messages in {channel.mention} older than **{days} days** will be deleted ({pin_status} pins).")
+        await ctx.send(f"Messages in {channel.mention} older than **{display_str}** will be deleted ({pin_status} pins).")
 
     @autodelete.command(name="remove")
     async def remove_channel_config(self, ctx, channel: discord.TextChannel):
@@ -189,16 +218,27 @@ class AutoDelete(commands.Cog):
                 c = ctx.guild.get_channel(int(cid))
                 name = c.mention if c else "Deleted Channel"
                 
-                # Handle int vs dict for display
-                if isinstance(settings, int):
-                    days = settings
-                    pins = False
-                else:
-                    days = settings.get("days")
-                    pins = settings.get("include_pins", False)
+                # Display Logic
+                pins = False
+                hours = 0
                 
+                if isinstance(settings, int):
+                    hours = settings * 24
+                else:
+                    pins = settings.get("include_pins", False)
+                    if "hours" in settings:
+                        hours = settings["hours"]
+                    elif "days" in settings:
+                        hours = settings["days"] * 24
+
+                # Formatting time string
+                if hours % 24 == 0:
+                    time_str = f"{int(hours / 24)} days"
+                else:
+                    time_str = f"{hours} hours"
+
                 pin_icon = "📌❌" if not pins else "📌✅"
-                chan_str += f"{name}: **{days} days** ({pin_icon})\n"
+                chan_str += f"{name}: **{time_str}** ({pin_icon})\n"
 
         embed = discord.Embed(title="AutoDelete Settings", color=discord.Color.red())
         embed.add_field(name="Log Channel", value=log_str, inline=False)
