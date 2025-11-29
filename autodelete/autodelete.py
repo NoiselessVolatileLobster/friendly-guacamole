@@ -4,7 +4,7 @@ import io
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Union
 
-from redbot.core import commands, Config, checks
+from redbot.core import commands, Config
 from discord.ext import tasks
 
 class AutoDelete(commands.Cog):
@@ -16,11 +16,12 @@ class AutoDelete(commands.Cog):
         
         default_guild = {
             "log_channel": None,
-            "channels": {}  # Format: {channel_id: days_int}
+            "channels": {}  
+            # Old Format: {channel_id: days_int}
+            # New Format: {channel_id: {"days": int, "include_pins": bool}}
         }
         self.config.register_guild(**default_guild)
         
-        # Start the background task
         self.cleanup_loop.start()
 
     def cog_unload(self):
@@ -48,11 +49,18 @@ class AutoDelete(commands.Cog):
             if not log_channel:
                 continue
 
-            # Iterate through configured channels
-            for channel_id, days in watched_channels.items():
+            for channel_id, settings in watched_channels.items():
                 channel = guild.get_channel(int(channel_id))
                 if not channel:
                     continue
+
+                # Handle data migration (int vs dict)
+                if isinstance(settings, int):
+                    days = settings
+                    include_pins = False
+                else:
+                    days = settings.get("days")
+                    include_pins = settings.get("include_pins", False)
 
                 # Permission check
                 if not channel.permissions_for(guild.me).manage_messages:
@@ -60,22 +68,27 @@ class AutoDelete(commands.Cog):
 
                 cutoff = datetime.now(timezone.utc) - timedelta(days=days)
                 
+                # logic to skip pins if needed
+                def check_msg(m):
+                    # If we are NOT including pins, we only return True (delete) if the message is NOT pinned
+                    if not include_pins and m.pinned:
+                        return False
+                    return True
+
                 try:
-                    # bulk=False is required for messages older than 14 days
                     deleted_messages = await channel.purge(
                         limit=None, 
                         before=cutoff, 
-                        bulk=False,
+                        check=check_msg,
+                        bulk=False, # Required for messages > 14 days old
                         reason="AutoDelete: Message older than threshold."
                     )
                 except discord.HTTPException as e:
-                    # In case of rate limits or other discord errors, skip and try next hour
                     print(f"AutoDelete Error in {guild.name}: {e}")
                     continue
 
                 if deleted_messages:
                     await self.generate_log(log_channel, channel, deleted_messages)
-                    # heavy operation sleep to prevent clogging the bot
                     await asyncio.sleep(2) 
 
     async def generate_log(self, log_channel: discord.TextChannel, source_channel: discord.TextChannel, messages: list):
@@ -88,15 +101,15 @@ class AutoDelete(commands.Cog):
         text_output += f"Total Messages Deleted: {len(messages)}\n"
         text_output += "-" * 40 + "\n\n"
 
-        # Messages are returned newest first usually, let's reverse to read chronologically
         for msg in reversed(messages):
             created_at = msg.created_at.strftime("%Y-%m-%d %H:%M:%S")
             author = f"{msg.author} ({msg.author.id})"
             content = msg.content if msg.content else "[No Text Content / Attachment / Embed]"
             
-            text_output += f"[{created_at}] {author}:\n{content}\n\n"
+            is_pinned = " [PINNED]" if msg.pinned else ""
+            
+            text_output += f"[{created_at}] {author}{is_pinned}:\n{content}\n\n"
 
-        # Create file in memory
         f = io.BytesIO(text_output.encode("utf-8"))
         file_name = f"autodelete_{source_channel.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
         
@@ -105,10 +118,8 @@ class AutoDelete(commands.Cog):
                 content=f"Deleted **{len(messages)}** messages from {source_channel.mention}.",
                 file=discord.File(f, filename=file_name)
             )
-        except discord.Forbidden:
-            pass # Can't send to log channel
-        except discord.HTTPException:
-            pass # File too big or other error
+        except (discord.Forbidden, discord.HTTPException):
+            pass 
 
     @commands.group()
     @commands.guild_only()
@@ -124,15 +135,28 @@ class AutoDelete(commands.Cog):
         await ctx.send(f"Log channel set to {channel.mention}. \n*Note: No messages will be deleted if this is not set.*")
 
     @autodelete.command(name="set")
-    async def set_channel_config(self, ctx, channel: discord.TextChannel, days: int):
-        """Configure a channel to auto-delete messages older than X days."""
+    async def set_channel_config(self, ctx, channel: discord.TextChannel, days: int, include_pins: bool = False):
+        """
+        Configure a channel to auto-delete messages.
+        
+        Arguments:
+        - channel: The channel to monitor.
+        - days: Messages older than this will be deleted.
+        - include_pins: (Optional) true/false. Whether to delete pinned messages. Defaults to False.
+        """
         if days < 1:
             return await ctx.send("Days must be at least 1.")
 
-        async with self.config.guild(ctx.guild).channels() as channels:
-            channels[str(channel.id)] = days
+        settings = {
+            "days": days,
+            "include_pins": include_pins
+        }
 
-        await ctx.send(f"Messages in {channel.mention} older than **{days} days** will now be automatically deleted.")
+        async with self.config.guild(ctx.guild).channels() as channels:
+            channels[str(channel.id)] = settings
+
+        pin_status = "including" if include_pins else "excluding"
+        await ctx.send(f"Messages in {channel.mention} older than **{days} days** will be deleted ({pin_status} pins).")
 
     @autodelete.command(name="remove")
     async def remove_channel_config(self, ctx, channel: discord.TextChannel):
@@ -161,14 +185,25 @@ class AutoDelete(commands.Cog):
             chan_str = "No channels configured."
         else:
             chan_str = ""
-            for cid, days in channels.items():
+            for cid, settings in channels.items():
                 c = ctx.guild.get_channel(int(cid))
                 name = c.mention if c else "Deleted Channel"
-                chan_str += f"{name}: **{days} days**\n"
+                
+                # Handle int vs dict for display
+                if isinstance(settings, int):
+                    days = settings
+                    pins = False
+                else:
+                    days = settings.get("days")
+                    pins = settings.get("include_pins", False)
+                
+                pin_icon = "📌❌" if not pins else "📌✅"
+                chan_str += f"{name}: **{days} days** ({pin_icon})\n"
 
         embed = discord.Embed(title="AutoDelete Settings", color=discord.Color.red())
         embed.add_field(name="Log Channel", value=log_str, inline=False)
         embed.add_field(name="Watched Channels", value=chan_str, inline=False)
+        embed.set_footer(text="📌❌ = Pins Safe | 📌✅ = Pins Deleted")
         
         await ctx.send(embed=embed)
 
@@ -176,7 +211,6 @@ class AutoDelete(commands.Cog):
     async def force_run(self, ctx):
         """Manually trigger the deletion task now."""
         await ctx.send("Triggering cleanup task manually...")
-        # We start the task function manually, but not as a loop
         try:
             await self.cleanup_loop()
         except Exception as e:
