@@ -4,7 +4,7 @@ import asyncio
 import re
 import datetime
 import json
-import os # <-- Added this import
+import os
 from typing import Optional, Literal
 from collections import Counter
 
@@ -19,7 +19,7 @@ class Gortle(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=8473629103, force_registration=True)
 
-        # Initialize lists and load them immediately
+        # Initialize lists
         self.solutions = []
         self.guesses = []
         self._load_word_lists()
@@ -71,50 +71,28 @@ class Gortle(commands.Cog):
 
     def _load_word_lists(self):
         """Loads words from JSON files in the data directory."""
-        # bundled_data_path(self) points to the root of the cog folder: .../cogs/gortle/
-        base_path = bundled_data_path(self)
-        
-        # Correct path construction: .../gortle/data/solutions.json
-        solutions_path = base_path / "solutions.json"
-        guesses_path = base_path / "guesses.json"
-
-        # --- Enhanced Debugging ---
-        print("-" * 40)
-        print(f"Gortle: Checking Solutions Path: {solutions_path}")
-        print(f"Gortle: Solutions File Exists: {os.path.exists(solutions_path)}")
-        print(f"Gortle: Checking Guesses Path: {guesses_path}")
-        print(f"Gortle: Guesses File Exists: {os.path.exists(guesses_path)}")
-        print("-" * 40)
-        # --------------------------
+        data_path = bundled_data_path(self)
         
         try:
-            # Check if the file exists before trying to open it
-            if not os.path.exists(solutions_path) or not os.path.exists(guesses_path):
-                raise FileNotFoundError("One or both word list files are missing or path is wrong.")
-            
-            # Note: Pathlib support (using / operator for joining) is robust
-            with open(solutions_path, "r", encoding="utf-8") as f:
+            with open(data_path / "solutions.json", "r", encoding="utf-8") as f:
                 self.solutions = json.load(f)
             
-            with open(guesses_path, "r", encoding="utf-8") as f:
+            with open(data_path / "guesses.json", "r", encoding="utf-8") as f:
                 raw_guesses = json.load(f)
                 
             # Combine and deduplicate to ensure solutions are valid guesses
+            # Using set for O(1) lookups later
             combined = set(raw_guesses + self.solutions)
             self.guesses = list(combined)
             
         except FileNotFoundError as e:
-            print(f"[Gortle] CRITICAL: Word list files not found. Check cog/data/ structure. Error: {e}")
+            print(f"[Gortle] Error loading word lists: {e}")
             self.solutions = ["failed"]
             self.guesses = ["failed"]
         except json.JSONDecodeError as e:
-            print(f"[Gortle] CRITICAL: Error parsing JSON in word lists. Error: {e}")
+            print(f"[Gortle] Error parsing JSON: {e}")
             self.solutions = ["failed"]
             self.guesses = ["failed"]
-        
-        # Add the final check print here to confirm the action was taken
-        print(f"Gortle: _load_word_lists finished. Solutions: {len(self.solutions)}, Guesses: {len(self.guesses)}")
-
 
     async def game_loop(self):
         """Checks schedule for new games and weekly roles."""
@@ -151,7 +129,6 @@ class Gortle(commands.Cog):
             guild_config = await self.config.all_guilds()
             target_channel = None
             
-            # Find a guild with a configured channel to post the new game
             for gid, data in guild_config.items():
                 if data['channel_id']:
                     g = self.bot.get_guild(gid)
@@ -170,6 +147,7 @@ class Gortle(commands.Cog):
 
             # Pick new word
             used = await self.config.used_words()
+            # Reference self.solutions instead of imported constant
             available = [w for w in self.solutions if w not in used]
             
             if not available:
@@ -178,7 +156,7 @@ class Gortle(commands.Cog):
                 available = self.solutions
 
             if not available:
-                print("[Gortle] No words available in solutions.json! Check _load_word_lists output.")
+                print("[Gortle] No words available in solutions.json!")
                 return
 
             new_word = random.choice(available)
@@ -204,7 +182,7 @@ class Gortle(commands.Cog):
             role_id = await self.config.guild(target_channel.guild).mention_role()
             mention = f"<@&{role_id}>" if role_id else ""
             
-            embed = discord.Embed(title=f"New Gortle Started! (#{game_num})", description="Guess the 6-letter word by mentioning me! (`@BotName [6-letter-word]`)", color=discord.Color.green())
+            embed = discord.Embed(title=f"New Gortle Started! (#{game_num})", description="Guess the 6-letter word by mentioning me!", color=discord.Color.green())
             await target_channel.send(content=mention, embed=embed)
 
     async def check_weekly_role(self, now):
@@ -216,71 +194,54 @@ class Gortle(commands.Cog):
         if not role_id:
             return
 
-        # Check if it's the target day and hour, and if a full week has passed since the last award
         if now.weekday() == target_day and now.hour >= target_hour:
-            # 500000 seconds is approx 5.7 days, ensures we only run once per week
             if (now.timestamp() - last_award) > 500000: 
                 await self.award_weekly_role(role_id)
                 await self.config.last_weekly_award.set(int(now.timestamp()))
 
     async def award_weekly_role(self, role_id):
-        # Get all member data across all guilds
-        members_data = await self.config.all_members()
+        members = await self.config.all_members()
         
         guild_config = await self.config.all_guilds()
-        target_guild = None
         target_channel = None
-        
-        # Try to find a guild and channel to use for announcements and role management
         for gid, data in guild_config.items():
             if data['channel_id']:
                 g = self.bot.get_guild(gid)
                 if g:
-                    target_guild = g
                     target_channel = g.get_channel(data['channel_id'])
                     break
         
-        if not target_channel or not target_guild:
+        if not target_channel:
             return
 
-        role = target_guild.get_role(role_id)
+        role = target_channel.guild.get_role(role_id)
         if not role:
-            print(f"[Gortle] Weekly role ID {role_id} not found in guild {target_guild.id}.")
             return
 
-        # 1. Remove role from all current holders
         for member in role.members:
             try:
                 await member.remove_roles(role, reason="Gortle weekly reset")
-            except discord.Forbidden:
-                print(f"[Gortle] Cannot remove role from {member.name}, forbidden.")
-            except Exception:
+            except:
                 pass
 
-        # 2. Find the top scorer across the bot instance's tracked members
-        top_scorer_id = None
+        top_scorer = None
         top_score = -1
         
-        for g_id, m_data in members_data.items():
+        for g_id, m_data in members.items():
             for m_id, stats in m_data.items():
-                if stats.get('weekly_score', 0) > top_score:
+                if stats['weekly_score'] > top_score:
                     top_score = stats['weekly_score']
-                    top_scorer_id = m_id
-        
-        top_scorer = target_guild.get_member(top_scorer_id) if top_scorer_id else None
+                    top_scorer = target_channel.guild.get_member(m_id)
 
         if top_scorer and top_score > 0:
             try:
                 await top_scorer.add_roles(role, reason="Gortle weekly winner")
-                await target_channel.send(f"🏆 **{top_scorer.mention}** is the Gortle Champion of the week with **{top_score}** points! The weekly score has been reset.")
+                await target_channel.send(f"🏆 **{top_scorer.mention}** is the Gortle Champion of the week with {top_score} points!")
             except discord.Forbidden:
-                await target_channel.send("I tried to give the weekly role but lack permissions. Please check my role hierarchy.")
-        else:
-             await target_channel.send("Weekly Gortle scores have been reset. No winner found this week.")
-
-        # 3. Reset all weekly scores
-        for g_id, m_data in members_data.items():
-            for m_id in m_data.keys():
+                await target_channel.send("I tried to give the weekly role but lack permissions.")
+        
+        for g_id, m_data in members.items():
+            for m_id, stats in m_data.items():
                 await self.config.member_from_ids(g_id, m_id).weekly_score.set(0)
 
     @commands.Cog.listener()
@@ -295,7 +256,6 @@ class Gortle(commands.Cog):
             return
 
         content = message.content.lower()
-        # Regex to find exactly a 6-letter word boundary (to ignore prefixes/suffixes like "itsword")
         match = re.search(r"\b[a-z]{6}\b", content)
         
         if not match:
@@ -306,12 +266,11 @@ class Gortle(commands.Cog):
         if not await self.config.game_active():
             return
 
-        # Check if the word is in the combined dictionary (self.guesses)
+        # Use self.guesses instead of constant
         if guess not in self.guesses:
             await message.channel.send("I do not think that word is in my dictionary.", delete_after=5)
             return
 
-        # Cooldown check
         cooldown = await self.config.guild(message.guild).cooldown_seconds()
         last_guess = await self.config.member(message.author).last_guess_time()
         now = datetime.datetime.now(datetime.timezone.utc).timestamp()
@@ -322,14 +281,10 @@ class Gortle(commands.Cog):
                 next_time = int(last_guess + cooldown)
                 await message.channel.send(f"{message.author.mention}, you need to wait. Next guess: <t:{next_time}:R>", delete_after=5)
             except discord.Forbidden:
-                # Bot doesn't have permissions to delete or send messages quickly
                 pass
             return
 
-        # Update last guess time
         await self.config.member(message.author).last_guess_time.set(int(now))
-        
-        # Process the guess
         async with self.lock:
             await self.process_guess(message, guess)
 
@@ -345,27 +300,25 @@ class Gortle(commands.Cog):
         guess_chars = list(guess)
         sol_remaining = list(solution) 
         
-        # First Pass: Check for 🔵 (Correct letter, correct position)
         for i, char in enumerate(guess_chars):
             if char == sol_chars[i]:
-                emojis[i] = "🔵" # Blue Circle for perfect match
-                sol_remaining[i] = None # Remove from remaining pool
+                emojis[i] = "🔵"
+                sol_remaining[i] = None 
                 
                 if i not in solved_indices:
                     points += 2
                     state['solved_indices'].append(i)
                     state['found_letters'].append(char)
-                # Else: already found, no extra points
+                else:
+                    points += 0 
 
-        # Second Pass: Check for 🟠 (Correct letter, wrong position)
         for i, char in enumerate(guess_chars):
-            if emojis[i] != "": continue # Skip already matched characters
+            if emojis[i] != "": continue
 
             if char in sol_remaining:
-                emojis[i] = "🟠" # Orange Circle for found letter
-                sol_remaining[sol_remaining.index(char)] = None # Remove from remaining pool
-
-                # Only award points if this letter hasn't been fully accounted for
+                emojis[i] = "🟠"
+                sol_remaining[sol_remaining.index(char)] = None 
+                
                 total_in_sol = solution.count(char)
                 known_count = state['found_letters'].count(char)
                 
@@ -373,15 +326,13 @@ class Gortle(commands.Cog):
                     points += 1
                     state['found_letters'].append(char)
             else:
-                emojis[i] = "⚫" # Black Circle for not found letter
+                emojis[i] = "⚫"
 
-        # Update guessed letters for display
         current_guessed = set(state['guessed_letters'])
         for c in guess:
             current_guessed.add(c)
         state['guessed_letters'] = sorted(list(current_guessed))
         
-        # Save state and update score
         await self.config.game_state.set(state)
 
         async with self.config.member(message.author).words_guessed() as wg:
@@ -395,26 +346,17 @@ class Gortle(commands.Cog):
                 await self.config.member(message.author).weekly_score() + points
             )
 
-        # Build and send feedback embed
         game_num = await self.config.game_number()
         alphabet = "abcdefghijklmnopqrstuvwxyz"
-        
-        # Determine guessed/pending letters for a status keyboard
-        guessed_chars = set(state['guessed_letters'])
-        
-        keyboard_status = ""
-        for char in alphabet:
-            if char in guessed_chars:
-                # Mark letters that were guessed. Cannot differentiate between 🔵 and 🟠 yet without more state
-                keyboard_status += f"**{char}** " 
-            else:
-                keyboard_status += f"{char} "
+        guessed_alpha = "".join([c if c in state['guessed_letters'] else " " for c in alphabet]).replace(" ", "")
+        pending_alpha = "".join([c if c not in state['guessed_letters'] else " " for c in alphabet]).replace(" ", "")
 
         embed = discord.Embed(title=f"Gortle #{game_num}", color=discord.Color.blue())
         embed.add_field(name="Your Guess", value=f"`{guess.upper()}`\n{''.join(emojis)}", inline=False)
         embed.add_field(name="Points Gained", value=str(points), inline=True)
-        embed.add_field(name="Total Score", value=str(await self.config.member(message.author).score()), inline=True)
-        embed.add_field(name="Letters Guessed", value=keyboard_status, inline=False)
+        if guessed_alpha:
+            embed.add_field(name="Guessed letters", value=guessed_alpha, inline=True)
+        embed.add_field(name="Pending letters", value=pending_alpha, inline=False)
         
         await message.channel.send(embed=embed)
 
@@ -428,8 +370,8 @@ class Gortle(commands.Cog):
         try:
             await bank.deposit_credits(winner, prize)
             currency = await bank.get_currency_name(channel.guild)
-        except Exception:
-            currency = "credits" # Fallback if bank is not configured
+        except:
+            currency = "credits"
 
         embed = discord.Embed(title=f"Gortle #{game_num} Solved!", 
                               description=f"**{winner.mention}** guessed the word correctly!", 
@@ -448,21 +390,14 @@ class Gortle(commands.Cog):
         if not members:
             return await ctx.send("No scores yet.")
 
-        # Filter out members with score 0 and sort
-        valid_members = {uid: data for uid, data in members.items() if data.get('score', 0) > 0}
-        
-        sorted_data = sorted(valid_members.items(), key=lambda x: x[1]['score'], reverse=True)
-        
+        sorted_data = sorted(members.items(), key=lambda x: x[1]['score'], reverse=True)
         msg = ""
         for i, (uid, data) in enumerate(sorted_data[:10], 1):
             user = ctx.guild.get_member(uid)
-            name = user.display_name if user else f"Unknown User ({uid})"
-            msg += f"**{i}.** **{name}**: {data.get('score', 0)} points (Weekly: {data.get('weekly_score', 0)})\n"
-        
-        if not msg:
-            return await ctx.send("No users have scored any points yet!")
+            name = user.display_name if user else "Unknown User"
+            msg += f"{i}. **{name}**: {data['score']} points (Weekly: {data['weekly_score']})\n"
 
-        embed = discord.Embed(title="Gortle Leaderboard (Top 10)", description=msg, color=discord.Color.blue())
+        embed = discord.Embed(title="Gortle Leaderboard", description=msg, color=discord.Color.blue())
         await ctx.send(embed=embed)
 
     @commands.group()
@@ -476,53 +411,43 @@ class Gortle(commands.Cog):
     async def channel(self, ctx, channel: discord.TextChannel):
         """Set the channel for Gortle games."""
         await self.config.guild(ctx.guild).channel_id.set(channel.id)
-        await ctx.send(f"Gortle channel set to {channel.mention}. Game announcements will be posted here.")
+        await ctx.send(f"Gortle channel set to {channel.mention}")
 
     @gortleset.command()
     async def role(self, ctx, role: discord.Role):
-        """Set the role to mention for new games."""
+        """Set the role to verify/mention for new games."""
         await self.config.guild(ctx.guild).mention_role.set(role.id)
-        await ctx.send(f"Notification role set to {role.name}. This role will be mentioned when a new game starts.")
+        await ctx.send(f"Notification role set to {role.name}")
 
     @gortleset.command()
     async def schedule(self, ctx, minutes: int):
         """Set how often new games post (in minutes). Set to 0 to disable auto-posting."""
-        if minutes < 0:
-            return await ctx.send("Minutes must be 0 or greater.")
         await self.config.game_schedule_min.set(minutes)
-        if minutes > 0:
-            await ctx.send(f"Game schedule set to start a new game every **{minutes}** minutes.")
-        else:
-            await ctx.send("Automatic game starting is now **disabled**. Use `[p]gortleset manualstart` to begin games.")
+        await ctx.send(f"Schedule set to every {minutes} minutes.")
 
     @gortleset.command()
     async def cooldown(self, ctx, seconds: int):
         """Set the user guess cooldown in seconds."""
-        if seconds < 5:
-            return await ctx.send("Cooldown must be 5 seconds or more to prevent spam.")
         await self.config.guild(ctx.guild).cooldown_seconds.set(seconds)
-        await ctx.send(f"Cooldown set to **{seconds}** seconds per user guess.")
+        await ctx.send(f"Cooldown set to {seconds} seconds.")
 
     @gortleset.command()
     async def prize(self, ctx, amount: int):
         """Set the bank credit prize for winning."""
-        if amount < 0:
-            return await ctx.send("Prize amount cannot be negative.")
-        currency = await bank.get_currency_name(ctx.guild)
         await self.config.win_amount.set(amount)
-        await ctx.send(f"Winner prize set to **{amount} {currency}**.")
+        await ctx.send(f"Winner prize set to {amount}.")
 
     @gortleset.command()
     async def weekly(self, ctx, role: discord.Role, day: int, hour: int):
         """Configure the weekly winner role.
         Day: 0=Monday, 6=Sunday. Hour: 0-23 (UTC)."""
         if not (0 <= day <= 6) or not (0 <= hour <= 23):
-            return await ctx.send("Day must be 0-6 (0=Monday, 6=Sunday). Hour must be 0-23 (UTC).")
+            return await ctx.send("Day must be 0-6, Hour must be 0-23.")
         
         await self.config.weekly_role_id.set(role.id)
         await self.config.weekly_role_day.set(day)
         await self.config.weekly_role_hour.set(hour)
-        await ctx.send(f"Weekly role {role.name} will be awarded on day **{day}** (UTC) at hour **{hour}** (UTC), and weekly scores will reset.")
+        await ctx.send(f"Weekly role {role.name} will be awarded on day {day} at hour {hour} UTC.")
 
     @gortleset.command()
     async def manualstart(self, ctx):
@@ -541,26 +466,14 @@ class Gortle(commands.Cog):
     @commands.group()
     @checks.admin_or_permissions(manage_guild=True)
     async def gortleadmin(self, ctx):
-        """Admin management for leaderboards and state."""
+        """Admin management for leaderboards."""
         pass
 
     @gortleadmin.command()
     async def clearall(self, ctx):
-        """Clear all member scores (global and weekly) in this guild."""
-        
-        # Confirmation check (since we can't use confirm())
-        await ctx.send("Are you absolutely sure you want to clear ALL Gortle scores and stats for every member in this server? Type 'yes' to confirm.")
-        
-        def check(m):
-            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == 'yes'
-
-        try:
-            await self.bot.wait_for('message', check=check, timeout=30.0)
-        except asyncio.TimeoutError:
-            return await ctx.send("Score clearing cancelled.")
-        
+        """Clear all scores."""
         await self.config.clear_all_members(ctx.guild)
-        await ctx.send("All member scores and statistics have been cleared for this server.")
+        await ctx.send("All scores cleared.")
 
     @gortleadmin.command()
     async def removeuser(self, ctx, member: discord.Member):
@@ -570,12 +483,11 @@ class Gortle(commands.Cog):
 
     @gortleadmin.command()
     async def clean(self, ctx):
-        """Remove users from the stats who are no longer in the server."""
+        """Remove users who are no longer in the server."""
         members = await self.config.all_members(ctx.guild)
         count = 0
         for uid in list(members.keys()):
             if not ctx.guild.get_member(uid):
-                # Using member_from_ids to target the specific guild's member data
                 await self.config.member_from_ids(ctx.guild.id, uid).clear()
                 count += 1
-        await ctx.send(f"Removed {count} users no longer in the server's Gortle statistics.")
+        await ctx.send(f"Removed {count} users no longer in the server.")
