@@ -53,7 +53,7 @@ class Bingo(commands.Cog):
             bingo="BINGO",
             seed=0,
             bank_prize=0,
-            game_type="STANDARD", # <-- NEW: Game type setting
+            game_type="STANDARD",
         )
         self.config.register_member(stamps=[])
 
@@ -275,9 +275,13 @@ class Bingo(commands.Cog):
     async def get_currency_name(self, ctx: commands.Context) -> str:
         """Helper to get the currency name if the bank cog is loaded."""
         bank_cog = self.bot.get_cog("Economy")
-        if not bank_cog or not hasattr(bank_cog, "bank"):
-            return "credits" # Default currency name if cog is unavailable
-        return await bank_cog.bank.get_currency_name(ctx.guild)
+        if (
+            bank_cog
+            and hasattr(bank_cog, "bank")
+            and hasattr(bank_cog.bank, "get_currency_name")
+        ):
+            return await bank_cog.bank.get_currency_name(ctx.guild)
+        return "credits" # Default currency name if cog is unavailable
 
     @bingoset.command(name="bankprize")
     async def bingoset_bankprize(self, ctx: commands.Context, amount: int = None):
@@ -410,11 +414,11 @@ class Bingo(commands.Cog):
         # Manually fetch tiles count and bank prize for display
         tiles_count = len(await self.config.guild(ctx.guild).tiles())
         bank_prize = await self.config.guild(ctx.guild).bank_prize()
-        game_type = await self.config.guild(ctx.guild).game_type() # <-- NEW
+        game_type = await self.config.guild(ctx.guild).game_type()
         currency_name = await self.get_currency_name(ctx)
         
         msg = f"Tiles Set: `{tiles_count}`\n"
-        msg += f"Game Type: `{game_type}` ({GAME_TYPES.get(game_type, 'Unknown Type')})\n" # <-- UPDATED
+        msg += f"Game Type: `{game_type}` ({GAME_TYPES.get(game_type, 'Unknown Type')})\n"
         msg += f"Bank Prize: `{bank_prize} {currency_name}`\n"
 
         for k, v in settings.items():
@@ -506,7 +510,7 @@ class Bingo(commands.Cog):
             
         return False
 
-    @commands.command(name="bingo", aliases=["stamp"]) # <-- ADDED ALIAS
+    @commands.command(name="bingo", aliases=["stamp"])
     @commands.guild_only()
     @commands.bot_has_permissions(attach_files=True)
     async def bingo(self, ctx: commands.Context, stamp: Optional[Stamp] = None):
@@ -530,7 +534,6 @@ class Bingo(commands.Cog):
 
             await self.config.member(ctx.author).stamps.set(stamps)
             
-        # --- UPDATED: Pass guild to check_stamps ---
         if await self.check_stamps(stamps, ctx.guild):
             if msg:
                 msg += f"\n🎉 {ctx.author.mention} has a **BINGO!**"
@@ -542,33 +545,34 @@ class Bingo(commands.Cog):
             if bank_prize > 0:
                 bank_cog = self.bot.get_cog("Economy")
                 
-                # --- UPDATED CHECK AND LOGIC ---
-                if (
-                    bank_cog
-                    and hasattr(bank_cog, "bank")
-                    and hasattr(bank_cog.bank, "deposit_credits")
-                ):
+                has_cog = bool(bank_cog)
+                has_bank = has_cog and hasattr(bank_cog, "bank")
+                has_deposit = has_bank and hasattr(bank_cog.bank, "deposit_credits")
+                
+                if has_deposit:
                     try:
                         await bank_cog.bank.deposit_credits(ctx.author, bank_prize)
                         currency = await bank_cog.bank.get_currency_name(ctx.guild)
                         msg += f" (and won **{bank_prize}** {currency}!)"
                     except Exception as e:
-                        log.error("Failed to deposit bank prize for bingo: %s", e)
+                        # Log the specific exception if the deposit call itself fails
+                        log.error("Failed to deposit bank prize for bingo: %s", e, exc_info=True)
                         msg += "\n*Error awarding bank prize.*"
                 else:
-                    log.info(
-                        "Bank prize configured for bingo, but Economy cog check failed. "
+                    # LOGGING CHANGED TO ERROR LEVEL FOR DEBUGGING
+                    log.error(
+                        "Bank prize configured but Economy check failed. "
                         "Cog Loaded: %s, Has Bank Object: %s, Has Deposit Method: %s",
-                        bool(bank_cog),
-                        bool(bank_cog and hasattr(bank_cog, "bank")),
-                        bool(bank_cog and hasattr(bank_cog, "bank") and hasattr(bank_cog.bank, "deposit_credits")),
+                        has_cog,
+                        has_bank,
+                        has_deposit,
                     )
                     msg += (
-                        "\n*Bank prize configured, but **Economy cog is not loaded** or is **missing required methods**.*"
-                    )
-                # --- END UPDATED CHECK AND LOGIC ---
+                        "\n*Bank prize configured, but **Economy cog is not correctly initialized** "
+                        "or is **missing required methods** (see console for details).* "
+                        "Cog: %s, Bank: %s, Deposit: %s"
+                    ) % (has_cog, has_bank, has_deposit)
 
-        # perm = self.nth_permutation(ctx.author.id, 24, tiles)
         seed = int(await self.config.guild(ctx.guild).seed()) + ctx.author.id
         random.seed(seed)
         random.shuffle(tiles)
@@ -593,7 +597,7 @@ class Bingo(commands.Cog):
             "bingo": await self.config.guild(ctx.guild).bingo(),
             "seed": await self.config.guild(ctx.guild).seed(),
             "bank_prize": await self.config.guild(ctx.guild).bank_prize(),
-            "game_type": await self.config.guild(ctx.guild).game_type(), # <-- NEW
+            "game_type": await self.config.guild(ctx.guild).game_type(),
         }
         if watermark := await self.config.guild(ctx.guild).watermark():
             ret["watermark"] = Image.open(cog_data_path(self) / watermark)
@@ -620,7 +624,7 @@ class Bingo(commands.Cog):
         stamps: List[Tuple[int, int]] = [],
         seed: int = 0,
         bank_prize: int = 0,
-        game_type: str = "STANDARD", # <-- ADDED
+        game_type: str = "STANDARD",
     ) -> Optional[discord.File]:
         task = functools.partial(
             self._create_bingo_card,
@@ -639,7 +643,7 @@ class Bingo(commands.Cog):
             stamps=stamps,
             seed=seed,
             bank_prize=bank_prize,
-            game_type=game_type, # <-- PASSED
+            game_type=game_type,
         )
         loop = asyncio.get_running_loop()
         task = loop.run_in_executor(None, task)
@@ -666,7 +670,7 @@ class Bingo(commands.Cog):
         stamps: List[Tuple[int, int]] = [],
         seed: int = 0,
         bank_prize: int = 0,
-        game_type: str = "STANDARD", # <-- ADDED
+        game_type: str = "STANDARD",
     ):
         base_height, base_width = 1000, 700
         base = Image.new("RGBA", (base_width, base_height), color=background_colour)
