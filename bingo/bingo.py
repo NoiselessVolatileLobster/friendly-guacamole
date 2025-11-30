@@ -5,7 +5,7 @@ import re
 import sys
 import textwrap
 from io import BytesIO
-from typing import List, Optional, Pattern, Tuple, Dict, Any
+from typing import List, Optional, Pattern, Tuple, Dict, Any # Added Any for the new helper
 
 import aiohttp
 import discord
@@ -63,6 +63,34 @@ class Bingo(commands.Cog):
         does not represent end user data.
         """
         return
+
+    def _get_bank_object(self, method_name: str) -> Optional[Any]:
+        """
+        Attempts to find a valid bank object that possesses the specified method name.
+        Checks cog.bank, then cog itself.
+        """
+        bank_cog = self.bot.get_cog("Economy")
+        if not bank_cog:
+            return None
+
+        # Path A: Standard Red V3 Bank Framework (cog.bank is the Bank object)
+        # Use getattr defensively for 'bank'
+        bank_attribute = getattr(bank_cog, "bank", None)
+        if bank_attribute and hasattr(bank_attribute, method_name):
+            return bank_attribute
+            
+        # Path B: Methods exposed directly on the Economy cog itself
+        if hasattr(bank_cog, method_name):
+            return bank_cog
+            
+        return None
+
+    async def get_currency_name(self, ctx: commands.Context) -> str:
+        """Helper to get the currency name if the bank cog is loaded."""
+        bank_obj = self._get_bank_object("get_currency_name")
+        if bank_obj:
+            return await bank_obj.get_currency_name(ctx.guild)
+        return "credits" # Default currency name if cog is unavailable
 
     @commands.group(name="bingoset")
     @commands.mod_or_permissions(manage_messages=True)
@@ -271,23 +299,6 @@ class Bingo(commands.Cog):
                 outfile.write(data)
             await self.config.guild(ctx.guild).background_tile.set(filename)
             await ctx.send("Saved the image as the background tile.")
-
-    async def get_currency_name(self, ctx: commands.Context) -> str:
-        """Helper to get the currency name if the bank cog is loaded."""
-        bank_cog = self.bot.get_cog("Economy")
-        
-        # Check for cog.bank.get_currency_name (standard)
-        if (
-            bank_cog
-            and hasattr(bank_cog, "bank")
-            and hasattr(bank_cog.bank, "get_currency_name")
-        ):
-            return await bank_cog.bank.get_currency_name(ctx.guild)
-        # Check for cog.get_currency_name (less common structure, or if methods are exposed directly)
-        if bank_cog and hasattr(bank_cog, "get_currency_name"):
-             return await bank_cog.get_currency_name(ctx.guild)
-
-        return "credits" # Default currency name if cog is unavailable
 
     @bingoset.command(name="bankprize")
     async def bingoset_bankprize(self, ctx: commands.Context, amount: int = None):
@@ -549,17 +560,8 @@ class Bingo(commands.Cog):
             # Bank Prize Distribution Logic
             bank_prize = await self.config.guild(ctx.guild).bank_prize()
             if bank_prize > 0:
-                bank_cog = self.bot.get_cog("Economy")
-                bank_obj = None
-                
-                # Check for the two most common ways the bank object is exposed
-                if bank_cog:
-                    # Path A: Standard Red V3 Bank Framework (cog.bank is the Bank object)
-                    if hasattr(bank_cog, "bank") and hasattr(bank_cog.bank, "deposit_credits"):
-                        bank_obj = bank_cog.bank
-                    # Path B: Methods exposed directly on the Economy cog itself
-                    elif hasattr(bank_cog, "deposit_credits"):
-                        bank_obj = bank_cog
+                # Use the new helper to find the valid bank object
+                bank_obj = self._get_bank_object("deposit_credits")
                 
                 # Now, check if we found a valid object
                 if bank_obj:
