@@ -275,12 +275,18 @@ class Bingo(commands.Cog):
     async def get_currency_name(self, ctx: commands.Context) -> str:
         """Helper to get the currency name if the bank cog is loaded."""
         bank_cog = self.bot.get_cog("Economy")
+        
+        # Check for cog.bank.get_currency_name (standard)
         if (
             bank_cog
             and hasattr(bank_cog, "bank")
             and hasattr(bank_cog.bank, "get_currency_name")
         ):
             return await bank_cog.bank.get_currency_name(ctx.guild)
+        # Check for cog.get_currency_name (less common structure)
+        if bank_cog and hasattr(bank_cog, "get_currency_name"):
+             return await bank_cog.get_currency_name(ctx.guild)
+
         return "credits" # Default currency name if cog is unavailable
 
     @bingoset.command(name="bankprize")
@@ -545,14 +551,17 @@ class Bingo(commands.Cog):
             if bank_prize > 0:
                 bank_cog = self.bot.get_cog("Economy")
                 
+                # Check for deposit credits on cog.bank (standard) or directly on the cog (alternative)
+                bank_obj = getattr(bank_cog, "bank", bank_cog)
+                
                 has_cog = bool(bank_cog)
-                has_bank = has_cog and hasattr(bank_cog, "bank")
-                has_deposit = has_bank and hasattr(bank_cog.bank, "deposit_credits")
+                has_bank_obj = bool(bank_obj)
+                has_deposit = has_bank_obj and hasattr(bank_obj, "deposit_credits")
                 
                 if has_deposit:
                     try:
-                        await bank_cog.bank.deposit_credits(ctx.author, bank_prize)
-                        currency = await bank_cog.bank.get_currency_name(ctx.guild)
+                        await bank_obj.deposit_credits(ctx.author, bank_prize)
+                        currency = await self.get_currency_name(ctx)
                         msg += f" (and won **{bank_prize}** {currency}!)"
                     except Exception as e:
                         # Log the specific exception if the deposit call itself fails
@@ -562,16 +571,16 @@ class Bingo(commands.Cog):
                     # LOGGING CHANGED TO ERROR LEVEL FOR DEBUGGING
                     log.error(
                         "Bank prize configured but Economy check failed. "
-                        "Cog Loaded: %s, Has Bank Object: %s, Has Deposit Method: %s",
+                        "Cog Loaded: %s, Has Bank Object/Cog: %s, Has Deposit Method: %s",
                         has_cog,
-                        has_bank,
+                        has_bank_obj,
                         has_deposit,
                     )
                     msg += (
                         "\n*Bank prize configured, but **Economy cog is not correctly initialized** "
                         "or is **missing required methods** (see console for details).* "
-                        "Cog: %s, Bank: %s, Deposit: %s"
-                    ) % (has_cog, has_bank, has_deposit)
+                        "Cog: %s, Bank/Obj: %s, Deposit: %s"
+                    ) % (has_cog, has_bank_obj, has_deposit)
 
         seed = int(await self.config.guild(ctx.guild).seed()) + ctx.author.id
         random.seed(seed)
