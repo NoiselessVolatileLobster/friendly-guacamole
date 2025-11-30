@@ -75,8 +75,8 @@ class Gortle(commands.Cog):
         base_path = bundled_data_path(self)
         
         # Correct path construction: .../gortle/data/solutions.json
-        solutions_path = base_path / "data" / "solutions.json"
-        guesses_path = base_path / "data" / "guesses.json"
+        solutions_path = base_path / "solutions.json"
+        guesses_path = base_path / "guesses.json"
 
         # --- Enhanced Debugging ---
         print("-" * 40)
