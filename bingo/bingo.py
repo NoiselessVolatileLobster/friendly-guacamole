@@ -5,7 +5,7 @@ import re
 import sys
 import textwrap
 from io import BytesIO
-from typing import List, Optional, Pattern, Tuple
+from typing import List, Optional, Pattern, Tuple, Dict, Any
 
 import aiohttp
 import discord
@@ -21,6 +21,15 @@ log = getLogger("red.trusty-cogs.bingo")
 IMAGE_LINKS: Pattern = re.compile(
     r"(https?:\/\/[^\"\'\s]*\.(?:png|jpg|jpeg)(\?size=[0-9]*)?)", flags=re.I
 )
+
+# --- NEW: Game Type Definitions ---
+GAME_TYPES: Dict[str, str] = {
+    "STANDARD": "Any horizontal, vertical, or diagonal line.",
+    "HORIZONTAL": "Any complete horizontal line.",
+    "VERTICAL": "Any complete vertical line.",
+    "X_PATTERN": "Both diagonal lines must be completed (form an 'X').",
+    "COVERALL": "All 25 squares must be stamped (Blackout).",
+}
 
 
 class Bingo(commands.Cog):
@@ -43,7 +52,8 @@ class Bingo(commands.Cog):
             name="",
             bingo="BINGO",
             seed=0,
-            bank_prize=0, # <-- NEW: Bank prize setting
+            bank_prize=0,
+            game_type="STANDARD", # <-- NEW: Game type setting
         )
         self.config.register_member(stamps=[])
 
@@ -295,6 +305,41 @@ class Bingo(commands.Cog):
             await ctx.send(
                 f"The bank prize for bingo has been set to **{amount}** {currency_name}."
             )
+
+    @bingoset.command(name="gametype")
+    async def bingoset_gametype(self, ctx: commands.Context, game_type: Optional[str] = None):
+        """
+        Set the win condition (game type) for the current bingo game.
+
+        Available types:
+        - `STANDARD`: Any horizontal, vertical, or diagonal line. (Default)
+        - `HORIZONTAL`: Any complete horizontal line.
+        - `VERTICAL`: Any complete vertical line.
+        - `X_PATTERN`: Both diagonal lines must be completed.
+        - `COVERALL`: All 25 squares must be stamped (Blackout).
+        """
+        game_types = GAME_TYPES.keys()
+
+        if game_type is None:
+            current_type = await self.config.guild(ctx.guild).game_type()
+            current_desc = GAME_TYPES.get(current_type, "Unknown Type")
+            
+            msg = f"The current game type is **{current_type}** ({current_desc}).\n\n"
+            msg += "Available game types:\n"
+            for k, v in GAME_TYPES.items():
+                msg += f"`{k}`: {v}\n"
+            return await ctx.send(msg)
+            
+        game_type = game_type.upper()
+        if game_type not in game_types:
+            return await ctx.send(
+                f"Invalid game type. Choose one of: {', '.join(game_types)}"
+            )
+
+        await self.config.guild(ctx.guild).game_type.set(game_type)
+        await ctx.send(
+            f"The game type has been set to **{game_type}** ({GAME_TYPES[game_type]})."
+        )
             
     @commands.command(name="newbingo")
     @commands.mod_or_permissions(manage_messages=True)
@@ -365,13 +410,15 @@ class Bingo(commands.Cog):
         # Manually fetch tiles count and bank prize for display
         tiles_count = len(await self.config.guild(ctx.guild).tiles())
         bank_prize = await self.config.guild(ctx.guild).bank_prize()
+        game_type = await self.config.guild(ctx.guild).game_type() # <-- NEW
         currency_name = await self.get_currency_name(ctx)
         
         msg = f"Tiles Set: `{tiles_count}`\n"
+        msg += f"Game Type: `{game_type}` ({GAME_TYPES.get(game_type, 'Unknown Type')})\n" # <-- UPDATED
         msg += f"Bank Prize: `{bank_prize} {currency_name}`\n"
 
         for k, v in settings.items():
-            if k in ["bank_prize", "seed"]: # Skip items already printed or not needed
+            if k in ["bank_prize", "seed", "game_type"]: # Skip items already printed or not needed
                 continue
             
             if k == "watermark":
@@ -403,31 +450,60 @@ class Bingo(commands.Cog):
         file = await self.create_bingo_card(options, guild_name=ctx.guild.name, **card_settings)
         await ctx.send("Here's how your bingo cards will appear", file=file)
 
-    async def check_stamps(self, stamps: List[Tuple[int, int]]) -> bool:
+    async def check_stamps(self, stamps: List[List[int]], guild: discord.Guild) -> bool:
         """
-        Checks if the users current stamps warrants a bingo!
+        Checks if the users current stamps warrants a bingo based on the configured game type.
         """
+        game_type = await self.config.guild(guild).game_type()
+        
+        # --- COVERALL Check ---
+        if game_type == "COVERALL":
+            # Coverall requires all 24 non-free space tiles to be stamped. Free space is implicitly covered.
+            return len(stamps) == 24
+            
+        # --- LINE-BASED Checks (STANDARD, HORIZONTAL, VERTICAL, X_PATTERN) ---
+        
+        # 1. Prepare results dictionary
         results = {
             "x": {0: 0, 1: 0, 2: 0, 3: 0, 4: 0},
             "y": {0: 0, 1: 0, 2: 0, 3: 0, 4: 0},
             "right_diag": 0,
             "left_diag": 0,
         }
-        stamps.append([2, 2])  # add the Free Space here
-        for stamp in stamps:
-            x, y = stamp
+        
+        # 2. Get all stamped coordinates, ensuring uniqueness and including the Free Space ([2, 2])
+        # Convert list of lists to a set of tuples for easy uniqueness check, then iterate
+        all_stamps_set = set(tuple(s) for s in stamps)
+        all_stamps_set.add((2, 2))
+        
+        # 3. Calculate line results
+        for stamp_tuple in all_stamps_set:
+            x, y = stamp_tuple
             results["x"][x] += 1
             results["y"][y] += 1
-            if stamp in [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4]]:
+            
+            # Diagonal checks
+            if x == y: # right_diag (0,0) to (4,4)
                 results["right_diag"] += 1
-            if stamp in [[4, 0], [3, 1], [2, 2], [1, 3], [0, 4]]:
+            if x + y == 4: # left_diag (4,0) to (0,4)
                 results["left_diag"] += 1
-        if results["right_diag"] == 5 or results["left_diag"] == 5:
-            return True
-        if any(i == 5 for i in results["x"].values()):
-            return True
-        if any(i == 5 for i in results["y"].values()):
-            return True
+
+        # 4. Evaluate against game type
+        if game_type == "STANDARD":
+            return (
+                results["right_diag"] == 5 or 
+                results["left_diag"] == 5 or 
+                any(i == 5 for i in results["x"].values()) or 
+                any(i == 5 for i in results["y"].values())
+            )
+        elif game_type == "HORIZONTAL":
+            return any(i == 5 for i in results["y"].values())
+        elif game_type == "VERTICAL":
+            return any(i == 5 for i in results["x"].values())
+        elif game_type == "X_PATTERN":
+            # Requires both diagonal lines to be completed
+            return results["right_diag"] == 5 and results["left_diag"] == 5
+            
         return False
 
     @commands.command(name="bingo")
@@ -443,6 +519,7 @@ class Bingo(commands.Cog):
         tiles = await self.config.guild(ctx.guild).tiles()
         stamps = await self.config.member(ctx.author).stamps()
         msg = None
+        
         if stamp is not None:
             if stamp in stamps:
                 stamps.remove(stamp)
@@ -453,14 +530,14 @@ class Bingo(commands.Cog):
 
             await self.config.member(ctx.author).stamps.set(stamps)
             
-        
-        if await self.check_stamps(stamps):
+        # --- UPDATED: Pass guild to check_stamps ---
+        if await self.check_stamps(stamps, ctx.guild):
             if msg:
                 msg += f"\n🎉 {ctx.author.mention} has a **BINGO!**"
             else:
                 msg = f"🎉 {ctx.author.mention} has a **BINGO!**"
             
-            # --- NEW: Bank Prize Distribution Logic ---
+            # Bank Prize Distribution Logic
             bank_prize = await self.config.guild(ctx.guild).bank_prize()
             if bank_prize > 0:
                 bank_cog = self.bot.get_cog("Economy")
@@ -474,7 +551,6 @@ class Bingo(commands.Cog):
                         msg += "\n*Error awarding bank prize.*"
                 else:
                     msg += "\n*Bank prize configured, but Economy cog is not loaded or configured correctly.*"
-            # --- END NEW BANK LOGIC ---
 
         # perm = self.nth_permutation(ctx.author.id, 24, tiles)
         seed = int(await self.config.guild(ctx.guild).seed()) + ctx.author.id
@@ -499,8 +575,9 @@ class Bingo(commands.Cog):
             "box_colour": await self.config.guild(ctx.guild).box_colour(),
             "name": await self.config.guild(ctx.guild).name(),
             "bingo": await self.config.guild(ctx.guild).bingo(),
-            "seed": await self.config.guild(ctx.guild).seed(), # Include seed for completeness
-            "bank_prize": await self.config.guild(ctx.guild).bank_prize(), # Include prize
+            "seed": await self.config.guild(ctx.guild).seed(),
+            "bank_prize": await self.config.guild(ctx.guild).bank_prize(),
+            "game_type": await self.config.guild(ctx.guild).game_type(), # <-- NEW
         }
         if watermark := await self.config.guild(ctx.guild).watermark():
             ret["watermark"] = Image.open(cog_data_path(self) / watermark)
@@ -525,8 +602,9 @@ class Bingo(commands.Cog):
         icon: Optional[Image.Image] = None,
         background_tile: Optional[Image.Image] = None,
         stamps: List[Tuple[int, int]] = [],
-        seed: int = 0, # <-- ADDED
-        bank_prize: int = 0, # <-- ADDED
+        seed: int = 0,
+        bank_prize: int = 0,
+        game_type: str = "STANDARD", # <-- ADDED
     ) -> Optional[discord.File]:
         task = functools.partial(
             self._create_bingo_card,
@@ -543,8 +621,9 @@ class Bingo(commands.Cog):
             icon=icon,
             background_tile=background_tile,
             stamps=stamps,
-            seed=seed, # <-- PASSED
-            bank_prize=bank_prize, # <-- PASSED
+            seed=seed,
+            bank_prize=bank_prize,
+            game_type=game_type, # <-- PASSED
         )
         loop = asyncio.get_running_loop()
         task = loop.run_in_executor(None, task)
@@ -569,8 +648,9 @@ class Bingo(commands.Cog):
         icon: Optional[Image.Image] = None,
         background_tile: Optional[Image.Image] = None,
         stamps: List[Tuple[int, int]] = [],
-        seed: int = 0, # <-- ADDED
-        bank_prize: int = 0, # <-- ADDED
+        seed: int = 0,
+        bank_prize: int = 0,
+        game_type: str = "STANDARD", # <-- ADDED
     ):
         base_height, base_width = 1000, 700
         base = Image.new("RGBA", (base_width, base_height), color=background_colour)
@@ -657,7 +737,11 @@ class Bingo(commands.Cog):
                         text = "Free Space"
                     count += 1
                 draw.rectangle((x0, y0, x1, y1), outline=box_colour)
-                if [x, y] in stamps or [x, y] == [2, 2]:
+                
+                # Check for stamp, including the free space implicitly
+                is_stamped = [x, y] in stamps or [x, y] == [2, 2]
+                
+                if is_stamped:
                     log.info("Filling square %s %s", x, y)
                     colour = list(ImageColor.getrgb(stamp_colour))
                     colour.append(128)
