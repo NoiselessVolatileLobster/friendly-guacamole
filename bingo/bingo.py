@@ -56,68 +56,73 @@ class Bingo(commands.Cog):
             game_type="STANDARD",
         )
         self.config.register_member(stamps=[])
-
+        
     async def red_delete_data_for_user(self, **kwargs):
         """
         Nothing to delete. Information saved is a set of points on a bingo card and
         does not represent end user data.
         """
         return
-
+        
+    # --- Utility Functions for Economy/Bank Interaction ---
+    # The fix to reliably get the bank object is in get_bank_obj
+    
     def _get_bank_object(self, method_name: str) -> Optional[Any]:
         """
         Attempts to find a valid bank object that possesses the specified method name.
         Performs an exhaustive search on the loaded 'Economy' cog and its attributes.
+        (This is now mostly redundant but kept for robustness, though get_bank_obj is preferred)
         """
         bank_cog = self.bot.get_cog("Economy")
         if not bank_cog:
-            # This should not happen if the Economy cog is loaded, but guards against it.
             log.debug("Economy cog is not loaded.")
             return None 
 
-        # Priority 1: Check if the method is directly on the cog
         if hasattr(bank_cog, method_name):
             log.debug("Found bank method directly on Economy cog object.")
             return bank_cog
             
-        # Priority 2: Check common bank attributes (bank, api, currency)
         for attr_name in ["bank", "api", "currency"]:
             bank_attribute = getattr(bank_cog, attr_name, None)
             if bank_attribute and hasattr(bank_attribute, method_name):
                 log.debug("Found bank method on Economy cog.%s attribute.", attr_name)
                 return bank_attribute
         
-        # Priority 3: Exhaustive search of all public attributes on the cog
-        # This covers non-standard names used by custom or third-party economy cogs
         for attr_name in dir(bank_cog):
             if attr_name.startswith("_"): 
-                continue # Skip private/magic attributes
+                continue 
             
             try:
-                # Safely retrieve the attribute value
                 bank_attribute = getattr(bank_cog, attr_name)
             except Exception:
-                # Skip attributes that raise errors on access (e.g., specific Redbot internal properties)
                 continue
             
-            # Check if this retrieved object has the required method
             if bank_attribute and hasattr(bank_attribute, method_name):
-                # Log this successful, but non-standard, discovery
                 log.debug("Found bank method on Economy cog.%s attribute via exhaustive search.", attr_name)
                 return bank_attribute
             
-        # If we reach here, all search attempts failed.
         log.debug("Could not find required method '%s' on Economy cog or its attributes.", method_name)
+        return None
+
+    async def get_bank_obj(self, ctx: commands.Context) -> Optional[Any]:
+        """
+        Attempt to find the official bank interface object from the Economy cog.
+        This is the standard and most reliable way to access deposit_credits.
+        """
+        bank_cog = self.bot.get_cog("Economy")
+        if bank_cog and hasattr(bank_cog, "bank"):
+            return bank_cog.bank # This is the standard bank interface object
         return None
 
     async def get_currency_name(self, ctx: commands.Context) -> str:
         """Helper to get the currency name if the bank cog is loaded."""
-        # This will now use the super-robust _get_bank_object
+        # This still needs to be robust as some cogs name the method differently
         bank_obj = self._get_bank_object("get_currency_name")
         if bank_obj:
             # We must await this call as it's an async method on the bank object/cog
             return await bank_obj.get_currency_name(ctx.guild)
         return "credits" # Default currency name if cog is unavailable
+    # --- End Utility Functions ---
 
     @commands.group(name="bingoset")
     @commands.mod_or_permissions(manage_messages=True)
@@ -564,11 +569,15 @@ class Bingo(commands.Cog):
         `stamp` - Select the tile that you would like to stamp. If not
         provided will just show your current bingo card.
         """
+        # Fetching settings from config
         tiles = await self.config.guild(ctx.guild).tiles()
         stamps = await self.config.member(ctx.author).stamps()
+        bank_prize = await self.config.guild(ctx.guild).bank_prize()
         msg = None
         
+        # Step 1: Handle stamping/unstamping logic
         if stamp is not None:
+            # Assuming stamp is a List[int] from the converter: [x, y]
             if stamp in stamps:
                 stamps.remove(stamp)
                 msg = f"Unstamped tile **{ctx.message.clean_content.split()[-1].upper()}**."
@@ -578,22 +587,23 @@ class Bingo(commands.Cog):
 
             await self.config.member(ctx.author).stamps.set(stamps)
             
-        if await self.check_stamps(stamps, ctx.guild):
+        # Step 2: Check for a BINGO win
+        if self.check_stamps(stamps, ctx.guild):
+            is_bingo_win = True
             if msg:
                 msg += f"\n🎉 {ctx.author.mention} has a **BINGO!**"
             else:
                 msg = f"🎉 {ctx.author.mention} has a **BINGO!**"
             
-            # Bank Prize Distribution Logic
-            bank_prize = await self.config.guild(ctx.guild).bank_prize()
+            # Step 3: Bank Prize Distribution Logic
             if bank_prize > 0:
-                # Use the new helper to find the valid bank object
-                bank_obj = self._get_bank_object("deposit_credits")
+                # Use the reliable helper to find the valid bank object
+                bank_obj = await self.get_bank_obj(ctx)
                 
-                # Now, check if we found a valid object
                 if bank_obj:
                     try:
-                        # Call deposit_credits with the standard Red signature: member, amount
+                        # FIX: This is the correct standard call for Red's bank service (member, amount)
+                        # The previous error was due to `bank_obj` incorrectly pointing to a Config object.
                         await bank_obj.deposit_credits(ctx.author, bank_prize)
                         currency = await self.get_currency_name(ctx)
                         msg += f" (and won **{bank_prize}** {currency}!)"
@@ -602,25 +612,26 @@ class Bingo(commands.Cog):
                         log.error("Failed to deposit bank prize for bingo: %s", e, exc_info=True)
                         msg += "\n*Error awarding bank prize.*"
                 else:
-                    # If we reach here, we found the cog but couldn't find the deposit method in the expected locations.
-                    # This means the error message you were seeing is still technically correct.
+                    # If bank_obj is None, Economy cog is likely not loaded or bank interface is missing.
                     log.error(
-                        "Bank prize configured but Economy check failed. Could not find 'deposit_credits' on Economy cog, cog.bank, or cog.api."
+                        "Bank prize configured but Economy cog is missing or missing the 'bank' interface."
                     )
-                    # Include a public message to the user about the issue
                     msg += (
                         "\n\n🚨 **Bank Prize Error:** The Economy cog's bank function couldn't be found. "
-                        "Please check the bot console for details or contact the bot owner."
+                        "Is the Economy cog loaded?"
                     )
-
-
+        
+        # Step 4: Generate and send the card
         seed = int(await self.config.guild(ctx.guild).seed()) + ctx.author.id
         random.seed(seed)
         random.shuffle(tiles)
         card_settings = await self.get_card_options(ctx)
+        
         temp = await self.create_bingo_card(
             tiles, stamps=stamps, guild_name=ctx.guild.name, **card_settings
         )
+        
+        # Send the message and the generated card image
         await ctx.send(
             content=msg,
             file=temp,
