@@ -180,8 +180,8 @@ class Bingo(commands.Cog):
         `[image_url]` - Must be an image url with `.jpg` or `.png` extension.
         """
         if image_url is None and not ctx.message.attachments:
-            await ctx.send("I have cleared the bingo watermark.")
             await self.config.guild(ctx.guild).watermark.clear()
+            await ctx.send("I have cleared the bingo watermark.")
             return
         elif image_url is None and ctx.message.attachments:
             image = ctx.message.attachments[0]
@@ -212,8 +212,8 @@ class Bingo(commands.Cog):
         `[image_url]` - Must be an image url with `.jpg` or `.png` extension.
         """
         if image_url is None and not ctx.message.attachments:
-            await ctx.send("I have cleared the bingo icon.")
             await self.config.guild(ctx.guild).icon.clear()
+            await ctx.send("I have cleared the bingo icon.")
             return
         elif image_url is None and ctx.message.attachments:
             image = ctx.message.attachments[0]
@@ -247,8 +247,8 @@ class Bingo(commands.Cog):
         `[image_url]` - Must be an image url with `.jpg` or `.png` extension.
         """
         if image_url is None and not ctx.message.attachments:
-            await ctx.send("I have cleared the bingo background image.")
             await self.config.guild(ctx.guild).background_tile.clear()
+            await ctx.send("I have cleared the bingo background image.")
             return
         elif image_url is None and ctx.message.attachments:
             image = ctx.message.attachments[0]
@@ -550,16 +550,19 @@ class Bingo(commands.Cog):
             bank_prize = await self.config.guild(ctx.guild).bank_prize()
             if bank_prize > 0:
                 bank_cog = self.bot.get_cog("Economy")
+                bank_obj = None
                 
-                # Check for deposit credits on cog.bank (standard) or directly on the cog (alternative)
-                # This uses getattr() to safely fallback to the cog itself if the .bank attribute is missing.
-                bank_obj = getattr(bank_cog, "bank", bank_cog)
+                # Check for the two most common ways the bank object is exposed
+                if bank_cog:
+                    # Path A: Standard Red V3 Bank Framework (cog.bank is the Bank object)
+                    if hasattr(bank_cog, "bank") and hasattr(bank_cog.bank, "deposit_credits"):
+                        bank_obj = bank_cog.bank
+                    # Path B: Methods exposed directly on the Economy cog itself
+                    elif hasattr(bank_cog, "deposit_credits"):
+                        bank_obj = bank_cog
                 
-                has_cog = bool(bank_cog)
-                has_bank_obj = hasattr(bank_obj, "deposit_credits") or hasattr(bank_cog, "bank")
-                has_deposit = hasattr(bank_obj, "deposit_credits")
-                
-                if has_deposit:
+                # Now, check if we found a valid object
+                if bank_obj:
                     try:
                         # Call deposit_credits with the standard Red signature: member, amount
                         await bank_obj.deposit_credits(ctx.author, bank_prize)
@@ -570,19 +573,15 @@ class Bingo(commands.Cog):
                         log.error("Failed to deposit bank prize for bingo: %s", e, exc_info=True)
                         msg += "\n*Error awarding bank prize.*"
                 else:
-                    # LOGGING CHANGED TO ERROR LEVEL FOR DEBUGGING
+                    # If we reach here, we found the cog but couldn't find the deposit method in the expected locations.
                     log.error(
-                        "Bank prize configured but Economy check failed. "
-                        "Cog Loaded: %s, Has Bank Object/Cog: %s, Has Deposit Method: %s",
-                        has_cog,
-                        has_bank_obj,
-                        has_deposit,
+                        "Bank prize configured but Economy check failed. Could not find 'deposit_credits' method on Economy cog or cog.bank."
                     )
-                    # Removed redundant print of boolean flags in user message.
                     msg += (
                         "\n*Bank prize configured, but **Economy cog is not correctly initialized** "
                         "or is **missing required methods** (see console for details).*"
                     )
+
 
         seed = int(await self.config.guild(ctx.guild).seed()) + ctx.author.id
         random.seed(seed)
