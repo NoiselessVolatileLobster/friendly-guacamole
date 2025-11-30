@@ -43,6 +43,7 @@ class Bingo(commands.Cog):
             name="",
             bingo="BINGO",
             seed=0,
+            bank_prize=0, # <-- NEW: Bank prize setting
         )
         self.config.register_member(stamps=[])
 
@@ -261,6 +262,60 @@ class Bingo(commands.Cog):
             await self.config.guild(ctx.guild).background_tile.set(filename)
             await ctx.send("Saved the image as the background tile.")
 
+    async def get_currency_name(self, ctx: commands.Context) -> str:
+        """Helper to get the currency name if the bank cog is loaded."""
+        bank_cog = self.bot.get_cog("Economy")
+        if not bank_cog or not hasattr(bank_cog, "bank"):
+            return "credits" # Default currency name if cog is unavailable
+        return await bank_cog.bank.get_currency_name(ctx.guild)
+
+    @bingoset.command(name="bankprize")
+    async def bingoset_bankprize(self, ctx: commands.Context, amount: int = None):
+        """
+        Set the bank prize awarded to the user who gets a bingo.
+
+        Set to 0 to disable. Requires the Economy cog to be loaded.
+        """
+        currency_name = await self.get_currency_name(ctx)
+
+        if amount is None:
+            prize = await self.config.guild(ctx.guild).bank_prize()
+            return await ctx.send(
+                f"The current bank prize for bingo is **{prize}** {currency_name}. "
+                f"Use `{ctx.prefix}bingoset bankprize <amount>` to change it."
+            )
+        
+        if amount < 0:
+            return await ctx.send("The prize amount must be 0 or greater.")
+        
+        await self.config.guild(ctx.guild).bank_prize.set(amount)
+        if amount == 0:
+            await ctx.send("The bank prize for bingo has been **disabled**.")
+        else:
+            await ctx.send(
+                f"The bank prize for bingo has been set to **{amount}** {currency_name}."
+            )
+            
+    @commands.command(name="newbingo")
+    @commands.mod_or_permissions(manage_messages=True)
+    @commands.guild_only()
+    async def newbingo(self, ctx: commands.Context):
+        """
+        Starts a new game of bingo by resetting all player cards and shuffling
+        the tiles for everyone using a new random seed.
+        """
+        # 1. Generate a new random 6-digit seed
+        new_seed = random.randint(100000, 999999)
+        await self.config.guild(ctx.guild).seed.set(new_seed)
+        
+        # 2. Reset all player cards
+        await self.config.clear_all_members(guild=ctx.guild)
+        
+        await ctx.send(
+            f"🎉 Starting a new bingo game! All player cards have been reset, and a new card arrangement has been generated using seed `{new_seed}`."
+        )
+
+
     @bingoset.command(name="reset")
     async def bingoset_reset(self, ctx: commands.Context, member: Optional[discord.Member] = None):
         """
@@ -283,32 +338,6 @@ class Bingo(commands.Cog):
         """
         await self.config.guild(ctx.guild).tiles.clear()
         await ctx.send("I have reset the servers bingo card tiles.")
-
-    # --- NEW COMMAND: [p]bingoset fullreset ---
-    @bingoset.command(name="fullreset")
-    async def bingoset_fullreset(self, ctx: commands.Context):
-        """
-        Reset ALL bingo settings (tiles, colours, images) and ALL player cards for this server.
-        """
-        # Confirmation step for destructive action
-        await ctx.send("🚨 **WARNING**: This command will reset ALL guild settings (tiles, colours, images) AND clear ALL member stamps. Are you absolutely sure? Type `yes` to confirm.")
-
-        def check(m):
-            return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == 'yes'
-
-        try:
-            await self.bot.wait_for('message', check=check, timeout=30.0)
-        except asyncio.TimeoutError:
-            await ctx.send("Full reset cancelled (timed out).")
-            return
-            
-        # 1. Clear ALL member data (stamps)
-        await self.config.clear_all_members(guild=ctx.guild)
-        
-        # 2. Clear ALL guild data (settings like colors, images, bingo word, name, seed)
-        await self.config.guild(ctx.guild).clear() 
-        
-        await ctx.send("✅ **FULL RESET COMPLETE**. All bingo settings and all player cards have been reset to default for this server.")
 
     @bingoset.command(name="seed")
     async def bingoset_seed(self, ctx: commands.Context, seed: int):
@@ -333,16 +362,27 @@ class Bingo(commands.Cog):
         Show the current bingo card settings
         """
         settings = await self.get_card_options(ctx)
-        msg = ""
+        # Manually fetch tiles count and bank prize for display
+        tiles_count = len(await self.config.guild(ctx.guild).tiles())
+        bank_prize = await self.config.guild(ctx.guild).bank_prize()
+        currency_name = await self.get_currency_name(ctx)
+        
+        msg = f"Tiles Set: `{tiles_count}`\n"
+        msg += f"Bank Prize: `{bank_prize} {currency_name}`\n"
+
         for k, v in settings.items():
+            if k in ["bank_prize"]: # Skip items already printed
+                continue
+            
             if k == "watermark":
                 v = await self.config.guild(ctx.guild).watermark()
             if k == "icon":
                 v = await self.config.guild(ctx.guild).icon()
             if k == "background_tile":
                 v = await self.config.guild(ctx.guild).background_tile()
-            name = k.split("_")[0]
-            msg += f"{name.title()}: `{v}`\n"
+                
+            name = k.replace("_", " ").title() # Use more readable names
+            msg += f"{name}: `{v}`\n"
         await ctx.maybe_send_embed(msg)
 
     @bingoset.command(name="tiles")
@@ -360,7 +400,6 @@ class Bingo(commands.Cog):
         await self.config.guild(ctx.guild).tiles.set(options)
         await self.config.clear_all_members(guild=ctx.guild)
         card_settings = await self.get_card_options(ctx)
-        # FIX: Pass guild_name explicitly
         file = await self.create_bingo_card(options, guild_name=ctx.guild.name, **card_settings)
         await ctx.send("Here's how your bingo cards will appear", file=file)
 
@@ -391,58 +430,62 @@ class Bingo(commands.Cog):
             return True
         return False
 
-    @commands.command(name="stamp")
-    @commands.guild_only()
-    @commands.bot_has_permissions(attach_files=True)
-    async def stamp(self, ctx: commands.Context, stamp_coords: Stamp):
-        """
-        Stamp a tile on your bingo card (e.g., B1, I5).
-
-        `stamp_coords` - The tile you wish to stamp or unstamp.
-        """
-        stamps = await self.config.member(ctx.author).stamps()
-        
-        if stamp_coords in stamps:
-            stamps.remove(stamp_coords)
-            status_msg = f"Unstamped tile **{ctx.message.clean_content.split()[-1].upper()}**."
-        else:
-            stamps.append(stamp_coords)
-            status_msg = f"Stamped tile **{ctx.message.clean_content.split()[-1].upper()}**."
-            
-        await self.config.member(ctx.author).stamps.set(stamps)
-        
-        # Check for bingo after updating stamps
-        bingo = await self.check_stamps(stamps)
-        if bingo:
-            status_msg += f"\n🎉 {ctx.author.mention} has a **BINGO!**"
-
-        # Display the updated card
-        await self.bingo_card(ctx, status_msg)
-
     @commands.command(name="bingo")
     @commands.guild_only()
     @commands.bot_has_permissions(attach_files=True)
-    async def bingo_card(self, ctx: commands.Context, message: str = None):
+    async def bingo(self, ctx: commands.Context, stamp: Optional[Stamp] = None):
         """
-        Generate and show your current Bingo Card.
+        Generate a Bingo Card
+
+        `stamp` - Select the tile that you would like to stamp. If not
+        provided will just show your current bingo card.
         """
         tiles = await self.config.guild(ctx.guild).tiles()
         stamps = await self.config.member(ctx.author).stamps()
+        msg = None
+        if stamp is not None:
+            if stamp in stamps:
+                stamps.remove(stamp)
+                msg = f"Unstamped tile **{ctx.message.clean_content.split()[-1].upper()}**."
+            else:
+                stamps.append(stamp)
+                msg = f"Stamped tile **{ctx.message.clean_content.split()[-1].upper()}**."
 
-        # If no tiles are set, inform the user
-        if not tiles:
-             return await ctx.send("The bingo tiles have not been set up yet! Ask a moderator to use `[p]bingoset tiles`.")
+            await self.config.member(ctx.author).stamps.set(stamps)
+            
+        
+        if await self.check_stamps(stamps):
+            if msg:
+                msg += f"\n🎉 {ctx.author.mention} has a **BINGO!**"
+            else:
+                msg = f"🎉 {ctx.author.mention} has a **BINGO!**"
+            
+            # --- NEW: Bank Prize Distribution Logic ---
+            bank_prize = await self.config.guild(ctx.guild).bank_prize()
+            if bank_prize > 0:
+                bank_cog = self.bot.get_cog("Economy")
+                if bank_cog and hasattr(bank_cog, "bank") and hasattr(bank_cog.bank, "deposit_credits"):
+                    try:
+                        await bank_cog.bank.deposit_credits(ctx.author, bank_prize)
+                        currency = await bank_cog.bank.get_currency_name(ctx.guild)
+                        msg += f" (and won **{bank_prize}** {currency}!)"
+                    except Exception as e:
+                        log.error("Failed to deposit bank prize for bingo: %s", e)
+                        msg += "\n*Error awarding bank prize.*"
+                else:
+                    msg += "\n*Bank prize configured, but Economy cog is not loaded or configured correctly.*"
+            # --- END NEW BANK LOGIC ---
 
+        # perm = self.nth_permutation(ctx.author.id, 24, tiles)
         seed = int(await self.config.guild(ctx.guild).seed()) + ctx.author.id
         random.seed(seed)
         random.shuffle(tiles)
         card_settings = await self.get_card_options(ctx)
-        
         temp = await self.create_bingo_card(
             tiles, stamps=stamps, guild_name=ctx.guild.name, **card_settings
         )
         await ctx.send(
-            content=message,
+            content=msg,
             file=temp,
             allowed_mentions=discord.AllowedMentions(users=False),
         )
@@ -456,6 +499,8 @@ class Bingo(commands.Cog):
             "box_colour": await self.config.guild(ctx.guild).box_colour(),
             "name": await self.config.guild(ctx.guild).name(),
             "bingo": await self.config.guild(ctx.guild).bingo(),
+            "seed": await self.config.guild(ctx.guild).seed(), # Include seed for completeness
+            "bank_prize": await self.config.guild(ctx.guild).bank_prize(), # Include prize
         }
         if watermark := await self.config.guild(ctx.guild).watermark():
             ret["watermark"] = Image.open(cog_data_path(self) / watermark)
@@ -521,13 +566,7 @@ class Bingo(commands.Cog):
         background_tile: Optional[Image.Image] = None,
         stamps: List[Tuple[int, int]] = [],
     ):
-        base_height, base_width = 1000, 800
-        
-        # New constants for grid position
-        GRID_OFFSET_X = 75
-        GRID_OFFSET_Y = 250
-        SCALE = 130
-        
+        base_height, base_width = 1000, 700
         base = Image.new("RGBA", (base_width, base_height), color=background_colour)
         draw = ImageDraw.Draw(base)
         if background_tile:
@@ -540,12 +579,9 @@ class Bingo(commands.Cog):
         font = ImageFont.truetype(font=font_path, size=180)
         font2 = ImageFont.truetype(font=font_path, size=20)
         font3 = ImageFont.truetype(font=font_path, size=30)
-        font_row_number = ImageFont.truetype(font=font_path, size=30)
         credit_font = ImageFont.truetype(font=font_path, size=10)
-        
-        # Adjusted credit text position for new width
         draw.text(
-            (790, 975),
+            (690, 975),
             f"Bingo Cog written by @trustyjaid\nBingo card colours and images provided by {guild_name} moderators",
             fill=text_colour,
             stroke_width=1,
@@ -568,18 +604,15 @@ class Bingo(commands.Cog):
             x2 = int(0.5 * base.size[0]) + int(0.5 * watermark.size[0])
             y2 = int(0.5 * base.size[1]) + int(0.5 * watermark.size[1])
             base.alpha_composite(watermark, (x1, y1))
-        
-        # Adjusted icon position for new width
         if icon is not None:
             icon = icon.convert("RGBA")
             icon.thumbnail((90, 90), Image.LANCZOS)
-            base.paste(icon, (350, 905), icon) 
+            base.paste(icon, (305, 905), icon)
 
         letter_count = 0
         for letter in bingo:
             scale = 130
-            # Adjusted letter position for new grid offset
-            letter_x = GRID_OFFSET_X + 60 + (scale * letter_count) 
+            letter_x = 85 + (scale * letter_count)
             letter_y = 150
             draw.text(
                 (letter_x, letter_y),
@@ -592,10 +625,8 @@ class Bingo(commands.Cog):
             )
             letter_count += 1
         log.trace("_create_bingo_card name: %s", name)
-        
-        # Adjusted name position for new width
         draw.text(
-            (400, 200),
+            (350, 200),
             name,
             fill=text_colour,
             stroke_width=1,
@@ -606,40 +637,11 @@ class Bingo(commands.Cog):
         count = 0
         for x in range(5):
             for y in range(5):
-                scale = SCALE
-                # Use GRID_OFFSET_X for grid start
-                x0 = GRID_OFFSET_X + (scale * x)
+                scale = 130
+                x0 = 25 + (scale * x)
                 x1 = x0 + scale
-                # Use GRID_OFFSET_Y for grid start
-                y0 = GRID_OFFSET_Y + (scale * y)
+                y0 = 250 + (scale * y)
                 y1 = y0 + scale
-                
-                # --- Draw Row Numbers (1-5) on left and right ---
-                if x == 0:
-                    row_number = str(y + 1)
-                    mid_y = y0 + (scale / 2)
-                    # Left side
-                    draw.text(
-                        (30, mid_y), 
-                        row_number, 
-                        fill=text_colour, 
-                        stroke_width=1, 
-                        stroke_fill=textborder_colour, 
-                        anchor="mm", 
-                        font=font_row_number
-                    )
-                    # Right side (using new base_width - 30)
-                    draw.text(
-                        (base_width - 30, mid_y), 
-                        row_number, 
-                        fill=text_colour, 
-                        stroke_width=1, 
-                        stroke_fill=textborder_colour, 
-                        anchor="mm", 
-                        font=font_row_number
-                    )
-                # --- END ADDED ---
-                
                 if x == 2 and y == 2:
                     text = "Free Space"
                 else:
