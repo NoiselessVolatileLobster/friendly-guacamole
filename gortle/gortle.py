@@ -74,13 +74,14 @@ class Gortle(commands.Cog):
         if self.game_loop_task:
             self.game_loop_task.cancel()
 
-    def _load_word_lists(self):
+def _load_word_lists(self):
         """Loads words from JSON files in the data directory."""
-        # This gets the path to the gortle/ folder
+        # bundled_data_path(self) points to: .../cogs/gortle/
         base_path = bundled_data_path(self)
         
-        solutions_path = os.path.join(base_path, "data", "solutions.json")
-        guesses_path = os.path.join(base_path, "data", "guesses.json")
+        # We need to construct the path to: .../cogs/gortle/data/solutions.json
+        solutions_path = base_path / "data" / "solutions.json"
+        guesses_path = base_path / "data" / "guesses.json"
 
         # --- Enhanced Debugging ---
         print("-" * 40)
@@ -96,6 +97,7 @@ class Gortle(commands.Cog):
             if not os.path.exists(solutions_path) or not os.path.exists(guesses_path):
                 raise FileNotFoundError("One or both word list files are missing or path is wrong.")
             
+            # Note: Pathlib support (using / operator for joining) is robust
             with open(solutions_path, "r", encoding="utf-8") as f:
                 self.solutions = json.load(f)
             
@@ -115,7 +117,7 @@ class Gortle(commands.Cog):
             self.guesses = ["failed"]
         
         # Add the final check print here to confirm the action was taken
-        print(f"Gortle: _load_word_lists finished. Solutions: {len(self.solutions)}")
+        print(f"Gortle: _load_word_lists finished. Solutions: {len(self.solutions)}, Guesses: {len(self.guesses)}")
 
     async def game_loop(self):
         """Checks schedule for new games and weekly roles."""
