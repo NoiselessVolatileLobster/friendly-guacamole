@@ -772,6 +772,28 @@ class Bingo(commands.Cog):
                         font=font2,
                     )
                     text_y += font_height
+        
+        # --- Draw Vertical Row Numbers (1-5) ---
+        for y in range(5):
+            scale = 130
+            number = str(y + 1)  # 1-based index (1 to 5)
+            
+            # Position to the left of the B column
+            text_x = 15 
+            
+            # Center the number vertically in the row
+            text_y = 250 + (scale * y) + (scale / 2) 
+
+            draw.text(
+                (text_x, text_y),
+                number,
+                fill=text_colour,
+                stroke_width=2,
+                stroke_fill=textborder_colour,
+                anchor="lm", # Left-justified, vertically centered ('middle')
+                font=font3, # Use the size 30 font
+            )
+        # --- END DRAW VERTICAL ROW NUMBERS ---
 
         temp = BytesIO()
         base.save(temp, format="webp", optimize=True)
