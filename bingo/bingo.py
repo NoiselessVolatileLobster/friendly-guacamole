@@ -67,35 +67,52 @@ class Bingo(commands.Cog):
     def _get_bank_object(self, method_name: str) -> Optional[Any]:
         """
         Attempts to find a valid bank object that possesses the specified method name.
-        Checks the Economy cog, cog.bank, and then cog.api if available, as a last resort.
+        Performs an exhaustive search on the loaded 'Economy' cog and its attributes.
         """
         bank_cog = self.bot.get_cog("Economy")
         if not bank_cog:
+            # This should not happen if the Economy cog is loaded, but guards against it.
             log.debug("Economy cog is not loaded.")
-            return None # Economy cog is not loaded, fail immediately
+            return None 
 
-        # Priority 1: Check if the method is directly on the cog (Red v3 standard or new Cogs)
+        # Priority 1: Check if the method is directly on the cog
         if hasattr(bank_cog, method_name):
-            log.debug("Found bank method on Economy cog object.")
+            log.debug("Found bank method directly on Economy cog object.")
             return bank_cog
             
-        # Priority 2: Check the 'bank' attribute on the cog (legacy or different setup)
-        bank_attribute = getattr(bank_cog, "bank", None)
-        if bank_attribute and hasattr(bank_attribute, method_name):
-            log.debug("Found bank method on Economy cog.bank attribute.")
-            return bank_attribute
+        # Priority 2: Check common bank attributes (bank, api, currency)
+        for attr_name in ["bank", "api", "currency"]:
+            bank_attribute = getattr(bank_cog, attr_name, None)
+            if bank_attribute and hasattr(bank_attribute, method_name):
+                log.debug("Found bank method on Economy cog.%s attribute.", attr_name)
+                return bank_attribute
+        
+        # Priority 3: Exhaustive search of all public attributes on the cog
+        # This covers non-standard names used by custom or third-party economy cogs
+        for attr_name in dir(bank_cog):
+            if attr_name.startswith("_"): 
+                continue # Skip private/magic attributes
             
-        # Priority 3: Check a potential 'api' attribute (highly custom/unlikely)
-        api_attribute = getattr(bank_cog, "api", None)
-        if api_attribute and hasattr(api_attribute, method_name):
-            log.debug("Found bank method on Economy cog.api attribute.")
-            return api_attribute
+            try:
+                # Safely retrieve the attribute value
+                bank_attribute = getattr(bank_cog, attr_name)
+            except Exception:
+                # Skip attributes that raise errors on access (e.g., specific Redbot internal properties)
+                continue
             
+            # Check if this retrieved object has the required method
+            if bank_attribute and hasattr(bank_attribute, method_name):
+                # Log this successful, but non-standard, discovery
+                log.debug("Found bank method on Economy cog.%s attribute via exhaustive search.", attr_name)
+                return bank_attribute
+            
+        # If we reach here, all search attempts failed.
         log.debug("Could not find required method '%s' on Economy cog or its attributes.", method_name)
         return None
 
     async def get_currency_name(self, ctx: commands.Context) -> str:
         """Helper to get the currency name if the bank cog is loaded."""
+        # This will now use the super-robust _get_bank_object
         bank_obj = self._get_bank_object("get_currency_name")
         if bank_obj:
             # We must await this call as it's an async method on the bank object/cog
