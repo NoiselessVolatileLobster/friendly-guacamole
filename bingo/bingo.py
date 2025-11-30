@@ -5,7 +5,7 @@ import re
 import sys
 import textwrap
 from io import BytesIO
-from typing import List, Optional, Pattern, Tuple, Dict, Any # Added Any for the new helper
+from typing import List, Optional, Pattern, Tuple, Dict, Any 
 
 import aiohttp
 import discord
@@ -67,28 +67,38 @@ class Bingo(commands.Cog):
     def _get_bank_object(self, method_name: str) -> Optional[Any]:
         """
         Attempts to find a valid bank object that possesses the specified method name.
-        Checks cog.bank, then cog itself.
+        Checks the Economy cog, cog.bank, and then cog.api if available, as a last resort.
         """
         bank_cog = self.bot.get_cog("Economy")
         if not bank_cog:
-            return None
+            log.debug("Economy cog is not loaded.")
+            return None # Economy cog is not loaded, fail immediately
 
-        # Path A: Standard Red V3 Bank Framework (cog.bank is the Bank object)
-        # Use getattr defensively for 'bank'
-        bank_attribute = getattr(bank_cog, "bank", None)
-        if bank_attribute and hasattr(bank_attribute, method_name):
-            return bank_attribute
-            
-        # Path B: Methods exposed directly on the Economy cog itself
+        # Priority 1: Check if the method is directly on the cog (Red v3 standard or new Cogs)
         if hasattr(bank_cog, method_name):
+            log.debug("Found bank method on Economy cog object.")
             return bank_cog
             
+        # Priority 2: Check the 'bank' attribute on the cog (legacy or different setup)
+        bank_attribute = getattr(bank_cog, "bank", None)
+        if bank_attribute and hasattr(bank_attribute, method_name):
+            log.debug("Found bank method on Economy cog.bank attribute.")
+            return bank_attribute
+            
+        # Priority 3: Check a potential 'api' attribute (highly custom/unlikely)
+        api_attribute = getattr(bank_cog, "api", None)
+        if api_attribute and hasattr(api_attribute, method_name):
+            log.debug("Found bank method on Economy cog.api attribute.")
+            return api_attribute
+            
+        log.debug("Could not find required method '%s' on Economy cog or its attributes.", method_name)
         return None
 
     async def get_currency_name(self, ctx: commands.Context) -> str:
         """Helper to get the currency name if the bank cog is loaded."""
         bank_obj = self._get_bank_object("get_currency_name")
         if bank_obj:
+            # We must await this call as it's an async method on the bank object/cog
             return await bank_obj.get_currency_name(ctx.guild)
         return "credits" # Default currency name if cog is unavailable
 
@@ -576,12 +586,14 @@ class Bingo(commands.Cog):
                         msg += "\n*Error awarding bank prize.*"
                 else:
                     # If we reach here, we found the cog but couldn't find the deposit method in the expected locations.
+                    # This means the error message you were seeing is still technically correct.
                     log.error(
-                        "Bank prize configured but Economy check failed. Could not find 'deposit_credits' method on Economy cog or cog.bank."
+                        "Bank prize configured but Economy check failed. Could not find 'deposit_credits' on Economy cog, cog.bank, or cog.api."
                     )
+                    # Include a public message to the user about the issue
                     msg += (
-                        "\n*Bank prize configured, but **Economy cog is not correctly initialized** "
-                        "or is **missing required methods** (see console for details).*"
+                        "\n\n🚨 **Bank Prize Error:** The Economy cog's bank function couldn't be found. "
+                        "Please check the bot console for details or contact the bot owner."
                     )
 
 
