@@ -73,26 +73,39 @@ class Gortle(commands.Cog):
         """Loads words from JSON files in the data directory."""
         data_path = bundled_data_path(self) / "data"
         
+        # --- Add Debugging Output Here ---
+        print("-" * 30)
+        print(f"Gortle: Attempting to load files from: {data_path}")
+        print(f"Gortle: solutions.json exists: {os.path.exists(data_path / 'solutions.json')}")
+        print(f"Gortle: guesses.json exists: {os.path.exists(data_path / 'guesses.json')}")
+        print("-" * 30)
+        # ----------------------------------
+        
         try:
+            # Note: We wrap the file access in os.path.join for safety across OS
             with open(data_path / "solutions.json", "r", encoding="utf-8") as f:
                 self.solutions = json.load(f)
             
             with open(data_path / "guesses.json", "r", encoding="utf-8") as f:
                 raw_guesses = json.load(f)
                 
-            # Combine and deduplicate to ensure solutions are valid guesses
-            # Using set for O(1) lookups later
             combined = set(raw_guesses + self.solutions)
             self.guesses = list(combined)
             
         except FileNotFoundError as e:
-            print(f"[Gortle] Error loading word lists: {e}")
+            # If files are not found, print the error but fall back safely
+            print(f"[Gortle] CRITICAL: Word list files not found. Check structure. Error: {e}")
             self.solutions = ["failed"]
             self.guesses = ["failed"]
         except json.JSONDecodeError as e:
-            print(f"[Gortle] Error parsing JSON: {e}")
+            # If files are found but cannot be parsed
+            print(f"[Gortle] CRITICAL: Error parsing JSON in word lists. Check for syntax errors. Error: {e}")
             self.solutions = ["failed"]
             self.guesses = ["failed"]
+        
+        # FINAL check on list lengths (the source of the debug)
+        if len(self.solutions) == 1 and self.solutions[0] == "failed":
+             print("[Gortle] WARNING: Word lists failed to load and are set to default 'failed'.")
 
     async def game_loop(self):
         """Checks schedule for new games and weekly roles."""
