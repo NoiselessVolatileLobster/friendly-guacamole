@@ -371,7 +371,7 @@ class Bingo(commands.Cog):
         msg += f"Bank Prize: `{bank_prize} {currency_name}`\n"
 
         for k, v in settings.items():
-            if k in ["bank_prize"]: # Skip items already printed
+            if k in ["bank_prize", "seed"]: # Skip items already printed or not needed
                 continue
             
             if k == "watermark":
@@ -525,6 +525,8 @@ class Bingo(commands.Cog):
         icon: Optional[Image.Image] = None,
         background_tile: Optional[Image.Image] = None,
         stamps: List[Tuple[int, int]] = [],
+        seed: int = 0, # <-- ADDED
+        bank_prize: int = 0, # <-- ADDED
     ) -> Optional[discord.File]:
         task = functools.partial(
             self._create_bingo_card,
@@ -541,6 +543,8 @@ class Bingo(commands.Cog):
             icon=icon,
             background_tile=background_tile,
             stamps=stamps,
+            seed=seed, # <-- PASSED
+            bank_prize=bank_prize, # <-- PASSED
         )
         loop = asyncio.get_running_loop()
         task = loop.run_in_executor(None, task)
@@ -565,6 +569,8 @@ class Bingo(commands.Cog):
         icon: Optional[Image.Image] = None,
         background_tile: Optional[Image.Image] = None,
         stamps: List[Tuple[int, int]] = [],
+        seed: int = 0, # <-- ADDED
+        bank_prize: int = 0, # <-- ADDED
     ):
         base_height, base_width = 1000, 700
         base = Image.new("RGBA", (base_width, base_height), color=background_colour)
