@@ -541,7 +541,13 @@ class Bingo(commands.Cog):
             bank_prize = await self.config.guild(ctx.guild).bank_prize()
             if bank_prize > 0:
                 bank_cog = self.bot.get_cog("Economy")
-                if bank_cog and hasattr(bank_cog, "bank") and hasattr(bank_cog.bank, "deposit_credits"):
+                
+                # --- UPDATED CHECK AND LOGIC ---
+                if (
+                    bank_cog
+                    and hasattr(bank_cog, "bank")
+                    and hasattr(bank_cog.bank, "deposit_credits")
+                ):
                     try:
                         await bank_cog.bank.deposit_credits(ctx.author, bank_prize)
                         currency = await bank_cog.bank.get_currency_name(ctx.guild)
@@ -550,7 +556,17 @@ class Bingo(commands.Cog):
                         log.error("Failed to deposit bank prize for bingo: %s", e)
                         msg += "\n*Error awarding bank prize.*"
                 else:
-                    msg += "\n*Bank prize configured, but Economy cog is not loaded or configured correctly.*"
+                    log.info(
+                        "Bank prize configured for bingo, but Economy cog check failed. "
+                        "Cog Loaded: %s, Has Bank Object: %s, Has Deposit Method: %s",
+                        bool(bank_cog),
+                        bool(bank_cog and hasattr(bank_cog, "bank")),
+                        bool(bank_cog and hasattr(bank_cog, "bank") and hasattr(bank_cog.bank, "deposit_credits")),
+                    )
+                    msg += (
+                        "\n*Bank prize configured, but **Economy cog is not loaded** or is **missing required methods**.*"
+                    )
+                # --- END UPDATED CHECK AND LOGIC ---
 
         # perm = self.nth_permutation(ctx.author.id, 24, tiles)
         seed = int(await self.config.guild(ctx.guild).seed()) + ctx.author.id
@@ -668,7 +684,7 @@ class Bingo(commands.Cog):
         credit_font = ImageFont.truetype(font=font_path, size=10)
         draw.text(
             (690, 975),
-            f"{guild_name}",
+            f"Bingo Cog written by @trustyjaid\nBingo card colours and images provided by {guild_name} moderators",
             fill=text_colour,
             stroke_width=1,
             align="right",
