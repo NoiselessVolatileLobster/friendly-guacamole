@@ -19,6 +19,11 @@ class Gortle(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=8473629103, force_registration=True)
 
+        # Force the loading here and print a success message immediately
+        self._load_word_lists()
+        # This print should appear in your console EVERY time the cog is loaded/reloaded
+        print(f"Gortle: Init complete. Solutions count: {len(self.solutions)}")
+
         # Initialize lists
         self.solutions = []
         self.guesses = []
