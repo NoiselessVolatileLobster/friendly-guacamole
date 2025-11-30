@@ -262,6 +262,11 @@ class Gortle(commands.Cog):
             return 
 
         guess = match.group(0)
+
+        # DEBUG PRINT
+        print(f"User guessed: '{guess}'")
+        print(f"Is in guesses? {guess in self.guesses}")
+        print(f"Guesses list length: {len(self.guesses)}")
         
         if not await self.config.game_active():
             return
