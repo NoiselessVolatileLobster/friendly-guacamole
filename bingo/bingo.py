@@ -283,7 +283,7 @@ class Bingo(commands.Cog):
             and hasattr(bank_cog.bank, "get_currency_name")
         ):
             return await bank_cog.bank.get_currency_name(ctx.guild)
-        # Check for cog.get_currency_name (less common structure)
+        # Check for cog.get_currency_name (less common structure, or if methods are exposed directly)
         if bank_cog and hasattr(bank_cog, "get_currency_name"):
              return await bank_cog.get_currency_name(ctx.guild)
 
@@ -552,14 +552,16 @@ class Bingo(commands.Cog):
                 bank_cog = self.bot.get_cog("Economy")
                 
                 # Check for deposit credits on cog.bank (standard) or directly on the cog (alternative)
+                # This uses getattr() to safely fallback to the cog itself if the .bank attribute is missing.
                 bank_obj = getattr(bank_cog, "bank", bank_cog)
                 
                 has_cog = bool(bank_cog)
-                has_bank_obj = bool(bank_obj)
-                has_deposit = has_bank_obj and hasattr(bank_obj, "deposit_credits")
+                has_bank_obj = hasattr(bank_obj, "deposit_credits") or hasattr(bank_cog, "bank")
+                has_deposit = hasattr(bank_obj, "deposit_credits")
                 
                 if has_deposit:
                     try:
+                        # Call deposit_credits with the standard Red signature: member, amount
                         await bank_obj.deposit_credits(ctx.author, bank_prize)
                         currency = await self.get_currency_name(ctx)
                         msg += f" (and won **{bank_prize}** {currency}!)"
@@ -576,11 +578,11 @@ class Bingo(commands.Cog):
                         has_bank_obj,
                         has_deposit,
                     )
+                    # Removed redundant print of boolean flags in user message.
                     msg += (
                         "\n*Bank prize configured, but **Economy cog is not correctly initialized** "
-                        "or is **missing required methods** (see console for details).* "
-                        "Cog: %s, Bank/Obj: %s, Deposit: %s"
-                    ) % (has_cog, has_bank_obj, has_deposit)
+                        "or is **missing required methods** (see console for details).*"
+                    )
 
         seed = int(await self.config.guild(ctx.guild).seed()) + ctx.author.id
         random.seed(seed)
