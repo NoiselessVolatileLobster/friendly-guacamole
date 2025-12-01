@@ -41,19 +41,12 @@ class EphemeralButton(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
         # Call a helper to load the configured button properties onto the component
-        self.bot.loop.create_task(self._update_button_appearance())
+        self.cog.bot.loop.create_task(self._update_button_appearance())
 
     # This method is called internally by discord.py to restore persistent views.
-    # We use it to ensure the button's appearance reflects the saved config on load.
     async def _update_button_appearance(self):
         """Update button label and style from stored config after cog load."""
         await self.cog.bot.wait_until_ready()
-        
-        # This view may be registered globally, but needs guild context to load config.
-        # Since this runs on cog init, we cannot know the guild yet unless we fetch 
-        # the saved message, but for persistence, we rely on the component callback 
-        # logic to be robust. We only need the custom_id for registration.
-        # The visual update happens when the user runs the 'embed' command.
         
         # Simple default button definition
         for item in self.children:
@@ -140,15 +133,16 @@ class Ephemeral(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1480084004, force_registration=True)
+        # Store time thresholds in seconds to be JSON serializable
         self.config.register_guild(
-            ephemeral_failed_threshold=timedelta(hours=8),
+            ephemeral_failed_threshold=timedelta(hours=8).total_seconds(), # 28800.0
             messages_threshold=10,
             message_length_threshold=10,
             ephemeral_role_id=None,
             ephemeral_failed_role_id=None,
-            first_greeting_threshold=timedelta(hours=3),
+            first_greeting_threshold=timedelta(hours=3).total_seconds(), # 10800.0
             first_greeting_message="It looks like you haven't sent enough messages yet in {time_passed}.",
-            second_greeting_threshold=timedelta(hours=5),
+            second_greeting_threshold=timedelta(hours=5).total_seconds(), # 18000.0
             second_greeting_message="You've been in Ephemeral mode for {time_passed}. Please continue interacting!",
             embed_channel_id=None,
             embed_message_id=None,
@@ -182,7 +176,6 @@ class Ephemeral(commands.Cog):
         for task in self.timers.values():
             if not task.done():
                 task.cancel()
-        # The view should remain registered globally for persistence
         
     async def _init_timers(self):
         """Initializes all running timers from stored configuration."""
@@ -234,23 +227,29 @@ class Ephemeral(commands.Cog):
                 return
 
             settings = await self.config.guild(guild).all()
+            
+            # Convert stored seconds back to timedelta for comparison
+            failed_threshold = timedelta(seconds=settings["ephemeral_failed_threshold"])
+            second_greeting_threshold = timedelta(seconds=settings["second_greeting_threshold"])
+            first_greeting_threshold = timedelta(seconds=settings["first_greeting_threshold"])
+            
             start_time = datetime.fromtimestamp(member_data["start_time"])
             time_passed: timedelta = datetime.now() - start_time
             
             formatted_time = timedelta_to_human(time_passed)
 
             # 1. Ephemeral Failed Threshold
-            if time_passed >= settings["ephemeral_failed_threshold"]:
+            if time_passed >= failed_threshold:
                 await self._handle_ephemeral_failed(guild, user, settings)
                 return
 
             # 2. Second Greeting Threshold
-            elif time_passed >= settings["second_greeting_threshold"] and not member_data["second_greeting_sent"]:
+            elif time_passed >= second_greeting_threshold and not member_data["second_greeting_sent"]:
                 await self._send_greeting(user, settings["second_greeting_message"].replace("{time_passed}", formatted_time))
                 await self.config.member(user).second_greeting_sent.set(True)
 
             # 3. First Greeting Threshold
-            elif time_passed >= settings["first_greeting_threshold"] and not member_data["first_greeting_sent"]:
+            elif time_passed >= first_greeting_threshold and not member_data["first_greeting_sent"]:
                 await self._send_greeting(user, settings["first_greeting_message"].replace("{time_passed}", formatted_time))
                 await self.config.member(user).first_greeting_sent.set(True)
 
@@ -344,9 +343,14 @@ class Ephemeral(commands.Cog):
             e_role = ctx.guild.get_role(settings["ephemeral_role_id"])
             f_role = ctx.guild.get_role(settings["ephemeral_failed_role_id"])
             
+            # Convert stored seconds back to timedelta for display
+            failed_td = timedelta(seconds=settings['ephemeral_failed_threshold'])
+            first_td = timedelta(seconds=settings['first_greeting_threshold'])
+            second_td = timedelta(seconds=settings['second_greeting_threshold'])
+
             output = [
                 bold("Time/Message Thresholds:"),
-                f"Ephemeral Failed Threshold: **{timedelta_to_human(settings['ephemeral_failed_threshold'])}**",
+                f"Ephemeral Failed Threshold: **{timedelta_to_human(failed_td)}**",
                 f"Messages Threshold: **{settings['messages_threshold']}** messages",
                 f"Message Length Threshold: **{settings['message_length_threshold']}** characters",
                 "",
@@ -355,9 +359,9 @@ class Ephemeral(commands.Cog):
                 f"Ephemeral Failed Role: **{f_role.name if f_role else 'Not Set'}** ({settings['ephemeral_failed_role_id'] or 'N/A'})",
                 "",
                 bold("Greetings Configuration:"),
-                f"First Greeting Threshold: **{timedelta_to_human(settings['first_greeting_threshold'])}**",
+                f"First Greeting Threshold: **{timedelta_to_human(first_td)}**",
                 f"First Greeting Message: {settings['first_greeting_message'].format(time_passed='[TIME]')} (Use {{time_passed}})",
-                f"Second Greeting Threshold: **{timedelta_to_human(settings['second_greeting_threshold'])}**",
+                f"Second Greeting Threshold: **{timedelta_to_human(second_td)}**",
                 f"Second Greeting Message: {settings['second_greeting_message'].format(time_passed='[TIME]')} (Use {{time_passed}})",
             ]
             
@@ -373,7 +377,8 @@ class Ephemeral(commands.Cog):
         if time.total_seconds() <= 0:
             return await ctx.send("Time must be a positive duration.")
             
-        await self.config.guild(ctx.guild).ephemeral_failed_threshold.set(time)
+        # Store as seconds
+        await self.config.guild(ctx.guild).ephemeral_failed_threshold.set(time.total_seconds())
         await ctx.send(f"Ephemeral Failed threshold set to **{timedelta_to_human(time)}**.")
 
     @ephemeralset.command(name="messages")
@@ -416,7 +421,8 @@ class Ephemeral(commands.Cog):
         if time.total_seconds() <= 0:
             return await ctx.send("Time must be a positive duration.")
         
-        await self.config.guild(ctx.guild).first_greeting_threshold.set(time)
+        # Store as seconds
+        await self.config.guild(ctx.guild).first_greeting_threshold.set(time.total_seconds())
         await self.config.guild(ctx.guild).first_greeting_message.set(message)
         await ctx.send(
             f"First Greeting set:\n"
@@ -434,7 +440,8 @@ class Ephemeral(commands.Cog):
         if time.total_seconds() <= 0:
             return await ctx.send("Time must be a positive duration.")
             
-        await self.config.guild(ctx.guild).second_greeting_threshold.set(time)
+        # Store as seconds
+        await self.config.guild(ctx.guild).second_greeting_threshold.set(time.total_seconds())
         await self.config.guild(ctx.guild).second_greeting_message.set(message)
         await ctx.send(
             f"Second Greeting set:\n"
