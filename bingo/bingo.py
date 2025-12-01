@@ -5,7 +5,7 @@ import re
 import sys
 import textwrap
 from io import BytesIO
-from typing import List, Optional, Pattern, Tuple, Dict, Any 
+from typing import List, Optional, Pattern, Tuple, Dict, Any
 
 import aiohttp
 import discord
@@ -22,7 +22,7 @@ IMAGE_LINKS: Pattern = re.compile(
     r"(https?:\/\/[^\"\'\s]*\.(?:png|jpg|jpeg)(\?size=[0-9]*)?)", flags=re.I
 )
 
-# --- NEW: Game Type Definitions ---
+# --- Game Type Definitions ---
 GAME_TYPES: Dict[str, str] = {
     "STANDARD": "Any horizontal, vertical, or diagonal line.",
     "HORIZONTAL": "Any complete horizontal line.",
@@ -33,7 +33,7 @@ GAME_TYPES: Dict[str, str] = {
 
 
 class Bingo(commands.Cog):
-    __version__ = "1.2.2"
+    __version__ = "1.2.3" # Bumped version for fresh bank logic
     __author__ = ["TrustyJAID"]
 
     def __init__(self, bot):
@@ -56,58 +56,43 @@ class Bingo(commands.Cog):
             game_type="STANDARD",
         )
         self.config.register_member(stamps=[])
-        
+
     async def red_delete_data_for_user(self, **kwargs):
         """
         Nothing to delete. Information saved is a set of points on a bingo card and
         does not represent end user data.
         """
         return
+
+    # --- SIMPLIFIED BANK HELPERS ---
+
+    def _get_bank(self):
+        """
+        Retrieves the bank interface if available.
+        Returns the object responsible for transactions (either the cog or cog.bank).
+        """
+        economy_cog = self.bot.get_cog("Economy")
+        if not economy_cog:
+            return None
         
-    # --- Utility Functions for Economy/Bank Interaction ---
-    
-    def _get_bank_object(self, method_name: str) -> Optional[Any]:
-        """
-        Attempts to find a valid bank object that possesses the specified method name.
-        Checks cog.bank, then cog itself. 
-        """
-        bank_cog = self.bot.get_cog("Economy")
-        if not bank_cog:
-            log.debug("Economy cog is not loaded.")
-            return None 
+        # Check standard location (Red V3)
+        if hasattr(economy_cog, "bank"):
+            return economy_cog.bank
+        
+        # Check if the cog itself is the bank (Legacy/Alternative)
+        return economy_cog
 
-        # Priority 1: Check if the method is directly on the cog
-        if hasattr(bank_cog, method_name):
-            log.debug("Found bank method directly on Economy cog object.")
-            return bank_cog
-            
-        # Priority 2: Check common bank attributes
-        # We explicitly check 'bank' which is the standard for Red V3
-        bank_attribute = getattr(bank_cog, "bank", None)
-        if bank_attribute and hasattr(bank_attribute, method_name):
-            log.debug("Found bank method on Economy cog.bank attribute.")
-            return bank_attribute
-            
-        # Removed exhaustive search to prevent picking up Config objects
-            
-        log.debug("Could not find required method '%s' on Economy cog or its attributes.", method_name)
-        return None
+    async def get_currency_name(self, guild: discord.Guild) -> str:
+        """Safely gets the currency name."""
+        bank = self._get_bank()
+        if bank and hasattr(bank, "get_currency_name"):
+            try:
+                return await bank.get_currency_name(guild)
+            except Exception:
+                pass
+        return "credits"
 
-    async def get_bank_obj(self, ctx: commands.Context) -> Optional[Any]:
-        """
-        Attempt to find the official bank interface object from the Economy cog.
-        """
-        # We use the helper to find the object that has deposit_credits
-        return self._get_bank_object("deposit_credits")
-
-    async def get_currency_name(self, ctx: commands.Context) -> str:
-        """Helper to get the currency name if the bank cog is loaded."""
-        bank_obj = self._get_bank_object("get_currency_name")
-        if bank_obj:
-            # We must await this call as it's an async method on the bank object/cog
-            return await bank_obj.get_currency_name(ctx.guild)
-        return "credits" # Default currency name if cog is unavailable
-    # --- End Utility Functions ---
+    # --- END HELPERS ---
 
     @commands.group(name="bingoset")
     @commands.mod_or_permissions(manage_messages=True)
@@ -324,7 +309,7 @@ class Bingo(commands.Cog):
 
         Set to 0 to disable. Requires the Economy cog to be loaded.
         """
-        currency_name = await self.get_currency_name(ctx)
+        currency_name = await self.get_currency_name(ctx.guild)
 
         if amount is None:
             prize = await self.config.guild(ctx.guild).bank_prize()
@@ -449,7 +434,7 @@ class Bingo(commands.Cog):
         tiles_count = len(await self.config.guild(ctx.guild).tiles())
         bank_prize = await self.config.guild(ctx.guild).bank_prize()
         game_type = await self.config.guild(ctx.guild).game_type()
-        currency_name = await self.get_currency_name(ctx)
+        currency_name = await self.get_currency_name(ctx.guild)
         
         msg = f"Tiles Set: `{tiles_count}`\n"
         msg += f"Game Type: `{game_type}` ({GAME_TYPES.get(game_type, 'Unknown Type')})\n"
@@ -574,37 +559,26 @@ class Bingo(commands.Cog):
             
         # Step 2: Check for a BINGO win
         if await self.check_stamps(stamps, ctx.guild):
-            is_bingo_win = True
             if msg:
                 msg += f"\n🎉 {ctx.author.mention} has a **BINGO!**"
             else:
                 msg = f"🎉 {ctx.author.mention} has a **BINGO!**"
             
-            # Step 3: Bank Prize Distribution Logic
+            # --- FRESH BANK LOGIC ---
             if bank_prize > 0:
-                # Use the reliable helper to find the valid bank object
-                bank_obj = await self.get_bank_obj(ctx)
-                
-                if bank_obj:
+                bank = self._get_bank()
+                if bank and hasattr(bank, "deposit_credits"):
                     try:
-                        # FIX: This is the correct standard call for Red's bank service (member, amount)
-                        # The previous error was due to `bank_obj` incorrectly pointing to a Config object.
-                        await bank_obj.deposit_credits(ctx.author, bank_prize)
-                        currency = await self.get_currency_name(ctx)
+                        await bank.deposit_credits(ctx.author, bank_prize)
+                        currency = await self.get_currency_name(ctx.guild)
                         msg += f" (and won **{bank_prize}** {currency}!)"
                     except Exception as e:
-                        # Log the specific exception if the deposit call itself fails
-                        log.error("Failed to deposit bank prize for bingo: %s", e, exc_info=True)
+                        log.error("Failed to deposit bank prize.", exc_info=True)
                         msg += "\n*Error awarding bank prize.*"
                 else:
-                    # If bank_obj is None, Economy cog is likely not loaded or bank interface is missing.
-                    log.error(
-                        "Bank prize configured but Economy cog is missing or missing the 'bank' interface."
-                    )
-                    msg += (
-                        "\n\n🚨 **Bank Prize Error:** The Economy cog's bank function couldn't be found. "
-                        "Is the Economy cog loaded?"
-                    )
+                    log.warning("Bank prize set, but Economy cog is missing or incompatible.")
+                    msg += "\n*Bank prize error: Economy system unavailable.*"
+            # --- END FRESH BANK LOGIC ---
         
         # Step 4: Generate and send the card
         seed = int(await self.config.guild(ctx.guild).seed()) + ctx.author.id
