@@ -2,7 +2,7 @@ import asyncio
 import discord
 from redbot.core import commands, Config, checks
 from redbot.core.utils.menus import DEFAULT_CONTROLS, menu
-from redbot.core.utils.chat_formatting import humanize_list, box, bold
+from redbot.core.utils.chat_formatting import humanize_list, box, bold, pagify
 from datetime import datetime, timedelta
 import typing
 
@@ -331,6 +331,68 @@ class Ephemeral(commands.Cog):
                 except discord.Forbidden:
                     await message.channel.send(f"I tried to remove the Ephemeral role from {member.mention}, but I lack permissions. Please fix this!")
             
+    # --- Utility Command ---
+
+    @commands.command()
+    @checks.admin_or_permissions(manage_guild=True)
+    async def ephemeralstatus(self, ctx: commands.Context):
+        """Displays all users currently in Ephemeral mode and their time remaining."""
+        
+        all_member_data = await self.config.all_members(ctx.guild)
+        settings = await self.config.guild(ctx.guild).all()
+        
+        # The threshold is stored in seconds
+        failed_threshold_seconds = settings["ephemeral_failed_threshold"]
+        
+        ephemeral_users = []
+        
+        for member_id, data in all_member_data.items():
+            if data.get("is_ephemeral") and data.get("start_time"):
+                
+                member = ctx.guild.get_member(member_id)
+                if not member:
+                    # Cleanup data for users who left the guild
+                    await self.config.member_from_id(member_id).clear()
+                    self.stop_user_timer(ctx.guild.id, member_id)
+                    continue
+
+                start_time_ts = data["start_time"]
+                
+                # Calculate the expiration time (UNIX timestamp)
+                expiration_ts = start_time_ts + failed_threshold_seconds
+                
+                # Format: Mention (Messages Sent/Threshold) | Expires (Relative)
+                output_line = (
+                    f"{member.mention} ({data['message_count']}/{settings['messages_threshold']}) | "
+                    f"Expires: <t:{int(expiration_ts)}:R>"
+                )
+                ephemeral_users.append(output_line)
+
+        if not ephemeral_users:
+            await ctx.send("No users are currently in Ephemeral mode.")
+            return
+
+        # Prepare pages using Red's formatting utilities for potentially long lists
+        pages = []
+        # Use pagify to split the list of users into pages that fit within Discord's message limits
+        for i, page in enumerate(pagify("\n".join(ephemeral_users), page_length=1000)):
+            embed = discord.Embed(
+                title=f"Ephemeral Users Status ({len(ephemeral_users)} active)",
+                description=page,
+                color=await ctx.embed_color()
+            )
+            # Add page numbering if multiple pages
+            if len(ephemeral_users) > 20: 
+                 embed.title = f"Ephemeral Users Status (Page {i+1})"
+
+            pages.append(embed)
+        
+        if len(pages) > 1:
+            await menu(ctx, pages, DEFAULT_CONTROLS)
+        else:
+            await ctx.send(embed=pages[0])
+
+
     # --- Configuration Commands ---
 
     @commands.group()
