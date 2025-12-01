@@ -5,7 +5,7 @@ import re
 import sys
 import textwrap
 from io import BytesIO
-from typing import List, Optional, Pattern, Tuple, Dict, Any
+from typing import List, Optional, Pattern, Tuple, Dict, Any, Callable
 
 import aiohttp
 import discord
@@ -33,7 +33,7 @@ GAME_TYPES: Dict[str, str] = {
 
 
 class Bingo(commands.Cog):
-    __version__ = "1.2.3" # Bumped version for fresh bank logic
+    __version__ = "1.2.4" # Bumped version for direct bank function retrieval
     __author__ = ["TrustyJAID"]
 
     def __init__(self, bot):
@@ -64,35 +64,53 @@ class Bingo(commands.Cog):
         """
         return
 
-    # --- SIMPLIFIED BANK HELPERS ---
+    # --- DIRECT BANK FUNCTION RETRIEVERS (New Logic) ---
 
-    def _get_bank(self):
-        """
-        Retrieves the bank interface if available.
-        Returns the object responsible for transactions (either the cog or cog.bank).
-        """
+    def _get_deposit_function(self) -> Optional[Callable]:
+        """Tries to find and return the bank's deposit_credits function."""
         economy_cog = self.bot.get_cog("Economy")
         if not economy_cog:
             return None
         
-        # Check standard location (Red V3)
-        if hasattr(economy_cog, "bank"):
-            return economy_cog.bank
+        # 1. Check standard location: cog.bank.deposit_credits (Most common modern Red V3)
+        if hasattr(economy_cog, "bank") and hasattr(economy_cog.bank, "deposit_credits"):
+            return economy_cog.bank.deposit_credits
+            
+        # 2. Check alternative location: cog.deposit_credits (Less common/Older setup)
+        if hasattr(economy_cog, "deposit_credits"):
+            return economy_cog.deposit_credits
+            
+        return None
+
+    def _get_currency_name_function(self) -> Optional[Callable]:
+        """Tries to find and return the bank's get_currency_name function."""
+        economy_cog = self.bot.get_cog("Economy")
+        if not economy_cog:
+            return None
         
-        # Check if the cog itself is the bank (Legacy/Alternative)
-        return economy_cog
+        # 1. Check standard location: cog.bank.get_currency_name
+        if hasattr(economy_cog, "bank") and hasattr(economy_cog.bank, "get_currency_name"):
+            return economy_cog.bank.get_currency_name
+            
+        # 2. Check alternative location: cog.get_currency_name
+        if hasattr(economy_cog, "get_currency_name"):
+            return economy_cog.get_currency_name
+            
+        return None
 
     async def get_currency_name(self, guild: discord.Guild) -> str:
-        """Safely gets the currency name."""
-        bank = self._get_bank()
-        if bank and hasattr(bank, "get_currency_name"):
+        """Safely calls the currency name function."""
+        get_name_func = self._get_currency_name_function()
+        if get_name_func:
             try:
-                return await bank.get_currency_name(guild)
+                # The function is almost always an async method that takes the guild
+                return await get_name_func(guild)
             except Exception:
+                # Fallback if the found function signature is wrong or it fails
                 pass
         return "credits"
 
-    # --- END HELPERS ---
+    # --- END DIRECT BANK FUNCTION RETRIEVERS ---
 
     @commands.group(name="bingoset")
     @commands.mod_or_permissions(manage_messages=True)
@@ -564,23 +582,24 @@ class Bingo(commands.Cog):
             else:
                 msg = f"🎉 {ctx.author.mention} has a **BINGO!**"
             
-            # --- FRESH BANK LOGIC ---
+            # --- DIRECT FUNCTION CALL LOGIC ---
             if bank_prize > 0:
-                bank = self._get_bank()
-                if bank and hasattr(bank, "deposit_credits"):
+                deposit_func = self._get_deposit_function()
+                if deposit_func:
                     try:
-                        await bank.deposit_credits(ctx.author, bank_prize)
+                        # deposit_credits requires user and amount
+                        await deposit_func(ctx.author, bank_prize)
                         currency = await self.get_currency_name(ctx.guild)
                         msg += f" (and won **{bank_prize}** {currency}!)"
                     except Exception as e:
                         log.error("Failed to deposit bank prize.", exc_info=True)
-                        msg += "\n*Error awarding bank prize.*"
+                        msg += "\n*Error awarding bank prize due to transaction failure.*"
                 else:
                     log.warning("Bank prize set, but Economy cog is missing or incompatible.")
                     msg += "\n*Bank prize error: Economy system unavailable.*"
-            # --- END FRESH BANK LOGIC ---
+            # --- END DIRECT FUNCTION CALL LOGIC ---
         
-        # Step 4: Generate and send the card
+        # Step 3: Generate and send the card
         seed = int(await self.config.guild(ctx.guild).seed()) + ctx.author.id
         random.seed(seed)
         random.shuffle(tiles)
