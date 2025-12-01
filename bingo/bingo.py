@@ -11,7 +11,7 @@ import aiohttp
 import discord
 from PIL import Image, ImageColor, ImageDraw, ImageFont
 from red_commons.logging import getLogger
-from redbot.core import Config, commands
+from redbot.core import Config, commands, bank # <-- ADDED bank IMPORT
 from redbot.core.data_manager import bundled_data_path, cog_data_path
 
 from .converter import Stamp
@@ -33,7 +33,7 @@ GAME_TYPES: Dict[str, str] = {
 
 
 class Bingo(commands.Cog):
-    __version__ = "1.2.4" # Bumped version for direct bank function retrieval
+    __version__ = "1.2.5" # Version bump for direct bank API fix
     __author__ = ["TrustyJAID"]
 
     def __init__(self, bot):
@@ -64,53 +64,8 @@ class Bingo(commands.Cog):
         """
         return
 
-    # --- DIRECT BANK FUNCTION RETRIEVERS (New Logic) ---
-
-    def _get_deposit_function(self) -> Optional[Callable]:
-        """Tries to find and return the bank's deposit_credits function."""
-        economy_cog = self.bot.get_cog("Economy")
-        if not economy_cog:
-            return None
-        
-        # 1. Check standard location: cog.bank.deposit_credits (Most common modern Red V3)
-        if hasattr(economy_cog, "bank") and hasattr(economy_cog.bank, "deposit_credits"):
-            return economy_cog.bank.deposit_credits
-            
-        # 2. Check alternative location: cog.deposit_credits (Less common/Older setup)
-        if hasattr(economy_cog, "deposit_credits"):
-            return economy_cog.deposit_credits
-            
-        return None
-
-    def _get_currency_name_function(self) -> Optional[Callable]:
-        """Tries to find and return the bank's get_currency_name function."""
-        economy_cog = self.bot.get_cog("Economy")
-        if not economy_cog:
-            return None
-        
-        # 1. Check standard location: cog.bank.get_currency_name
-        if hasattr(economy_cog, "bank") and hasattr(economy_cog.bank, "get_currency_name"):
-            return economy_cog.bank.get_currency_name
-            
-        # 2. Check alternative location: cog.get_currency_name
-        if hasattr(economy_cog, "get_currency_name"):
-            return economy_cog.get_currency_name
-            
-        return None
-
-    async def get_currency_name(self, guild: discord.Guild) -> str:
-        """Safely calls the currency name function."""
-        get_name_func = self._get_currency_name_function()
-        if get_name_func:
-            try:
-                # The function is almost always an async method that takes the guild
-                return await get_name_func(guild)
-            except Exception:
-                # Fallback if the found function signature is wrong or it fails
-                pass
-        return "credits"
-
-    # --- END DIRECT BANK FUNCTION RETRIEVERS ---
+    # Removed _get_deposit_function, _get_currency_name_function, and get_currency_name
+    # as we now use the standard 'bank' object from redbot.core.
 
     @commands.group(name="bingoset")
     @commands.mod_or_permissions(manage_messages=True)
@@ -327,7 +282,8 @@ class Bingo(commands.Cog):
 
         Set to 0 to disable. Requires the Economy cog to be loaded.
         """
-        currency_name = await self.get_currency_name(ctx.guild)
+        # Using the standard bank module for currency name
+        currency_name = await bank.get_currency_name(ctx.guild)
 
         if amount is None:
             prize = await self.config.guild(ctx.guild).bank_prize()
@@ -452,7 +408,9 @@ class Bingo(commands.Cog):
         tiles_count = len(await self.config.guild(ctx.guild).tiles())
         bank_prize = await self.config.guild(ctx.guild).bank_prize()
         game_type = await self.config.guild(ctx.guild).game_type()
-        currency_name = await self.get_currency_name(ctx.guild)
+        
+        # Using the standard bank module for currency name
+        currency_name = await bank.get_currency_name(ctx.guild)
         
         msg = f"Tiles Set: `{tiles_count}`\n"
         msg += f"Game Type: `{game_type}` ({GAME_TYPES.get(game_type, 'Unknown Type')})\n"
@@ -582,22 +540,18 @@ class Bingo(commands.Cog):
             else:
                 msg = f"🎉 {ctx.author.mention} has a **BINGO!**"
             
-            # --- DIRECT FUNCTION CALL LOGIC ---
+            # --- STANDARD BANK INTEGRATION LOGIC ---
             if bank_prize > 0:
-                deposit_func = self._get_deposit_function()
-                if deposit_func:
-                    try:
-                        # deposit_credits requires user and amount
-                        await deposit_func(ctx.author, bank_prize)
-                        currency = await self.get_currency_name(ctx.guild)
-                        msg += f" (and won **{bank_prize}** {currency}!)"
-                    except Exception as e:
-                        log.error("Failed to deposit bank prize.", exc_info=True)
-                        msg += "\n*Error awarding bank prize due to transaction failure.*"
-                else:
-                    log.warning("Bank prize set, but Economy cog is missing or incompatible.")
-                    msg += "\n*Bank prize error: Economy system unavailable.*"
-            # --- END DIRECT FUNCTION CALL LOGIC ---
+                try:
+                    # Using the standard Red V3 bank module, as confirmed by your working snippet
+                    await bank.deposit_credits(ctx.author, bank_prize)
+                    currency = await bank.get_currency_name(ctx.guild)
+                    msg += f" (and won **{bank_prize}** {currency}!)"
+                except Exception as e:
+                    # This will catch issues like Economy not being loaded or transaction failures
+                    log.error("Failed to deposit bank prize using redbot.core.bank.", exc_info=True)
+                    msg += "\n*Bank prize error: Failed to award prize. Ensure the Economy cog is loaded and configured.*"
+            # --- END STANDARD BANK INTEGRATION LOGIC ---
         
         # Step 3: Generate and send the card
         seed = int(await self.config.guild(ctx.guild).seed()) + ctx.author.id
