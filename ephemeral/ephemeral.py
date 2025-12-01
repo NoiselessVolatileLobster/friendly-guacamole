@@ -296,6 +296,12 @@ class Ephemeral(commands.Cog):
 
             # 2. Second Greeting Threshold
             elif time_passed >= second_greeting_threshold and not member_data["second_greeting_sent"]:
+                # --- START DIAGNOSTIC LOGGING ---
+                print(
+                    f"Ephemeral DEBUG: Attempting to send SECOND GREETING for {user.id} in Guild {guild.id}. "
+                    f"Configured Channel ID: {settings['second_greeting_channel_id']}"
+                )
+                # --- END DIAGNOSTIC LOGGING ---
                 await self._send_custom_message(
                     guild, 
                     user, 
@@ -307,6 +313,12 @@ class Ephemeral(commands.Cog):
 
             # 3. First Greeting Threshold
             elif time_passed >= first_greeting_threshold and not member_data["first_greeting_sent"]:
+                # --- START DIAGNOSTIC LOGGING ---
+                print(
+                    f"Ephemeral DEBUG: Attempting to send FIRST GREETING for {user.id} in Guild {guild.id}. "
+                    f"Configured Channel ID: {settings['first_greeting_channel_id']}"
+                )
+                # --- END DIAGNOSTIC LOGGING ---
                 await self._send_custom_message(
                     guild, 
                     user, 
@@ -337,6 +349,12 @@ class Ephemeral(commands.Cog):
                 pass
 
         # Send failure message to configured channel
+        # --- START DIAGNOSTIC LOGGING ---
+        print(
+            f"Ephemeral DEBUG: Attempting to send FAILED MESSAGE for {user.id} in Guild {guild.id}. "
+            f"Configured Channel ID: {settings['failed_message_channel_id']}"
+        )
+        # --- END DIAGNOSTIC LOGGING ---
         await self._send_custom_message(
             guild,
             user,
@@ -383,6 +401,12 @@ class Ephemeral(commands.Cog):
                     await self.config.member(member).clear()
                     
                     # Send removal message to configured channel
+                    # --- START DIAGNOSTIC LOGGING ---
+                    print(
+                        f"Ephemeral DEBUG: Attempting to send REMOVED MESSAGE for {member.id} in Guild {guild.id}. "
+                        f"Configured Channel ID: {settings['removed_message_channel_id']}"
+                    )
+                    # --- END DIAGNOSTIC LOGGING ---
                     await self._send_custom_message(
                         guild,
                         member,
