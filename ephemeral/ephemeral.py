@@ -1,0 +1,520 @@
+import asyncio
+import discord
+from redbot.core import commands, Config, checks
+from redbot.core.utils.menus import DEFAULT_CONTROLS, menu
+from redbot.core.utils.chat_formatting import humanize_list, box, bold
+from datetime import datetime, timedelta
+import typing
+
+# Helper to map button color strings to discord.ButtonStyle
+BUTTON_COLOR_MAP = {
+    "blue": discord.ButtonStyle.blurple,
+    "green": discord.ButtonStyle.green,
+    "red": discord.ButtonStyle.red,
+    "grey": discord.ButtonStyle.grey,
+    "gray": discord.ButtonStyle.grey,
+}
+
+def timedelta_to_human(td: timedelta) -> str:
+    """Converts a timedelta object to a human-readable string (Red's style)."""
+    total_seconds = int(td.total_seconds())
+    if total_seconds == 0:
+        return "0 seconds"
+
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    
+    parts = []
+    if hours > 0: parts.append(f"{hours} hours")
+    if minutes > 0: parts.append(f"{minutes} minutes")
+    # Only show up to two parts for brevity, and seconds only if less than an hour
+    if seconds > 0 and hours == 0 and minutes == 0: parts.append(f"{seconds} seconds")
+
+    if len(parts) > 2:
+        return humanize_list(parts[:2])
+    return humanize_list(parts)
+
+
+# Custom view for the persistent button
+class EphemeralButton(discord.ui.View):
+    def __init__(self, cog: "Ephemeral"):
+        super().__init__(timeout=None)
+        self.cog = cog
+        # Call a helper to load the configured button properties onto the component
+        self.bot.loop.create_task(self._update_button_appearance())
+
+    # This method is called internally by discord.py to restore persistent views.
+    # We use it to ensure the button's appearance reflects the saved config on load.
+    async def _update_button_appearance(self):
+        """Update button label and style from stored config after cog load."""
+        await self.cog.bot.wait_until_ready()
+        
+        # This view may be registered globally, but needs guild context to load config.
+        # Since this runs on cog init, we cannot know the guild yet unless we fetch 
+        # the saved message, but for persistence, we rely on the component callback 
+        # logic to be robust. We only need the custom_id for registration.
+        # The visual update happens when the user runs the 'embed' command.
+        
+        # Simple default button definition
+        for item in self.children:
+            if isinstance(item, discord.ui.Button) and item.custom_id == "ephemeral:start_button":
+                item.label = "Click to Start Ephemeral Mode" # Default label
+                item.style = discord.ButtonStyle.green # Default style
+                break
+
+    @discord.ui.button(label="Click to Start Ephemeral Mode", style=discord.ButtonStyle.green, custom_id="ephemeral:start_button")
+    async def start_ephemeral(self, interaction: discord.Interaction, button: discord.ui.Button):
+        user = interaction.user
+        guild = interaction.guild
+        
+        # Fetch current button data for immediate visual update
+        settings = await self.cog.config.guild(guild).all()
+        button_data = settings.get("embed_data", {})
+        original_label = button_data.get("button_label", "Start Ephemeral Mode")
+
+        # Give immediate feedback to the user on the button
+        button.label = "Processing..."
+        button.style = discord.ButtonStyle.grey
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+        
+        # --- Core Logic ---
+        ephemeral_role_id = settings["ephemeral_role_id"]
+        
+        if not ephemeral_role_id:
+            await interaction.followup.send("Ephemeral role is not configured for this server.", ephemeral=True)
+            return
+
+        ephemeral_role = guild.get_role(ephemeral_role_id)
+        if not ephemeral_role:
+            await interaction.followup.send("Ephemeral role not found. Please reconfigure.", ephemeral=True)
+            return
+
+        if ephemeral_role in user.roles:
+            await interaction.followup.send("You are already in Ephemeral mode!", ephemeral=True)
+            return
+            
+        # Give role and record timestamp
+        try:
+            await user.add_roles(ephemeral_role, reason="Started Ephemeral mode via button.")
+            now = datetime.now().timestamp()
+            
+            await self.cog.config.member(user).set({
+                "start_time": now,
+                "message_count": 0,
+                "is_ephemeral": True,
+            })
+            
+            await interaction.followup.send(
+                f"You have been assigned the **{ephemeral_role.name}** role and your Ephemeral timer has started! "
+                "Be sure to meet the message threshold before you time out."
+                , ephemeral=True
+            )
+            # Start the background task for this user
+            self.cog.start_user_timer(guild.id, user.id)
+
+        except discord.Forbidden:
+            await interaction.followup.send("I do not have permissions to assign the Ephemeral role.", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"An error occurred: {e}", ephemeral=True)
+        finally:
+            # Re-enable the button and restore its original appearance
+            button.label = original_label
+            button.style = BUTTON_COLOR_MAP.get(button_data.get("button_color", "green").lower(), discord.ButtonStyle.green)
+            button.disabled = False
+            try:
+                # Use edit_original_response if possible, or edit_message
+                await interaction.edit_original_response(view=self)
+            except discord.NotFound:
+                # If the original response was ephemeral, we may need to use a different method.
+                # Since we already used response.edit_message, we just rely on the next interaction
+                pass
+
+
+# Main Cog Class
+class Ephemeral(commands.Cog):
+    """
+    Manages temporary roles and message counting for users entering 'Ephemeral Mode'.
+    """
+    
+    def __init__(self, bot):
+        self.bot = bot
+        self.config = Config.get_conf(self, identifier=1480084004, force_registration=True)
+        self.config.register_guild(
+            ephemeral_failed_threshold=timedelta(hours=8),
+            messages_threshold=10,
+            message_length_threshold=10,
+            ephemeral_role_id=None,
+            ephemeral_failed_role_id=None,
+            first_greeting_threshold=timedelta(hours=3),
+            first_greeting_message="It looks like you haven't sent enough messages yet in {time_passed}.",
+            second_greeting_threshold=timedelta(hours=5),
+            second_greeting_message="You've been in Ephemeral mode for {time_passed}. Please continue interacting!",
+            embed_channel_id=None,
+            embed_message_id=None,
+            embed_data={
+                "title": "Welcome", 
+                "description": "Click the button to start.",
+                "thumbnail_url": "none",
+                "image_url": "none",
+                "button_label": "Start Ephemeral Mode",
+                "button_color": "green",
+            },
+        )
+        self.config.register_member(
+            is_ephemeral=False,
+            start_time=None,
+            message_count=0,
+            first_greeting_sent=False,
+            second_greeting_sent=False,
+        )
+        self.timers = {}
+        
+        # Register the view class for persistence immediately upon cog load
+        self.bot.add_view(EphemeralButton(self))
+        
+        # Start initial checks for running timers
+        self.bg_task = self.bot.loop.create_task(self._init_timers())
+        
+    def cog_unload(self):
+        if self.bg_task:
+            self.bg_task.cancel()
+        for task in self.timers.values():
+            if not task.done():
+                task.cancel()
+        # The view should remain registered globally for persistence
+        
+    async def _init_timers(self):
+        """Initializes all running timers from stored configuration."""
+        await self.bot.wait_until_ready()
+        for guild_id in await self.config.all_guilds():
+            guild = self.bot.get_guild(guild_id)
+            if not guild:
+                continue
+
+            for member_id, data in (await self.config.all_members(guild)).items():
+                if data["is_ephemeral"] and data["start_time"]:
+                    self.start_user_timer(guild_id, member_id)
+
+    def start_user_timer(self, guild_id: int, user_id: int):
+        """Starts the background task for a single user's ephemeral timer."""
+        # Cancel any existing task for this user
+        task_key = (guild_id, user_id)
+        if task_key in self.timers:
+            self.timers[task_key].cancel()
+
+        # Start new task
+        task = self.bot.loop.create_task(self.check_ephemeral_status(guild_id, user_id))
+        self.timers[task_key] = task
+    
+    def stop_user_timer(self, guild_id: int, user_id: int):
+        """Stops the background task for a single user's ephemeral timer."""
+        task = self.timers.pop((guild_id, user_id), None)
+        if task and not task.done():
+            task.cancel()
+
+    async def check_ephemeral_status(self, guild_id: int, user_id: int):
+        """Background task to check for time-based thresholds and role failure."""
+        
+        await asyncio.sleep(60) # Initial wait
+
+        while True:
+            await asyncio.sleep(120) # Check every 2 minutes
+
+            guild = self.bot.get_guild(guild_id)
+            user = guild.get_member(user_id)
+            
+            if not guild or not user:
+                self.stop_user_timer(guild_id, user_id)
+                return
+
+            member_data = await self.config.member(user).all()
+            if not member_data["is_ephemeral"]:
+                self.stop_user_timer(guild_id, user_id)
+                return
+
+            settings = await self.config.guild(guild).all()
+            start_time = datetime.fromtimestamp(member_data["start_time"])
+            time_passed: timedelta = datetime.now() - start_time
+            
+            formatted_time = timedelta_to_human(time_passed)
+
+            # 1. Ephemeral Failed Threshold
+            if time_passed >= settings["ephemeral_failed_threshold"]:
+                await self._handle_ephemeral_failed(guild, user, settings)
+                return
+
+            # 2. Second Greeting Threshold
+            elif time_passed >= settings["second_greeting_threshold"] and not member_data["second_greeting_sent"]:
+                await self._send_greeting(user, settings["second_greeting_message"].replace("{time_passed}", formatted_time))
+                await self.config.member(user).second_greeting_sent.set(True)
+
+            # 3. First Greeting Threshold
+            elif time_passed >= settings["first_greeting_threshold"] and not member_data["first_greeting_sent"]:
+                await self._send_greeting(user, settings["first_greeting_message"].replace("{time_passed}", formatted_time))
+                await self.config.member(user).first_greeting_sent.set(True)
+
+    async def _send_greeting(self, user: discord.Member, message: str):
+        """Sends a greeting message to a user in their highest common channel."""
+        try:
+            # Try to send in a system/logging channel, or the first available text channel
+            channel = user.guild.system_channel or user.guild.text_channels[0]
+            await channel.send(f"{user.mention} {message}")
+        except Exception:
+            # Fallback: DM the user
+            try:
+                await user.send(f"Regarding your Ephemeral mode status in {user.guild.name}: {message}")
+            except discord.Forbidden:
+                pass
+
+    async def _handle_ephemeral_failed(self, guild: discord.Guild, user: discord.Member, settings: dict):
+        """Handles the final 'Ephemeral Failed' state."""
+        
+        ephemeral_role = guild.get_role(settings["ephemeral_role_id"])
+        failed_role = guild.get_role(settings["ephemeral_failed_role_id"])
+
+        # Remove Ephemeral role
+        if ephemeral_role and ephemeral_role in user.roles:
+            try:
+                await user.remove_roles(ephemeral_role, reason="Ephemeral Failed: Timed out.")
+            except discord.Forbidden:
+                pass
+
+        # Assign Ephemeral Failed role
+        if failed_role:
+            try:
+                await user.add_roles(failed_role, reason="Ephemeral Failed: Timed out.")
+                channel = guild.system_channel or guild.text_channels[0]
+                await channel.send(f"⚠️ {user.mention} has failed Ephemeral mode (Timed out) and has been assigned the **{failed_role.name}** role.")
+            except discord.Forbidden:
+                pass
+
+        # Stop the timer and clear user data
+        self.stop_user_timer(guild.id, user.id)
+        await self.config.member(user).clear()
+
+    # --- Listener for Message Counting ---
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """Listener to count valid messages from ephemeral users."""
+        if message.author.bot or not message.guild:
+            return
+
+        member = message.author
+        guild = message.guild
+        
+        member_data = await self.config.member(member).all()
+        if not member_data["is_ephemeral"]:
+            return
+
+        settings = await self.config.guild(guild).all()
+        
+        # Check if message meets length threshold
+        if len(message.content) < settings["message_length_threshold"]:
+            return
+        
+        # Increment message count
+        new_count = member_data["message_count"] + 1
+        await self.config.member(member).message_count.set(new_count)
+
+        # Check for role removal threshold
+        if new_count >= settings["messages_threshold"]:
+            ephemeral_role = guild.get_role(settings["ephemeral_role_id"])
+            if ephemeral_role and ephemeral_role in member.roles:
+                try:
+                    await member.remove_roles(ephemeral_role, reason="Ephemeral message threshold met.")
+                    
+                    self.stop_user_timer(guild.id, member.id)
+                    await self.config.member(member).clear()
+                    
+                    await message.channel.send(f"{member.mention} is no longer in Ephemeral mode! 🎉")
+                    
+                except discord.Forbidden:
+                    await message.channel.send(f"I tried to remove the Ephemeral role from {member.mention}, but I lack permissions. Please fix this!")
+            
+    # --- Configuration Commands ---
+
+    @commands.group()
+    @checks.admin_or_permissions(manage_guild=True)
+    async def ephemeralset(self, ctx: commands.Context):
+        """Configures the Ephemeral cog settings."""
+        if ctx.invoked_subcommand is None:
+            settings = await self.config.guild(ctx.guild).all()
+            
+            e_role = ctx.guild.get_role(settings["ephemeral_role_id"])
+            f_role = ctx.guild.get_role(settings["ephemeral_failed_role_id"])
+            
+            output = [
+                bold("Time/Message Thresholds:"),
+                f"Ephemeral Failed Threshold: **{timedelta_to_human(settings['ephemeral_failed_threshold'])}**",
+                f"Messages Threshold: **{settings['messages_threshold']}** messages",
+                f"Message Length Threshold: **{settings['message_length_threshold']}** characters",
+                "",
+                bold("Role Configuration:"),
+                f"Ephemeral Role: **{e_role.name if e_role else 'Not Set'}** ({settings['ephemeral_role_id'] or 'N/A'})",
+                f"Ephemeral Failed Role: **{f_role.name if f_role else 'Not Set'}** ({settings['ephemeral_failed_role_id'] or 'N/A'})",
+                "",
+                bold("Greetings Configuration:"),
+                f"First Greeting Threshold: **{timedelta_to_human(settings['first_greeting_threshold'])}**",
+                f"First Greeting Message: {settings['first_greeting_message'].format(time_passed='[TIME]')} (Use {{time_passed}})",
+                f"Second Greeting Threshold: **{timedelta_to_human(settings['second_greeting_threshold'])}**",
+                f"Second Greeting Message: {settings['second_greeting_message'].format(time_passed='[TIME]')} (Use {{time_passed}})",
+            ]
+            
+            await ctx.send(box('\n'.join(output)))
+
+    @ephemeralset.command(name="failedtime")
+    async def ephemeralset_failedtime(self, ctx: commands.Context, time: commands.TimedeltaConverter(default_unit="hours")):
+        """
+        Sets the Ephemeral Failed time threshold.
+        
+        Accepts time in minutes (m) or hours (h). e.g., `8h` or `480m`.
+        """
+        if time.total_seconds() <= 0:
+            return await ctx.send("Time must be a positive duration.")
+            
+        await self.config.guild(ctx.guild).ephemeral_failed_threshold.set(time)
+        await ctx.send(f"Ephemeral Failed threshold set to **{timedelta_to_human(time)}**.")
+
+    @ephemeralset.command(name="messages")
+    async def ephemeralset_messages(self, ctx: commands.Context, count: int):
+        """Sets the number of messages threshold to remove the Ephemeral role."""
+        if count <= 0:
+            return await ctx.send("Message count must be a positive number.")
+            
+        await self.config.guild(ctx.guild).messages_threshold.set(count)
+        await ctx.send(f"Message count threshold set to **{count}** messages.")
+
+    @ephemeralset.command(name="messagelength")
+    async def ephemeralset_messagelength(self, ctx: commands.Context, length: int):
+        """Sets the minimum message length (characters) required for a message to count."""
+        if length < 1:
+            return await ctx.send("Message length must be at least 1 character.")
+            
+        await self.config.guild(ctx.guild).message_length_threshold.set(length)
+        await ctx.send(f"Message length threshold set to **{length}** characters.")
+        
+    @ephemeralset.command(name="ephemeralrole")
+    async def ephemeralset_ephemeralrole(self, ctx: commands.Context, role: discord.Role):
+        """Sets the 'Ephemeral' role that users receive upon clicking the button."""
+        await self.config.guild(ctx.guild).ephemeral_role_id.set(role.id)
+        await ctx.send(f"Ephemeral role set to **{role.name}**.")
+
+    @ephemeralset.command(name="failedrole")
+    async def ephemeralset_failedrole(self, ctx: commands.Context, role: discord.Role):
+        """Sets the 'Ephemeral Failed' role that users receive if they time out."""
+        await self.config.guild(ctx.guild).ephemeral_failed_role_id.set(role.id)
+        await ctx.send(f"Ephemeral Failed role set to **{role.name}**.")
+
+    @ephemeralset.command(name="firstgreeting")
+    async def ephemeralset_firstgreeting(self, ctx: commands.Context, time: commands.TimedeltaConverter(default_unit="hours"), *, message: str):
+        """
+        Sets the First Greeting time threshold (e.g., `3h`) and the message.
+        
+        The message can include `{time_passed}` which will be replaced with the actual time passed.
+        """
+        if time.total_seconds() <= 0:
+            return await ctx.send("Time must be a positive duration.")
+        
+        await self.config.guild(ctx.guild).first_greeting_threshold.set(time)
+        await self.config.guild(ctx.guild).first_greeting_message.set(message)
+        await ctx.send(
+            f"First Greeting set:\n"
+            f"Threshold: **{timedelta_to_human(time)}**\n"
+            f"Message: `{message}`"
+        )
+
+    @ephemeralset.command(name="secondgreeting")
+    async def ephemeralset_secondgreeting(self, ctx: commands.Context, time: commands.TimedeltaConverter(default_unit="hours"), *, message: str):
+        """
+        Sets the Second Greeting time threshold (e.g., `5h`) and the message.
+        
+        The message can include `{time_passed}` which will be replaced with the actual time passed.
+        """
+        if time.total_seconds() <= 0:
+            return await ctx.send("Time must be a positive duration.")
+            
+        await self.config.guild(ctx.guild).second_greeting_threshold.set(time)
+        await self.config.guild(ctx.guild).second_greeting_message.set(message)
+        await ctx.send(
+            f"Second Greeting set:\n"
+            f"Threshold: **{timedelta_to_human(time)}**\n"
+            f"Message: `{message}`"
+        )
+        
+    @ephemeralset.command(name="embed")
+    async def ephemeralset_embed(self, ctx: commands.Context, channel: discord.TextChannel, title: str, thumbnail_url: str, image_url: str, button_label: str, button_color: str, *, description: str):
+        """
+        Generates and posts the Ephemeral starting embed with the button.
+        
+        Parameters:
+        [channel] The channel to post the embed in.
+        [title] The title of the embed.
+        [thumbnail_url] The URL for the embed's thumbnail. Use 'none' for no thumbnail.
+        [image_url] The URL for the embed's main image. Use 'none' for no image.
+        [button_label] The text on the button.
+        [button_color] The color of the button (e.g., 'blue', 'green', 'red', 'grey/gray').
+        [description] The description of the embed (must be the final argument).
+        """
+        
+        button_style = BUTTON_COLOR_MAP.get(button_color.lower())
+        if not button_style:
+            return await ctx.send(f"Invalid button color. Must be one of: {humanize_list(list(BUTTON_COLOR_MAP.keys()))}")
+
+        embed = discord.Embed(
+            title=title, 
+            description=description, 
+            color=await ctx.embed_color()
+        )
+        
+        if thumbnail_url.lower() != "none":
+            embed.set_thumbnail(url=thumbnail_url)
+            
+        if image_url.lower() != "none":
+            embed.set_image(url=image_url)
+
+        # Create the View
+        view = EphemeralButton(self)
+        
+        # Override the default button's properties using the components attribute
+        for item in view.children:
+            if isinstance(item, discord.ui.Button) and item.custom_id == "ephemeral:start_button":
+                item.label = button_label
+                item.style = button_style
+                break
+        else:
+            return await ctx.send("Error: Could not find the persistent button component.")
+
+        # Try to delete the old message if it exists
+        settings = await self.config.guild(ctx.guild).all()
+        old_msg_id = settings.get("embed_message_id")
+        old_channel_id = settings.get("embed_channel_id")
+        
+        if old_msg_id and old_channel_id:
+            old_channel = ctx.guild.get_channel(old_channel_id)
+            if old_channel:
+                try:
+                    old_msg = await old_channel.fetch_message(old_msg_id)
+                    await old_msg.delete()
+                except (discord.NotFound, discord.Forbidden):
+                    pass # Ignore if not found or no permissions
+
+        # Post the new message
+        try:
+            msg = await channel.send(embed=embed, view=view)
+        except discord.Forbidden:
+            return await ctx.send(f"I don't have permission to send messages in {channel.mention}.")
+
+        # Save new configuration, including button details for persistence reference
+        await self.config.guild(ctx.guild).embed_channel_id.set(channel.id)
+        await self.config.guild(ctx.guild).embed_message_id.set(msg.id)
+        await self.config.guild(ctx.guild).embed_data.set({
+            "title": title,
+            "description": description,
+            "thumbnail_url": thumbnail_url,
+            "image_url": image_url,
+            "button_label": button_label,
+            "button_color": button_color,
+        })
+        
+        await ctx.send(f"Ephemeral embed posted successfully in {channel.mention}. The button is now active.")
