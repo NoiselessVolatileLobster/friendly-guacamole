@@ -446,14 +446,12 @@ class Ephemeral(commands.Cog):
 
     # --- Configuration Commands ---
 
-    @commands.group(invoke_without_command=True) # Changed: Now shows help when called without subcommand
+    @commands.group(invoke_without_command=True)
     @checks.admin_or_permissions(manage_guild=True)
     async def ephemeralset(self, ctx: commands.Context):
         """Configures the Ephemeral cog settings."""
-        # No action taken here. The default behaviour of a group command 
-        # when invoked without subcommand and invoke_without_command=True is set 
-        # is to display its help message (list of subcommands).
-        pass
+        if ctx.invoked_subcommand is None:
+            await ctx.send_help(ctx.command)
 
     @ephemeralset.command(name="view", aliases=["show"])
     async def ephemeralset_view(self, ctx: commands.Context):
