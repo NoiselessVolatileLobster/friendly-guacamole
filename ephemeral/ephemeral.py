@@ -140,10 +140,28 @@ class Ephemeral(commands.Cog):
             message_length_threshold=10,
             ephemeral_role_id=None,
             ephemeral_failed_role_id=None,
+            
+            # --- Greeting and Notification Configurations ---
+            
+            # First Greeting
             first_greeting_threshold=timedelta(hours=3).total_seconds(), # 10800.0
-            first_greeting_message="It looks like you haven't sent enough messages yet in {time_passed}.",
+            first_greeting_channel_id=None,
+            first_greeting_message="It looks like you haven't sent enough messages yet in {time_passed}. {mention}",
+            
+            # Second Greeting
             second_greeting_threshold=timedelta(hours=5).total_seconds(), # 18000.0
-            second_greeting_message="You've been in Ephemeral mode for {time_passed}. Please continue interacting!",
+            second_greeting_channel_id=None,
+            second_greeting_message="You've been in Ephemeral mode for {time_passed}. Please continue interacting! {mention}",
+            
+            # Failure Message
+            failed_message_channel_id=None,
+            failed_message="⚠️ {mention} has failed Ephemeral mode (Timed out) and has been assigned the Failed role.",
+            
+            # Removed Message
+            removed_message_channel_id=None,
+            removed_message="{mention} is no longer in Ephemeral mode! 🎉",
+            
+            # Embed/Button
             embed_channel_id=None,
             embed_message_id=None,
             embed_data={
@@ -206,6 +224,29 @@ class Ephemeral(commands.Cog):
         if task and not task.done():
             task.cancel()
 
+    async def _send_custom_message(self, guild: discord.Guild, user: discord.Member, channel_id: typing.Optional[int], message: str, time_passed: typing.Optional[timedelta] = None):
+        """Replaces placeholders and sends a message to a specific channel."""
+        if not channel_id:
+            return
+            
+        channel = guild.get_channel(channel_id)
+        if not channel or not isinstance(channel, discord.TextChannel):
+            return
+
+        # Replace placeholders
+        formatted_message = message.replace("{mention}", user.mention)
+        if time_passed is not None:
+            formatted_message = formatted_message.replace("{time_passed}", timedelta_to_human(time_passed))
+
+        try:
+            await channel.send(formatted_message)
+        except discord.Forbidden:
+            # Bot cannot send message in this channel
+            pass
+        except Exception:
+            # Other errors (e.g., channel deleted)
+            pass
+
     async def check_ephemeral_status(self, guild_id: int, user_id: int):
         """Background task to check for time-based thresholds and role failure."""
         
@@ -235,8 +276,6 @@ class Ephemeral(commands.Cog):
             
             start_time = datetime.fromtimestamp(member_data["start_time"])
             time_passed: timedelta = datetime.now() - start_time
-            
-            formatted_time = timedelta_to_human(time_passed)
 
             # 1. Ephemeral Failed Threshold
             if time_passed >= failed_threshold:
@@ -245,26 +284,25 @@ class Ephemeral(commands.Cog):
 
             # 2. Second Greeting Threshold
             elif time_passed >= second_greeting_threshold and not member_data["second_greeting_sent"]:
-                await self._send_greeting(user, settings["second_greeting_message"].replace("{time_passed}", formatted_time))
+                await self._send_custom_message(
+                    guild, 
+                    user, 
+                    settings["second_greeting_channel_id"], 
+                    settings["second_greeting_message"],
+                    time_passed=time_passed
+                )
                 await self.config.member(user).second_greeting_sent.set(True)
 
             # 3. First Greeting Threshold
             elif time_passed >= first_greeting_threshold and not member_data["first_greeting_sent"]:
-                await self._send_greeting(user, settings["first_greeting_message"].replace("{time_passed}", formatted_time))
+                await self._send_custom_message(
+                    guild, 
+                    user, 
+                    settings["first_greeting_channel_id"], 
+                    settings["first_greeting_message"],
+                    time_passed=time_passed
+                )
                 await self.config.member(user).first_greeting_sent.set(True)
-
-    async def _send_greeting(self, user: discord.Member, message: str):
-        """Sends a greeting message to a user in their highest common channel."""
-        try:
-            # Try to send in a system/logging channel, or the first available text channel
-            channel = user.guild.system_channel or user.guild.text_channels[0]
-            await channel.send(f"{user.mention} {message}")
-        except Exception:
-            # Fallback: DM the user
-            try:
-                await user.send(f"Regarding your Ephemeral mode status in {user.guild.name}: {message}")
-            except discord.Forbidden:
-                pass
 
     async def _handle_ephemeral_failed(self, guild: discord.Guild, user: discord.Member, settings: dict):
         """Handles the final 'Ephemeral Failed' state."""
@@ -283,10 +321,16 @@ class Ephemeral(commands.Cog):
         if failed_role:
             try:
                 await user.add_roles(failed_role, reason="Ephemeral Failed: Timed out.")
-                channel = guild.system_channel or guild.text_channels[0]
-                await channel.send(f"⚠️ {user.mention} has failed Ephemeral mode (Timed out) and has been assigned the **{failed_role.name}** role.")
             except discord.Forbidden:
                 pass
+
+        # Send failure message to configured channel
+        await self._send_custom_message(
+            guild,
+            user,
+            settings["failed_message_channel_id"],
+            settings["failed_message"]
+        )
 
         # Stop the timer and clear user data
         self.stop_user_timer(guild.id, user.id)
@@ -326,10 +370,17 @@ class Ephemeral(commands.Cog):
                     self.stop_user_timer(guild.id, member.id)
                     await self.config.member(member).clear()
                     
-                    await message.channel.send(f"{member.mention} is no longer in Ephemeral mode! 🎉")
+                    # Send removal message to configured channel
+                    await self._send_custom_message(
+                        guild,
+                        member,
+                        settings["removed_message_channel_id"],
+                        settings["removed_message"]
+                    )
                     
                 except discord.Forbidden:
-                    await message.channel.send(f"I tried to remove the Ephemeral role from {member.mention}, but I lack permissions. Please fix this!")
+                    # Fallback if bot can't remove role
+                    pass # We intentionally don't spam a channel error if the cog is configured right
             
     # --- Utility Command ---
 
@@ -410,6 +461,11 @@ class Ephemeral(commands.Cog):
             first_td = timedelta(seconds=settings['first_greeting_threshold'])
             second_td = timedelta(seconds=settings['second_greeting_threshold'])
 
+            # Helper to get channel names
+            def get_channel_info(cid):
+                channel = ctx.guild.get_channel(cid)
+                return f"#{channel.name}" if channel else "Not Set"
+            
             output = [
                 bold("Time/Message Thresholds:"),
                 f"Ephemeral Failed Threshold: **{timedelta_to_human(failed_td)}**",
@@ -420,11 +476,20 @@ class Ephemeral(commands.Cog):
                 f"Ephemeral Role: **{e_role.name if e_role else 'Not Set'}** ({settings['ephemeral_role_id'] or 'N/A'})",
                 f"Ephemeral Failed Role: **{f_role.name if f_role else 'Not Set'}** ({settings['ephemeral_failed_role_id'] or 'N/A'})",
                 "",
-                bold("Greetings Configuration:"),
-                f"First Greeting Threshold: **{timedelta_to_human(first_td)}**",
-                f"First Greeting Message: {settings['first_greeting_message'].format(time_passed='[TIME]')} (Use {{time_passed}})",
-                f"Second Greeting Threshold: **{timedelta_to_human(second_td)}**",
-                f"Second Greeting Message: {settings['second_greeting_message'].format(time_passed='[TIME]')} (Use {{time_passed}})",
+                bold("Greetings & Notifications:"),
+                f"First Greeting Time: **{timedelta_to_human(first_td)}**",
+                f"First Greeting Channel: **{get_channel_info(settings['first_greeting_channel_id'])}**",
+                f"First Greeting Message: `{settings['first_greeting_message']}` (Use {{time_passed}}, {{mention}})",
+                "",
+                f"Second Greeting Time: **{timedelta_to_human(second_td)}**",
+                f"Second Greeting Channel: **{get_channel_info(settings['second_greeting_channel_id'])}**",
+                f"Second Greeting Message: `{settings['second_greeting_message']}` (Use {{time_passed}}, {{mention}})",
+                "",
+                f"Failed Message Channel: **{get_channel_info(settings['failed_message_channel_id'])}**",
+                f"Failed Message: `{settings['failed_message']}` (Use {{mention}})",
+                "",
+                f"Removed Message Channel: **{get_channel_info(settings['removed_message_channel_id'])}**",
+                f"Removed Message: `{settings['removed_message']}` (Use {{mention}})",
             ]
             
             await ctx.send(box('\n'.join(output)))
@@ -474,43 +539,79 @@ class Ephemeral(commands.Cog):
         await ctx.send(f"Ephemeral Failed role set to **{role.name}**.")
 
     @ephemeralset.command(name="firstgreeting")
-    async def ephemeralset_firstgreeting(self, ctx: commands.Context, time: commands.TimedeltaConverter(default_unit="hours"), *, message: str):
+    async def ephemeralset_firstgreeting(self, ctx: commands.Context, time: commands.TimedeltaConverter(default_unit="hours"), channel: discord.TextChannel, *, message: str):
         """
-        Sets the First Greeting time threshold (e.g., `3h`) and the message.
+        Sets the First Greeting time threshold, target channel, and message.
         
-        The message can include `{time_passed}` which will be replaced with the actual time passed.
+        Time: e.g., `3h`.
+        Message can include `{time_passed}` and `{mention}`.
         """
         if time.total_seconds() <= 0:
             return await ctx.send("Time must be a positive duration.")
         
         # Store as seconds
         await self.config.guild(ctx.guild).first_greeting_threshold.set(time.total_seconds())
+        await self.config.guild(ctx.guild).first_greeting_channel_id.set(channel.id)
         await self.config.guild(ctx.guild).first_greeting_message.set(message)
         await ctx.send(
             f"First Greeting set:\n"
             f"Threshold: **{timedelta_to_human(time)}**\n"
+            f"Channel: {channel.mention}\n"
             f"Message: `{message}`"
         )
 
     @ephemeralset.command(name="secondgreeting")
-    async def ephemeralset_secondgreeting(self, ctx: commands.Context, time: commands.TimedeltaConverter(default_unit="hours"), *, message: str):
+    async def ephemeralset_secondgreeting(self, ctx: commands.Context, time: commands.TimedeltaConverter(default_unit="hours"), channel: discord.TextChannel, *, message: str):
         """
-        Sets the Second Greeting time threshold (e.g., `5h`) and the message.
+        Sets the Second Greeting time threshold, target channel, and message.
         
-        The message can include `{time_passed}` which will be replaced with the actual time passed.
+        Time: e.g., `5h`.
+        Message can include `{time_passed}` and `{mention}`.
         """
         if time.total_seconds() <= 0:
             return await ctx.send("Time must be a positive duration.")
             
         # Store as seconds
         await self.config.guild(ctx.guild).second_greeting_threshold.set(time.total_seconds())
+        await self.config.guild(ctx.guild).second_greeting_channel_id.set(channel.id)
         await self.config.guild(ctx.guild).second_greeting_message.set(message)
         await ctx.send(
             f"Second Greeting set:\n"
             f"Threshold: **{timedelta_to_human(time)}**\n"
+            f"Channel: {channel.mention}\n"
             f"Message: `{message}`"
         )
         
+    @ephemeralset.command(name="failedmessage")
+    async def ephemeralset_failedmessage(self, ctx: commands.Context, channel: discord.TextChannel, *, message: str):
+        """
+        Sets the channel and message posted when the Ephemeral Failed timer expires.
+        
+        Message can include `{mention}`.
+        """
+        await self.config.guild(ctx.guild).failed_message_channel_id.set(channel.id)
+        await self.config.guild(ctx.guild).failed_message.set(message)
+        await ctx.send(
+            f"Ephemeral Failed message set:\n"
+            f"Channel: {channel.mention}\n"
+            f"Message: `{message}`"
+        )
+
+    @ephemeralset.command(name="ephemeralremoved")
+    async def ephemeralset_ephemeralremoved(self, ctx: commands.Context, channel: discord.TextChannel, *, message: str):
+        """
+        Sets the channel and message posted when the message threshold is met.
+        
+        Message can include `{mention}`.
+        """
+        await self.config.guild(ctx.guild).removed_message_channel_id.set(channel.id)
+        await self.config.guild(ctx.guild).removed_message.set(message)
+        await ctx.send(
+            f"Ephemeral Removed message set:\n"
+            f"Channel: {channel.mention}\n"
+            f"Message: `{message}`"
+        )
+
     @ephemeralset.command(name="embed")
     async def ephemeralset_embed(self, ctx: commands.Context, channel: discord.TextChannel, title: str, thumbnail_url: str, image_url: str, button_label: str, button_color: str, *, description: str):
         """
