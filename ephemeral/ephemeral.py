@@ -294,21 +294,33 @@ class Ephemeral(commands.Cog):
 
             # 1. Ephemeral Failed Threshold
             if time_passed >= failed_threshold:
+                channel_id = settings["failed_message_channel_id"]
+                channel_obj = guild.get_channel(channel_id)
+                # --- START DIAGNOSTIC LOGGING ---
+                print(
+                    f"Ephemeral DEBUG: FAILED MESSAGE for {user.id}. "
+                    f"Config ID: {channel_id}. "
+                    f"Resolved Channel: {channel_obj.name if channel_obj else 'FAILED RESOLUTION'}/{channel_obj.id if channel_obj else 'N/A'}."
+                )
+                # --- END DIAGNOSTIC LOGGING ---
                 await self._handle_ephemeral_failed(guild, user, settings)
                 return
 
             # 2. Second Greeting Threshold
             elif time_passed >= second_greeting_threshold and not member_data["second_greeting_sent"]:
+                channel_id = settings["second_greeting_channel_id"]
+                channel_obj = guild.get_channel(channel_id)
                 # --- START DIAGNOSTIC LOGGING ---
                 print(
-                    f"Ephemeral DEBUG: Attempting to send SECOND GREETING for {user.id} in Guild {guild.id}. "
-                    f"Configured Channel ID: {settings['second_greeting_channel_id']}"
+                    f"Ephemeral DEBUG: SECOND GREETING for {user.id}. "
+                    f"Config ID: {channel_id}. "
+                    f"Resolved Channel: {channel_obj.name if channel_obj else 'FAILED RESOLUTION'}/{channel_obj.id if channel_obj else 'N/A'}."
                 )
                 # --- END DIAGNOSTIC LOGGING ---
                 await self._send_custom_message(
                     guild, 
                     user, 
-                    settings["second_greeting_channel_id"], 
+                    channel_id, 
                     settings["second_greeting_message"],
                     time_passed=time_passed
                 )
@@ -316,16 +328,19 @@ class Ephemeral(commands.Cog):
 
             # 3. First Greeting Threshold
             elif time_passed >= first_greeting_threshold and not member_data["first_greeting_sent"]:
+                channel_id = settings["first_greeting_channel_id"]
+                channel_obj = guild.get_channel(channel_id)
                 # --- START DIAGNOSTIC LOGGING ---
                 print(
-                    f"Ephemeral DEBUG: Attempting to send FIRST GREETING for {user.id} in Guild {guild.id}. "
-                    f"Configured Channel ID: {settings['first_greeting_channel_id']}"
+                    f"Ephemeral DEBUG: FIRST GREETING for {user.id}. "
+                    f"Config ID: {channel_id}. "
+                    f"Resolved Channel: {channel_obj.name if channel_obj else 'FAILED RESOLUTION'}/{channel_obj.id if channel_obj else 'N/A'}."
                 )
                 # --- END DIAGNOSTIC LOGGING ---
                 await self._send_custom_message(
                     guild, 
                     user, 
-                    settings["first_greeting_channel_id"], 
+                    channel_id, 
                     settings["first_greeting_message"],
                     time_passed=time_passed
                 )
@@ -352,12 +367,6 @@ class Ephemeral(commands.Cog):
                 pass
 
         # Send failure message to configured channel
-        # --- START DIAGNOSTIC LOGGING ---
-        print(
-            f"Ephemeral DEBUG: Attempting to send FAILED MESSAGE for {user.id} in Guild {guild.id}. "
-            f"Configured Channel ID: {settings['failed_message_channel_id']}"
-        )
-        # --- END DIAGNOSTIC LOGGING ---
         await self._send_custom_message(
             guild,
             user,
@@ -404,16 +413,19 @@ class Ephemeral(commands.Cog):
                     await self.config.member(member).clear()
                     
                     # Send removal message to configured channel
+                    channel_id = settings["removed_message_channel_id"]
+                    channel_obj = guild.get_channel(channel_id)
                     # --- START DIAGNOSTIC LOGGING ---
                     print(
-                        f"Ephemeral DEBUG: Attempting to send REMOVED MESSAGE for {member.id} in Guild {guild.id}. "
-                        f"Configured Channel ID: {settings['removed_message_channel_id']}"
+                        f"Ephemeral DEBUG: REMOVED MESSAGE for {member.id}. "
+                        f"Config ID: {channel_id}. "
+                        f"Resolved Channel: {channel_obj.name if channel_obj else 'FAILED RESOLUTION'}/{channel_obj.id if channel_obj else 'N/A'}."
                     )
                     # --- END DIAGNOSTIC LOGGING ---
                     await self._send_custom_message(
                         guild,
                         member,
-                        settings["removed_message_channel_id"],
+                        channel_id,
                         settings["removed_message"]
                     )
                     
@@ -592,6 +604,14 @@ class Ephemeral(commands.Cog):
         """
         if time.total_seconds() <= 0:
             return await ctx.send("Time must be a positive duration.")
+
+        # --- START DIAGNOSTIC LOGGING ---
+        print(
+            f"Ephemeral DEBUG: COMMAND firstgreeting executed by {ctx.author}. "
+            f"Received Channel: #{channel.name} ({channel.id}). "
+            f"Received Message: '{message}'"
+        )
+        # --- END DIAGNOSTIC LOGGING ---
         
         # Store as seconds
         await self.config.guild(ctx.guild).first_greeting_threshold.set(time.total_seconds())
@@ -615,6 +635,14 @@ class Ephemeral(commands.Cog):
         if time.total_seconds() <= 0:
             return await ctx.send("Time must be a positive duration.")
             
+        # --- START DIAGNOSTIC LOGGING ---
+        print(
+            f"Ephemeral DEBUG: COMMAND secondgreeting executed by {ctx.author}. "
+            f"Received Channel: #{channel.name} ({channel.id}). "
+            f"Received Message: '{message}'"
+        )
+        # --- END DIAGNOSTIC LOGGING ---
+            
         # Store as seconds
         await self.config.guild(ctx.guild).second_greeting_threshold.set(time.total_seconds())
         await self.config.guild(ctx.guild).second_greeting_channel_id.set(channel.id)
@@ -633,6 +661,14 @@ class Ephemeral(commands.Cog):
         
         Message can include `{mention}`.
         """
+        # --- START DIAGNOSTIC LOGGING ---
+        print(
+            f"Ephemeral DEBUG: COMMAND failedmessage executed by {ctx.author}. "
+            f"Received Channel: #{channel.name} ({channel.id}). "
+            f"Received Message: '{message}'"
+        )
+        # --- END DIAGNOSTIC LOGGING ---
+
         await self.config.guild(ctx.guild).failed_message_channel_id.set(channel.id)
         await self.config.guild(ctx.guild).failed_message.set(message)
         await ctx.send(
@@ -648,6 +684,14 @@ class Ephemeral(commands.Cog):
         
         Message can include `{mention}`.
         """
+        # --- START DIAGNOSTIC LOGGING ---
+        print(
+            f"Ephemeral DEBUG: COMMAND ephemeralremoved executed by {ctx.author}. "
+            f"Received Channel: #{channel.name} ({channel.id}). "
+            f"Received Message: '{message}'"
+        )
+        # --- END DIAGNOSTIC LOGGING ---
+        
         await self.config.guild(ctx.guild).removed_message_channel_id.set(channel.id)
         await self.config.guild(ctx.guild).removed_message.set(message)
         await ctx.send(
