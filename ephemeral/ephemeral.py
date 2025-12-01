@@ -446,53 +446,60 @@ class Ephemeral(commands.Cog):
 
     # --- Configuration Commands ---
 
-    @commands.group()
+    @commands.group(invoke_without_command=True) # Changed: Now shows help when called without subcommand
     @checks.admin_or_permissions(manage_guild=True)
     async def ephemeralset(self, ctx: commands.Context):
         """Configures the Ephemeral cog settings."""
-        if ctx.invoked_subcommand is None:
-            settings = await self.config.guild(ctx.guild).all()
-            
-            e_role = ctx.guild.get_role(settings["ephemeral_role_id"])
-            f_role = ctx.guild.get_role(settings["ephemeral_failed_role_id"])
-            
-            # Convert stored seconds back to timedelta for display
-            failed_td = timedelta(seconds=settings['ephemeral_failed_threshold'])
-            first_td = timedelta(seconds=settings['first_greeting_threshold'])
-            second_td = timedelta(seconds=settings['second_greeting_threshold'])
+        # No action taken here. The default behaviour of a group command 
+        # when invoked without subcommand and invoke_without_command=True is set 
+        # is to display its help message (list of subcommands).
+        pass
 
-            # Helper to get channel names
-            def get_channel_info(cid):
-                channel = ctx.guild.get_channel(cid)
-                return f"#{channel.name}" if channel else "Not Set"
-            
-            output = [
-                bold("Time/Message Thresholds:"),
-                f"Ephemeral Failed Threshold: **{timedelta_to_human(failed_td)}**",
-                f"Messages Threshold: **{settings['messages_threshold']}** messages",
-                f"Message Length Threshold: **{settings['message_length_threshold']}** characters",
-                "",
-                bold("Role Configuration:"),
-                f"Ephemeral Role: **{e_role.name if e_role else 'Not Set'}** ({settings['ephemeral_role_id'] or 'N/A'})",
-                f"Ephemeral Failed Role: **{f_role.name if f_role else 'Not Set'}** ({settings['ephemeral_failed_role_id'] or 'N/A'})",
-                "",
-                bold("Greetings & Notifications:"),
-                f"First Greeting Time: **{timedelta_to_human(first_td)}**",
-                f"First Greeting Channel: **{get_channel_info(settings['first_greeting_channel_id'])}**",
-                f"First Greeting Message: `{settings['first_greeting_message']}` (Use {{time_passed}}, {{mention}})",
-                "",
-                f"Second Greeting Time: **{timedelta_to_human(second_td)}**",
-                f"Second Greeting Channel: **{get_channel_info(settings['second_greeting_channel_id'])}**",
-                f"Second Greeting Message: `{settings['second_greeting_message']}` (Use {{time_passed}}, {{mention}})",
-                "",
-                f"Failed Message Channel: **{get_channel_info(settings['failed_message_channel_id'])}**",
-                f"Failed Message: `{settings['failed_message']}` (Use {{mention}})",
-                "",
-                f"Removed Message Channel: **{get_channel_info(settings['removed_message_channel_id'])}**",
-                f"Removed Message: `{settings['removed_message']}` (Use {{mention}})",
-            ]
-            
-            await ctx.send(box('\n'.join(output)))
+    @ephemeralset.command(name="view", aliases=["show"])
+    async def ephemeralset_view(self, ctx: commands.Context):
+        """Displays the current Ephemeral cog settings."""
+        settings = await self.config.guild(ctx.guild).all()
+        
+        e_role = ctx.guild.get_role(settings["ephemeral_role_id"])
+        f_role = ctx.guild.get_role(settings["ephemeral_failed_role_id"])
+        
+        # Convert stored seconds back to timedelta for display
+        failed_td = timedelta(seconds=settings['ephemeral_failed_threshold'])
+        first_td = timedelta(seconds=settings['first_greeting_threshold'])
+        second_td = timedelta(seconds=settings['second_greeting_threshold'])
+
+        # Helper to get channel names
+        def get_channel_info(cid):
+            channel = ctx.guild.get_channel(cid)
+            return f"#{channel.name}" if channel else "Not Set"
+        
+        output = [
+            bold("Time/Message Thresholds:"),
+            f"Ephemeral Failed Threshold: **{timedelta_to_human(failed_td)}**",
+            f"Messages Threshold: **{settings['messages_threshold']}** messages",
+            f"Message Length Threshold: **{settings['message_length_threshold']}** characters",
+            "",
+            bold("Role Configuration:"),
+            f"Ephemeral Role: **{e_role.name if e_role else 'Not Set'}** ({settings['ephemeral_role_id'] or 'N/A'})",
+            f"Ephemeral Failed Role: **{f_role.name if f_role else 'Not Set'}** ({settings['ephemeral_failed_role_id'] or 'N/A'})",
+            "",
+            bold("Greetings & Notifications:"),
+            f"First Greeting Time: **{timedelta_to_human(first_td)}**",
+            f"First Greeting Channel: **{get_channel_info(settings['first_greeting_channel_id'])}**",
+            f"First Greeting Message: `{settings['first_greeting_message']}` (Use {{time_passed}}, {{mention}})",
+            "",
+            f"Second Greeting Time: **{timedelta_to_human(second_td)}**",
+            f"Second Greeting Channel: **{get_channel_info(settings['second_greeting_channel_id'])}**",
+            f"Second Greeting Message: `{settings['second_greeting_message']}` (Use {{time_passed}}, {{mention}})",
+            "",
+            f"Failed Message Channel: **{get_channel_info(settings['failed_message_channel_id'])}**",
+            f"Failed Message: `{settings['failed_message']}` (Use {{mention}})",
+            "",
+            f"Removed Message Channel: **{get_channel_info(settings['removed_message_channel_id'])}**",
+            f"Removed Message: `{settings['removed_message']}` (Use {{mention}})",
+        ]
+        
+        await ctx.send(box('\n'.join(output)))
 
     @ephemeralset.command(name="failedtime")
     async def ephemeralset_failedtime(self, ctx: commands.Context, time: commands.TimedeltaConverter(default_unit="hours")):
