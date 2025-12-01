@@ -225,12 +225,20 @@ class Ephemeral(commands.Cog):
             task.cancel()
 
     async def _send_custom_message(self, guild: discord.Guild, user: discord.Member, channel_id: typing.Optional[int], message: str, time_passed: typing.Optional[timedelta] = None):
-        """Replaces placeholders and sends a message to a specific channel."""
+        """
+        Replaces placeholders and sends a message to a specific channel.
+        Includes error logging to help diagnose configuration and permission issues.
+        """
         if not channel_id:
+            # Channel is not configured, silently return
             return
             
         channel = guild.get_channel(channel_id)
+        
         if not channel or not isinstance(channel, discord.TextChannel):
+            print(
+                f"Ephemeral ERROR in Guild {guild.id}: Configured Channel ID {channel_id} is invalid, deleted, or not a text channel."
+            )
             return
 
         # Replace placeholders
@@ -241,11 +249,15 @@ class Ephemeral(commands.Cog):
         try:
             await channel.send(formatted_message)
         except discord.Forbidden:
-            # Bot cannot send message in this channel
-            pass
-        except Exception:
-            # Other errors (e.g., channel deleted)
-            pass
+            # Bot is missing permissions to send message
+            print(
+                f"Ephemeral ERROR in Guild {guild.id}: Bot is missing 'Send Messages' permission in configured channel #{channel.name} ({channel.id})."
+            )
+        except Exception as e:
+            # Other errors (e.g., rate limits, Discord API issues)
+            print(
+                f"Ephemeral ERROR in Guild {guild.id}: An unexpected error occurred while sending message to channel #{channel.name} ({channel.id}): {e}"
+            )
 
     async def check_ephemeral_status(self, guild_id: int, user_id: int):
         """Background task to check for time-based thresholds and role failure."""
