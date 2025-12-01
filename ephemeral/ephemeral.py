@@ -230,7 +230,10 @@ class Ephemeral(commands.Cog):
         Includes error logging to help diagnose configuration and permission issues.
         """
         if not channel_id:
-            # Channel is not configured, silently return
+            # Channel is not configured, silently return, but log the skipped event.
+            print(
+                f"Ephemeral DEBUG: Skipping message send in Guild {guild.id} because channel ID is not configured (None)."
+            )
             return
             
         channel = guild.get_channel(channel_id)
