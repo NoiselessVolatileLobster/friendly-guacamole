@@ -503,18 +503,26 @@ class SecretSanta(commands.Cog):
         if not signups:
             return await ctx.send("❌ No participants have signed up yet.")
 
+        # Check if any user has a timestamp
+        has_timestamps = any(data.get("timestamp") for data in signups.values())
+
         table_data = []
-        headers = ["Username", "Joined (UTC)", "Wishlist?", "Matched?", "DM Sent?"]
+        
+        if has_timestamps:
+            headers = ["Username", "Joined (UTC)", "Wishlist?", "Matched?", "DM Sent?"]
+        else:
+            headers = ["Username", "Wishlist?", "Matched?", "DM Sent?"]
 
         for user_id, data in signups.items():
             username = data.get("username", "Unknown")
             
-            # Timestamp handling
+            # Timestamp handling (only if at least one user has one)
             ts = data.get("timestamp")
-            if ts:
-                joined_str = datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d %H:%M")
-            else:
-                joined_str = "N/A"
+            if has_timestamps:
+                if ts:
+                    joined_str = datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d %H:%M")
+                else:
+                    joined_str = "N/A"
 
             # Wishlist check
             wishlist_ok = "✅" if data.get("wishlist") else "❌"
@@ -526,7 +534,10 @@ class SecretSanta(commands.Cog):
             # Note: dm_confirm contains {santa_id: bool}
             dm_ok = "✅" if dm_confirm.get(user_id) else "❌"
 
-            table_data.append([username, joined_str, wishlist_ok, matched_ok, dm_ok])
+            if has_timestamps:
+                table_data.append([username, joined_str, wishlist_ok, matched_ok, dm_ok])
+            else:
+                table_data.append([username, wishlist_ok, matched_ok, dm_ok])
 
         # Use tabulate for clean output. tablefmt="simple" works best inside Discord code blocks.
         output = tabulate(table_data, headers=headers, tablefmt="simple")
