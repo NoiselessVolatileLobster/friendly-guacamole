@@ -127,7 +127,7 @@ class SecretSanta(commands.Cog):
         default_global = {
             "embed_data": {
                 "title": "🎁 Secret Santa Sign-Up!",
-                "description": "Click the button below to join our annual Secret Santa event. You'll be matched with a random recipient once sign-ups close. Be sure to provide accurate country information!\n **It is important you share a Gift Wishlist and you edit your privacy settings so it displays a nickname. Please see \"Add, Delete, and Manage Addresses\" and \"Change Your Gift List Privacy Settings\" on Amazon's website for details**",
+                "description": "Click the button below to join our annual Secret Santa event. You'll be matched with a random recipient once sign-ups close. Be sure to provide accurate country information!",
                 "image": None,
                 "channel_id": None,
                 "message_id": None,
@@ -431,6 +431,65 @@ class SecretSanta(commands.Cog):
             "Use `[p]secretsanta listmatches` to view the results and DM confirmations."
         )
 
+    @ss.command(name="retrydms")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def ss_retry_dms(self, ctx: commands.Context):
+        """
+        Attempts to resend matching DMs to users who failed to receive them previously.
+        Posts a summary of successes and remaining failures.
+        """
+        matches = await self.config.matches()
+        dm_confirm = await self.config.dm_confirm()
+        signups = await self.config.signups()
+        
+        if not matches:
+            return await ctx.send("❌ No matches found. You must run `[p]secretsanta match` first.")
+            
+        retry_candidates = [sid for sid in matches if not dm_confirm.get(sid, False)]
+        
+        if not retry_candidates:
+            return await ctx.send("✅ All participants have already successfully received their DMs!")
+            
+        await ctx.send(f"🔄 Attempting to resend DMs to **{len(retry_candidates)}** participants who didn't receive them...")
+        
+        retry_success = 0
+        still_failed = 0
+        
+        for santa_id_str in retry_candidates:
+            recipient_id_str = matches[santa_id_str]
+            santa = self.bot.get_user(int(santa_id_str))
+            
+            recipient_info = signups.get(recipient_id_str, {})
+            recipient_username = recipient_info.get("username", f"Unknown User (ID: {recipient_id_str})")
+            recipient_country = recipient_info.get("country", "Unknown")
+            recipient_wishlist = recipient_info.get("wishlist", "No wishlist URL provided.")
+            
+            if santa:
+                try:
+                    await santa.send(
+                        f"🎉 **Your Secret Santa Recipient!** 🎉\n\n"
+                        f"Your recipient is **{recipient_username}**.\n"
+                        f"Their location is **{recipient_country}**.\n"
+                        f"Their Wishlist: <{recipient_wishlist}>\n\n"
+                        "It is important that this is kept a secret! Happy gifting!"
+                    )
+                    dm_confirm[santa_id_str] = True
+                    retry_success += 1
+                except (discord.Forbidden, Exception):
+                    still_failed += 1
+            else:
+                # User left server or bot can't find them
+                still_failed += 1
+                
+        # Update config with new successes
+        await self.config.dm_confirm.set(dm_confirm)
+        
+        await ctx.send(
+            f"📊 **Retry Complete**\n"
+            f"✅ Successfully Resent: **{retry_success}**\n"
+            f"❌ Still Failed: **{still_failed}**\n"
+            f"Use `[p]secretsanta listmatches` to see updated details."
+        )
 
     @ss.command(name="listmatches")
     @commands.admin_or_permissions(manage_guild=True)
