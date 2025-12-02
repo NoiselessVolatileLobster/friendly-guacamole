@@ -4,20 +4,21 @@ from redbot.core.commands import Context
 from redbot.core import checks
 from redbot.core.utils.chat_formatting import humanize_list
 from datetime import datetime, timezone
+from typing import Union # Required for Union[discord.Member, discord.User]
 
 # Define the default configuration structure for the cog
 DEFAULT_GUILD = {
     "welcome_channel_id": None,
     # Store role ID for mention in the welcome message
     "welcome_role_id": None, 
-    # Customizable message template for REJOINS (supports {user}, {role}, and {count})
-    "welcome_message": "Welcome back, {user}! We're glad you're here for your {count} time. Please check out {role} for next steps.",
-    # New: Customizable message template for FIRST TIME JOINS (supports {user} and {role})
+    # Customizable message template for REJOINS (supports {user}, {role}, {count}, and {last_join_date})
+    "welcome_message": "Welcome back, {user}! We're glad you're here for your {count} time. You were last here on {last_join_date}. Please check out {role} for next steps.",
+    # Customizable message template for FIRST TIME JOINS (supports {user} and {role})
     "first_join_message": "Welcome, {user}! We are thrilled to have you here for the first time. Check out {role} to get started.",
 }
 DEFAULT_MEMBER = {
     "rejoin_count": 0,
-    "last_join_date": None,  # Timestamp of when they last joined
+    "last_join_date": None,  # Timestamp of when they last joined the server
 }
 
 class JoinTracker(commands.Cog):
@@ -49,9 +50,12 @@ class JoinTracker(commands.Cog):
         member_data = await self.config.member(member).all()
         guild_settings = await self.config.guild(guild).all() # Fetch all guild settings
         
-        # Determine if this is a first-time join
+        # Determine if this is a first-time join (no previous join date stored AND rejoin count is 0)
         is_first_join = member_data["last_join_date"] is None and member_data["rejoin_count"] == 0
         rejoin_count = member_data["rejoin_count"]
+
+        # Store the old last_join_date before updating it
+        previous_join_date_iso = member_data["last_join_date"]
 
         # 1. Update/Calculate Rejoin Count
         if not is_first_join:
@@ -82,9 +86,6 @@ class JoinTracker(commands.Cog):
                         role_mention = role.mention
                     else:
                         # Role is missing: Fallback to the raw mention string format 
-                        # This ensures the template variable {role} is replaced with a mention
-                        # string, which is necessary for Discord to parse it correctly, 
-                        # even if the role was deleted.
                         role_mention = f"<@&{role_id}>"
 
                 if is_first_join:
@@ -97,13 +98,23 @@ class JoinTracker(commands.Cog):
                 else:
                     # Case B: Rejoin
                     msg_template = guild_settings["welcome_message"]
+                    
                     # Calculate total times here (rejoin_count + 1 is the total times here)
                     count_int = rejoin_count + 1 
-                    count_display = self._get_ordinal(count_int) # <-- Use ordinal helper function
+                    count_display = self._get_ordinal(count_int)
+                    
+                    # Prepare the previous join date for the message
+                    if previous_join_date_iso:
+                        # Format the previous join date (only show date for brevity in message)
+                        prev_date = datetime.fromisoformat(previous_join_date_iso).strftime('%Y-%m-%d')
+                    else:
+                        prev_date = "an unknown date"
+                        
                     template_vars = {
                         "user": member.mention,
                         "role": role_mention,
-                        "count": count_display
+                        "count": count_display,
+                        "last_join_date": prev_date, # New variable
                     }
 
                 # Format the message using the template variables
@@ -119,10 +130,7 @@ class JoinTracker(commands.Cog):
                             f"joining the server. (Error formatting custom rejoin message.)"
                         )
                 
-                # --- NEW: Define AllowedMentions ---
-                # Explicitly allow user mentions and the specific role mention.
-                # We use 'everyone=False' to ensure we don't accidentally ping everyone 
-                # if the user includes '@everyone' in their message template.
+                # Explicitly allow mentions
                 allowed_mentions = discord.AllowedMentions(
                     users=True, 
                     roles=True,
@@ -202,46 +210,51 @@ class JoinTracker(commands.Cog):
         - {user}: The member mention.
         - {role}: The mention of the configured welcome role.
         - {count}: The total number of times the user has joined (e.g., 2nd, 3rd, 4th...).
+        - {last_join_date}: The date (YYYY-MM-DD) the user was last seen in the server.
         
-        Example: [p]jointracker setwelcomemsg Welcome back, {user}! The {role} team missed you on your {count} visit!
+        Example: [p]jointracker setwelcomemsg Welcome back, {user}! You were last here on {last_join_date}!
         """
         await self.config.guild(ctx.guild).welcome_message.set(message)
         await ctx.send(
             "The custom **welcome back** message template has been set to:\n"
             f"```\n{message}\n```\n"
-            "Ensure you use `{user}`, `{role}`, and `{count}` for dynamic content."
+            "Ensure you use `{user}`, `{role}`, `{count}`, and `{last_join_date}` for dynamic content."
         )
 
     @jointracker.command(name="setrejoins")
-    async def jointracker_setrejoins(self, ctx: Context, member: discord.Member, count: int):
+    async def jointracker_setrejoins(self, ctx: Context, target: Union[discord.Member, discord.User], count: int):
         """
-        Overrides the rejoin counter for a specific member.
+        Overrides the rejoin counter for a specific member/user.
 
-        <member>: The member whose counter you want to change.
+        <target>: The member (mention/ID) or user (ID) whose counter you want to change.
         <count>: The new number of times they have rejoined (e.g., 0 for a first-timer).
+
+        This works even if the user is not currently in the server.
         """
         if count < 0:
             return await ctx.send("The rejoin count must be zero or a positive number.")
 
-        # The count stored is the number of times they have rejoined *after* their first time.
-        # e.g., count 0 = first time, count 1 = rejoined once (second time total).
-        await self.config.member(member).rejoin_count.set(count)
+        # Set the rejoin count using the member scope (tied to the guild ID)
+        await self.config.member(target).rejoin_count.set(count)
         
-        # Update the last_join_date to the member's current join date as well for consistency
-        join_date_iso = member.joined_at.astimezone(timezone.utc).isoformat()
-        await self.config.member(member).last_join_date.set(join_date_iso)
-        
+        # Update the last_join_date. If they are currently a member, use their current join date.
+        if isinstance(target, discord.Member):
+             join_date_iso = target.joined_at.astimezone(timezone.utc).isoformat()
+             await self.config.member(target).last_join_date.set(join_date_iso)
+        else:
+             # If target is only a User (not in guild), we set last_join_date to None 
+             # and rely on the next join event to populate it.
+             await self.config.member(target).last_join_date.set(None)
+             
         await ctx.send(
-            f"Successfully set the rejoin counter for {member.display_name} to **{count}**."
+            f"Successfully set the rejoin counter for {target.display_name} (ID: {target.id}) to **{count}**."
         )
 
     @jointracker.command(name="populate")
     async def jointracker_populate(self, ctx: Context):
         """
-        Populates all current members' join dates into the database.
-
-        This is useful for initializing the cog on an existing server. It only runs
-        if a member's data is completely missing.
+        Sets the initial join count to 1 for all members currently in the server 
+        that do not have existing tracking data.
         """
         await ctx.defer()
         guild = ctx.guild
@@ -255,24 +268,20 @@ class JoinTracker(commands.Cog):
                 continue
 
             # Check if we have join date data for this member
-            # We look for the last_join_date field, which is the primary indicator of presence
-            member_id_str = str(member.id)
-            
             # If the member ID is not in our data structure, or the date is missing/None
+            member_id_str = str(member.id)
             if member_id_str not in all_member_data or all_member_data[member_id_str].get("last_join_date") is None:
                 # Populate the initial join date (which will be the date they joined the server)
                 join_date_iso = member.joined_at.astimezone(timezone.utc).isoformat()
                 
-                # We use the raw config access for efficiency
-                await self.config.member(member).last_join_date.set(join_date_iso)
-                
-                # Ensure rejoin_count is 0 if populating for the first time
+                # Set rejoin_count to 0 (meaning 1 total join)
                 await self.config.member(member).rejoin_count.set(0)
+                await self.config.member(member).last_join_date.set(join_date_iso)
                 
                 members_updated += 1
 
         await ctx.send(
-            f"Successfully checked and populated join dates for **{members_updated}** members."
+            f"Successfully checked and initialized tracking data for **{members_updated}** untracked members."
         )
 
     @jointracker.command(name="info")
