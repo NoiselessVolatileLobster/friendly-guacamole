@@ -4,6 +4,8 @@ from redbot.core.bot import Red
 from redbot.core.utils.chat_formatting import box
 import random
 from typing import Optional, List, Dict, Set
+from datetime import datetime, timezone
+from tabulate import tabulate
 
 # --- UI Components ---
 
@@ -61,18 +63,17 @@ class SecretSantaModal(discord.ui.Modal, title="Secret Santa Sign-Up"):
             signups[user_id_str] = {
                 "country": country, 
                 "username": str(user),
-                "wishlist": wishlist # Store the wishlist URL
+                "wishlist": wishlist, # Store the wishlist URL
+                "timestamp": datetime.now(timezone.utc).timestamp() # Store UTC timestamp
             }
         
         # 3. Attempt to send confirmation DM and determine status message
         dm_status_message = ""
         try:
-            # --- START: Change for Sign-Up Confirmation DM ---
             await user.send(
                 f"Thank you for signing up for Secret Santa! We have recorded your Amazon Wishlist: <{wishlist}>. "
                 "You will receive your match's details once the sign-up period closes."
             )
-            # --- END: Change for Sign-Up Confirmation DM ---
             dm_status_message = "\n\n**DM Status:** You should be getting a confirmation message in your Direct Messages right now."
         except discord.Forbidden:
             dm_status_message = "\n\n**DM Status:** Uh-oh. I couldn't send you a Direct Message. Please check your privacy settings to ensure I can contact you when matching occurs."
@@ -82,7 +83,7 @@ class SecretSantaModal(discord.ui.Modal, title="Secret Santa Sign-Up"):
         # 4. Send the final ephemeral response
         await interaction.response.send_message(
             f"✅ You have successfully signed up for Secret Santa! Country: **{country}**."
-            f"\nYour Wishlist: **<{wishlist}>** was recorded." # Confirmation message includes the URL
+            f"\nYour Wishlist: **<{wishlist}>** was recorded."
             f"{dm_status_message}",
             ephemeral=True
         )
@@ -133,7 +134,7 @@ class SecretSanta(commands.Cog):
                 "message_id": None,
             },
             "ss_open": False,  # Is the sign-up period open?
-            "signups": {},     # {user_id_str: {"country": "...", "username": "...", "wishlist": "..."}}
+            "signups": {},     # {user_id_str: {"country": "...", "username": "...", "wishlist": "...", "timestamp": float}}
             "matches": {},     # {santa_user_id_str: recipient_user_id_str}
             "dm_confirm": {},  # {santa_user_id_str: True/False}
         }
@@ -490,6 +491,47 @@ class SecretSanta(commands.Cog):
             f"❌ Still Failed: **{still_failed}**\n"
             f"Use `[p]secretsanta listmatches` to see updated details."
         )
+
+    @ss.command(name="userstatus")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def ss_user_status(self, ctx: commands.Context):
+        """Displays a status table of all Secret Santa participants."""
+        signups = await self.config.signups()
+        matches = await self.config.matches()
+        dm_confirm = await self.config.dm_confirm()
+
+        if not signups:
+            return await ctx.send("❌ No participants have signed up yet.")
+
+        table_data = []
+        headers = ["Username", "Joined (UTC)", "Wishlist?", "Matched?", "DM Sent?"]
+
+        for user_id, data in signups.items():
+            username = data.get("username", "Unknown")
+            
+            # Timestamp handling
+            ts = data.get("timestamp")
+            if ts:
+                joined_str = datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d %H:%M")
+            else:
+                joined_str = "N/A"
+
+            # Wishlist check
+            wishlist_ok = "✅" if data.get("wishlist") else "❌"
+
+            # Match check
+            matched_ok = "✅" if user_id in matches else "❌"
+
+            # DM check
+            # Note: dm_confirm contains {santa_id: bool}
+            dm_ok = "✅" if dm_confirm.get(user_id) else "❌"
+
+            table_data.append([username, joined_str, wishlist_ok, matched_ok, dm_ok])
+
+        # Use tabulate for clean output. tablefmt="simple" works best inside Discord code blocks.
+        output = tabulate(table_data, headers=headers, tablefmt="simple")
+        
+        await ctx.send(box(output))
 
     @ss.command(name="listmatches")
     @commands.admin_or_permissions(manage_guild=True)
