@@ -169,7 +169,7 @@ class SecretSanta(commands.Cog):
             "signups": {},     # {user_id_str: {"country": "...", "username": "...", "wishlist": "...", "timestamp": float}}
             "matches": {},     # {santa_user_id_str: recipient_user_id_str}
             "dm_confirm": {},  # {santa_user_id_str: True/False}
-            "log_channel_id": None, # NEW: Channel to log anonymous actions
+            "log_channel_id": None, # Channel to log anonymous actions
         }
         
         self.config.register_global(**default_global)
@@ -187,16 +187,14 @@ class SecretSanta(commands.Cog):
 
     # --- Helper Functions for Anonymous Actions and Logging ---
 
-    async def _log_action(self, guild: discord.Guild, title: str, status: str, santa: discord.User, recipient: discord.User):
-        """Helper function to log action status to the configured channel."""
-        log_channel_id = await self.config.log_channel_id()
-        if not log_channel_id:
-            return
-
-        channel = guild.get_channel(log_channel_id)
-        if not channel:
-            # If the channel is gone, clear the config setting
-            await self.config.log_channel_id.set(None) 
+    async def _log_action(self, log_channel: Optional[discord.TextChannel], title: str, status: str, santa: discord.User, recipient: discord.User):
+        """
+        Helper function to log action status to the configured channel.
+        
+        log_channel: The resolved log channel object, or None if not found/configured.
+        """
+        if not log_channel:
+            # Cannot log if the channel doesn't exist or isn't configured
             return
 
         embed = discord.Embed(
@@ -210,13 +208,16 @@ class SecretSanta(commands.Cog):
         embed.add_field(name="Status", value=status, inline=False)
         
         try:
-            await channel.send(embed=embed)
+            await log_channel.send(embed=embed)
         except (discord.Forbidden, discord.HTTPException):
-            # Cannot send to log channel
+            # Cannot send to log channel (e.g., bot permissions were revoked)
             pass
 
     async def send_anonymous_dm(self, interaction: discord.Interaction, santa_id_str: str, message_content: str, log_title: str):
-        """Handles the anonymous DM and logging process for Santa actions."""
+        """
+        Handles the anonymous DM and logging process for Santa actions.
+        Correctly finds the log channel even if the interaction is from a DM.
+        """
         
         # Defer the interaction response to prevent timeout, showing "Bot is thinking..."
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -240,11 +241,24 @@ class SecretSanta(commands.Cog):
             
         recipient_username = signups.get(recipient_id_str, {}).get("username", recipient.name)
 
-        # 3. Send Anonymous DM
+        # 3. Resolve the log channel BEFORE the DM attempt (for logging success/failure)
+        log_channel: Optional[discord.TextChannel] = None
+        log_channel_id = await self.config.log_channel_id()
+        if log_channel_id:
+            # Use bot.get_channel() which works globally, regardless of interaction context (DM or Guild)
+            log_channel = self.bot.get_channel(log_channel_id)
+            if not log_channel:
+                # If channel is gone, clear the config setting so we don't try again next time
+                await self.config.log_channel_id.set(None)
+
+        # 4. Send Anonymous DM
         log_status = ""
         try:
+            # Send the actual DM
             await recipient.send(f"🎅 **Secret Santa 2025 Notification**\n\n{message_content}")
             log_status = "SUCCESS"
+            
+            # Send the ephemeral success message back to the Santa in their DM
             await interaction.followup.send(
                 f"✅ Your message for **{recipient_username}** has been sent anonymously.", 
                 ephemeral=True
@@ -262,8 +276,8 @@ class SecretSanta(commands.Cog):
                 ephemeral=True
             )
             
-        # 4. Log the action
-        await self._log_action(interaction.guild, log_title, log_status, santa, recipient)
+        # 5. Log the action (now using the resolved log_channel object)
+        await self._log_action(log_channel, log_title, log_status, santa, recipient)
 
 
     # --- Admin Commands ---
