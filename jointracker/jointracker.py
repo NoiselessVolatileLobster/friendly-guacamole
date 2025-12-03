@@ -287,7 +287,7 @@ class JoinTracker(commands.Cog):
     @jointracker.command(name="list")
     async def jointracker_list(self, ctx: Context):
         """
-        Generates a table of all recorded user join/rejoin history.
+        Generates a table of all recorded user join/rejoin history, paginating if needed.
         
         Displays User ID, Username, Number of join times, and Last joined date.
         """
@@ -304,13 +304,13 @@ class JoinTracker(commands.Cog):
         DATE_PAD = 10
         
         # Create header and separator
-        header = "{:<{uid}} | {:<{un}} | {:<{joins}} | {:<{date}}".format(
+        header_text = "{:<{uid}} | {:<{un}} | {:<{joins}} | {:<{date}}".format(
             "USER ID", "USERNAME", "JOINS", "LAST JOINED",
             uid=USER_ID_PAD, un=USERNAME_PAD, joins=JOINS_PAD, date=DATE_PAD
         )
-        separator = "-" * len(header)
-        output = [header, separator]
+        separator_text = "-" * len(header_text)
         
+        # Gather all data rows
         for user_id_str, data in all_member_data.items():
             user_id = int(user_id_str)
             
@@ -345,63 +345,39 @@ class JoinTracker(commands.Cog):
             )
             data_rows.append(row)
 
-        # Check Discord message character limit (2000 chars)
-        max_rows_per_message = 40 # Heuristic to avoid hitting the limit
-        
-        for i in range(0, len(data_rows), max_rows_per_message):
-            chunk = data_rows[i:i + max_rows_per_message]
-            
-            # Combine the current chunk with the header
-            message_content = "\n".join(output + chunk)
-            
-            if not message_content:
-                continue
 
+        if not data_rows:
+            return await ctx.send("No user join history records found for this server.")
+
+        # --- Dynamic Pagination Logic ---
+        # Discord message limit is 2000. We use 1900 to safely account for wrappers (` ``` ` and page title).
+        MAX_MESSAGE_LENGTH = 1900 
+        current_page_content = [header_text, separator_text]
+        page_number = 1
+        
+        async def send_page(content_list, page_num):
+            message_content = "\n".join(content_list)
+            # Send the current page with title and code block wrapper
             await ctx.send(
-                f"**Join Tracker Report (Page {i // max_rows_per_message + 1})**\n"
+                f"**Join Tracker Report (Page {page_num})**\n"
                 f"```{message_content}```"
             )
-            
-        if not data_rows:
-            await ctx.send("No user join history records found for this server.")
 
-
-    @jointracker.command(name="info")
-    async def jointracker_info(self, ctx: Context, member: discord.Member = None):
-        """Shows the join/rejoin info for a member (defaults to you)."""
-        member = member or ctx.author
-        
-        member_data = await self.config.member(member).all()
-        rejoin_count = member_data["rejoin_count"]
-        last_join_date_iso = member_data["last_join_date"]
-        
-        # Determine the effective number of times they have been here
-        times_here = rejoin_count + 1
-        
-        if last_join_date_iso:
-            # Parse the stored ISO date
-            last_join_date = datetime.fromisoformat(last_join_date_iso).strftime('%Y-%m-%d %H:%M:%S UTC')
-        else:
-            # Fallback to current discord.py data if not yet populated
-            last_join_date = member.joined_at.strftime('%Y-%m-%d %H:%M:%S UTC')
+        for row in data_rows:
+            # Check length: current content + new row + newline
+            test_content = "\n".join(current_page_content + [row])
             
-        embed = discord.Embed(
-            title=f"Join/Rejoin History for {member.display_name}",
-            color=member.color if member.color != discord.Color.default() else discord.Color.blue()
-        )
-        
-        # Field 1: Times in Server
-        embed.add_field(
-            name="Times in Server",
-            value=f"**{times_here}** time{'s' if times_here > 1 else ''} total.",
-            inline=False
-        )
-        
-        # Field 2: Last Joined
-        embed.add_field(
-            name="Last Joined",
-            value=last_join_date,
-            inline=False
-        )
-        
-        await ctx.send(embed=embed)
+            if len(test_content) > MAX_MESSAGE_LENGTH:
+                # If adding the new row exceeds the limit, send the current page
+                await send_page(current_page_content, page_number)
+                
+                # Start a new page with the header and the row that caused the overflow
+                page_number += 1
+                current_page_content = [header_text, separator_text, row]
+            else:
+                # Otherwise, add the row to the current page
+                current_page_content.append(row)
+
+        # Send the final, remaining page
+        if len(current_page_content) > 2: # Check if there is data beyond the header/separator
+            await send_page(current_page_content, page_number)
