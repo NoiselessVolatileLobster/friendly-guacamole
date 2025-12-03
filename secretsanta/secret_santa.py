@@ -544,6 +544,56 @@ class SecretSanta(commands.Cog):
         
         await ctx.send(box(output))
 
+    @ss.command(name="listwishlists")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def ss_list_wishlists(self, ctx: commands.Context):
+        """
+        Displays a list of all participants, their country, and a clickable link
+        to their Amazon Wishlist, split into multiple embeds if necessary.
+        """
+        signups = await self.config.signups()
+
+        if not signups:
+            return await ctx.send("❌ No participants have signed up yet.")
+
+        # Prepare list of entries: [Username (Country)](<Wishlist URL>)
+        entries = []
+        for data in signups.values():
+            username = data.get("username", "Unknown User")
+            country = data.get("country", "N/A")
+            wishlist_url = data.get("wishlist")
+            
+            if wishlist_url:
+                # Use Markdown link format: [Text](<URL>) with angle brackets for suppression
+                entry = f"**[{username} ({country})](<{wishlist_url}>)**"
+            else:
+                entry = f"**{username} ({country})** - *No Wishlist Provided*"
+            
+            entries.append(entry)
+
+        # Splitting logic: Max entries per embed for readability and safety
+        CHUNKS_PER_MESSAGE = 25
+        
+        # Split the list of entries into chunks
+        chunks = [entries[i:i + CHUNKS_PER_MESSAGE] for i in range(0, len(entries), CHUNKS_PER_MESSAGE)]
+        
+        await ctx.send(f"Found {len(entries)} participants. Generating {len(chunks)} message(s)...")
+
+        for i, chunk in enumerate(chunks):
+            description = "\n".join(chunk)
+            
+            embed = discord.Embed(
+                title=f"🎁 Secret Santa Wishlists (Part {i+1}/{len(chunks)})",
+                description=description,
+                color=await ctx.embed_color()
+            )
+            embed.set_footer(text="Wishlists are crucial for successful Secret Santa matching.")
+            
+            # Send each chunk as a separate message
+            await ctx.send(embed=embed)
+
+        await ctx.send("✅ All wishlists have been displayed.")
+
     @ss.command(name="listmatches")
     @commands.admin_or_permissions(manage_guild=True)
     async def ss_list_matches(self, ctx: commands.Context):
