@@ -454,15 +454,21 @@ class AdventCalendar(Cog):
                 ),
             }
         elif reward["type"] == "bank_credits":
+            # --- START of modification ---
+            # Get the guild's custom currency name
+            currency_name = await bank.get_currency_name(member.guild)
+
             await bank.deposit_credits(member, reward["amount"])
             return reward, {
                 "embed": discord.Embed(
-                    title=_("🎁 You've received **{amount} credits**! 🎁").format(
-                        amount=reward["amount"]
+                    # Use the custom currency name in the title
+                    title=_("🎁 You've received **{amount} {currency_name}**! 🎁").format(
+                        amount=reward["amount"], currency_name=currency_name
                     ),
                     color=discord.Color.green(),
                 ),
             }
+            # --- END of modification ---
         elif reward["type"] == "levelup_xp":
             await LevelUp.add_xp(member, xp=reward["amount"])
             return reward, {
