@@ -284,6 +284,88 @@ class JoinTracker(commands.Cog):
             f"Successfully checked and initialized tracking data for **{members_updated}** untracked members."
         )
 
+    @jointracker.command(name="list")
+    async def jointracker_list(self, ctx: Context):
+        """
+        Generates a table of all recorded user join/rejoin history.
+        
+        Displays User ID, Username, Number of join times, and Last joined date.
+        """
+        await ctx.defer()
+        guild = ctx.guild
+        all_member_data = await self.config.all_members(guild)
+        
+        data_rows = []
+        
+        # Define padding for columns
+        USER_ID_PAD = 18
+        USERNAME_PAD = 20
+        JOINS_PAD = 5
+        DATE_PAD = 10
+        
+        # Create header and separator
+        header = "{:<{uid}} | {:<{un}} | {:<{joins}} | {:<{date}}".format(
+            "USER ID", "USERNAME", "JOINS", "LAST JOINED",
+            uid=USER_ID_PAD, un=USERNAME_PAD, joins=JOINS_PAD, date=DATE_PAD
+        )
+        separator = "-" * len(header)
+        output = [header, separator]
+        
+        for user_id_str, data in all_member_data.items():
+            user_id = int(user_id_str)
+            
+            # --- Get Username ---
+            user = self.bot.get_user(user_id)
+            username = user.name if user else '?'
+            
+            # Truncate username if too long for clean display
+            if len(username) > USERNAME_PAD:
+                username = username[:USERNAME_PAD - 3] + '...'
+            
+            # --- Calculate Joins ---
+            rejoin_count = data.get("rejoin_count", 0)
+            times_here = rejoin_count + 1
+            count_display = str(times_here)
+            
+            # --- Get Last Joined Date ---
+            last_join_date_iso = data.get("last_join_date")
+            if last_join_date_iso:
+                try:
+                    # Format the date to YYYY-MM-DD
+                    date_display = datetime.fromisoformat(last_join_date_iso).strftime('%Y-%m-%d')
+                except ValueError:
+                    date_display = '?'
+            else:
+                date_display = '?'
+                
+            # Create the data row
+            row = "{:<{uid}} | {:<{un}} | {:<{joins}} | {:<{date}}".format(
+                user_id_str, username, count_display, date_display,
+                uid=USER_ID_PAD, un=USERNAME_PAD, joins=JOINS_PAD, date=DATE_PAD
+            )
+            data_rows.append(row)
+
+        # Check Discord message character limit (2000 chars)
+        max_rows_per_message = 40 # Heuristic to avoid hitting the limit
+        
+        for i in range(0, len(data_rows), max_rows_per_message):
+            chunk = data_rows[i:i + max_rows_per_message]
+            
+            # Combine the current chunk with the header
+            message_content = "\n".join(output + chunk)
+            
+            if not message_content:
+                continue
+
+            await ctx.send(
+                f"**Join Tracker Report (Page {i // max_rows_per_message + 1})**\n"
+                f"```{message_content}```"
+            )
+            
+        if not data_rows:
+            await ctx.send("No user join history records found for this server.")
+
+
     @jointracker.command(name="info")
     async def jointracker_info(self, ctx: Context, member: discord.Member = None):
         """Shows the join/rejoin info for a member (defaults to you)."""
