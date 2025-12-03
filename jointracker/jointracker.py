@@ -234,22 +234,30 @@ class JoinTracker(commands.Cog):
         if count < 0:
             return await ctx.send("The rejoin count must be zero or a positive number.")
 
-        # --- FIX: Use the target object directly. Config.member() expects the object, not the raw IDs. ---
-        # This resolves the TypeError caused by passing too many arguments.
-        config_member = self.config.member(target)
-        
-        # 1. Set the rejoin count
-        await config_member.rejoin_count.set(count)
-        
-        # 2. Update the last_join_date based on object type
+        # --- FINAL FIX: Use explicit guild scoping when target is a discord.User object. ---
+        # We must branch the logic here to prevent the 'User' object from causing an 
+        # AttributeError by ensuring 'guild=ctx.guild' is only provided when necessary.
         if isinstance(target, discord.Member):
-             # If they are currently a member, use their current join date
-             join_date_iso = target.joined_at.astimezone(timezone.utc).isoformat()
-             await config_member.last_join_date.set(join_date_iso)
+            # If it's a Member object, the guild context is implicit
+            config_member = self.config.member(target)
+            
+            # Use their current join date
+            join_date_iso = target.joined_at.astimezone(timezone.utc).isoformat()
+            await config_member.last_join_date.set(join_date_iso)
+            
+        elif isinstance(target, discord.User):
+            # If it's a User object, we MUST provide the guild explicitly for member-scoped data
+            config_member = self.config.member(target, guild=ctx.guild)
+            
+            # Clear/set last_join_date to None since they are not currently in the server
+            await config_member.last_join_date.set(None)
+            
         else:
-             # If target is only a User (not in guild), clear/set last_join_date to None
-             # to ensure it's recorded on the next join event.
-             await config_member.last_join_date.set(None)
+            # Fallback for unexpected object types, though Union should cover it
+            return await ctx.send("Could not determine the target user type.")
+
+        # 1. Set the rejoin count (Common to both branches)
+        await config_member.rejoin_count.set(count)
              
         await ctx.send(
             f"Successfully set the rejoin counter for {target.display_name} (ID: {target.id}) to **{count}**."
