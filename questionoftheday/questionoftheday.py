@@ -68,7 +68,6 @@ class SuggestionModal(discord.ui.Modal, title="Submit a Question of the Day"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        # Defer immediately to prevent timeout during processing
         await interaction.response.defer(ephemeral=True)
         
         new_q = QuestionData(
@@ -82,10 +81,8 @@ class SuggestionModal(discord.ui.Modal, title="Submit a Question of the Day"):
         try:
             await self.cog.add_question_to_data(new_q)
             
-            # Attempt Grant Suggestion Reward
             reward = await self.cog.config.suggestion_reward()
             if reward > 0:
-                # We pass the Member object directly
                 paid = await self.cog._attempt_deposit(interaction.user, reward)
                 if paid:
                     currency = await bank.get_currency_name(interaction.guild)
@@ -118,7 +115,7 @@ class SuggestionButton(discord.ui.View):
 
 class ApprovalView(discord.ui.View):
     def __init__(self, cog: "QuestionOfTheDay", question_data: QuestionData, question_id: str, lists: Dict[str, QuestionList]):
-        super().__init__(timeout=None) # No timeout for persistent view logic
+        super().__init__(timeout=None) 
         self.cog = cog
         self.question_data = question_data
         self.question_id = question_id
@@ -135,7 +132,7 @@ class ApprovalView(discord.ui.View):
                 options=list_options,
                 min_values=1,
                 max_values=1,
-                custom_id=f"qotd_approval_list_select_{question_id}" # Unique ID to avoid conflicts if multiple views exist
+                custom_id=f"qotd_approval_list_select_{question_id}"
             )
             self.list_select.callback = self.approve_callback
             self.add_item(self.list_select)
@@ -163,11 +160,9 @@ class ApprovalView(discord.ui.View):
 
         await self.cog.update_question_data(self.question_id, self.question_data)
         
-        # Attempt Grant Approval Reward
         reward_text = ""
         reward_amt = await self.cog.config.approval_reward()
         if reward_amt > 0 and self.question_data.suggested_by:
-            # We need to fetch the actual member object for the bank
             guild = interaction.guild
             member = guild.get_member(self.question_data.suggested_by)
             if not member:
@@ -177,7 +172,6 @@ class ApprovalView(discord.ui.View):
                     member = None
             
             if member:
-                # Pass member object directly
                 paid = await self.cog._attempt_deposit(member, reward_amt)
                 if paid:
                     currency = await bank.get_currency_name(guild)
@@ -225,8 +219,8 @@ class QuestionOfTheDay(commands.Cog):
             },
             "schedules": {}, 
             "approval_channel": None,
-            "suggestion_reward": 0, # Default 0 (disabled)
-            "approval_reward": 0,   # Default 0 (disabled)
+            "suggestion_reward": 0,
+            "approval_reward": 0,
         }
         self.config.register_global(**default_global)
         self.qotd_poster.start()
@@ -244,27 +238,14 @@ class QuestionOfTheDay(commands.Cog):
             for key in keys_to_delete:
                 del questions[key]
 
-    # --- Banking Helper ---
     async def _attempt_deposit(self, member: discord.Member, amount: int) -> bool:
-        """
-        Safely attempts to deposit credits to a member's bank.
-        Compatible with Red 3.5.22.
-        Returns True if successful, False otherwise.
-        """
-        if amount <= 0:
-            return False
-
+        if amount <= 0: return False
         try:
-            # Red 3.5.x: Pass member object directly. 
-            # Do NOT pass 'scope', 'guild', or 'reason' as keywords to avoid TypeErrors.
-            # The bank API will infer global/local scope from the member object.
             await bank.deposit_credits(member, amount)
             return True
         except Exception as e:
             log.error(f"Failed to deposit {amount} credits to {member.id}: {e}")
             return False
-
-    # --- Loop ---
 
     @tasks.loop(minutes=1)
     async def qotd_poster(self):
@@ -292,8 +273,6 @@ class QuestionOfTheDay(commands.Cog):
                 except Exception as e:
                     log.exception(f"Critical error during _post_scheduled_question for {schedule_id}: {e}")
                     await self._update_schedule_next_run(schedule_id, schedule, now_utc)
-
-    # --- Helper Methods ---
 
     def _is_date_active(self, start_md: str, end_md: str, check_date: datetime) -> bool:
         try:
@@ -330,7 +309,7 @@ class QuestionOfTheDay(commands.Cog):
             target_list = QuestionList.model_validate(lists_data[target_list_id])
         except KeyError:
              log.warning(f"Target list {target_list_id} for schedule {schedule_id} not found. Falling back to 'general'.")
-             target_list_id = "general" # Fallback
+             target_list_id = "general" 
              target_list = QuestionList.model_validate(lists_data[target_list_id])
         except ValidationError:
             await self._update_schedule_next_run(schedule_id, schedule, now_utc)
@@ -351,7 +330,6 @@ class QuestionOfTheDay(commands.Cog):
         eligible_q = {}
         for qid, qdata in eligible_q_data.items():
             try:
-                # Ensure datetime objects are created from strings stored in config
                 qdata_copy = qdata.copy()
                 qdata_copy['added_on'] = datetime.fromisoformat(qdata['added_on'])
                 qdata_copy['last_asked'] = datetime.fromisoformat(qdata['last_asked']) if qdata['last_asked'] else None
@@ -394,11 +372,20 @@ class QuestionOfTheDay(commands.Cog):
             await self._update_schedule_next_run(schedule_id, schedule, now_utc)
             return
             
-        embed = discord.Embed(title=f"❓ Question of the Day: {selected_q.question}", color=discord.Color.blue())
+        # --- EMBED UPDATE ---
+        embed = discord.Embed(title="Question Of The Day", color=discord.Color.blue())
+        embed.description = selected_q.question
+        
+        footer_text = "System"
         if selected_q.suggested_by:
             user = self.bot.get_user(selected_q.suggested_by)
-            suggested_by_text = user.display_name if user else f"User ID: {selected_q.suggested_by}"
-            embed.set_footer(text=f"Suggested by {suggested_by_text}")
+            if user:
+                footer_text = f"Suggested by {user.display_name}"
+            else:
+                footer_text = f"Suggested by ID: {selected_q.suggested_by}"
+        
+        embed.set_footer(text=footer_text)
+        # --------------------
 
         try:
             await channel.send(embed=embed)
@@ -449,8 +436,6 @@ class QuestionOfTheDay(commands.Cog):
         async with self.config.schedules() as schedules:
             schedules[schedule_id] = serialized_schedule
 
-    # --- Data Ops ---
-
     async def add_question_to_data(self, question: QuestionData):
         question_id = question.id 
         serialized_q = json.loads(question.model_dump_json())
@@ -497,16 +482,12 @@ class QuestionOfTheDay(commands.Cog):
 
         await channel.send(embed=embed, view=ApprovalView(self, question, qid, lists))
 
-    # --- Listeners ---
-    
     @commands.Cog.listener()
     async def on_ready(self):
         lists_data = await self.config.lists()
         list_names = [v['name'] for v in lists_data.values() if v['id'] not in ["suggestions", "unassigned"]]
         self.bot.add_view(SuggestionButton(self, list_names))
         
-    # --- Commands ---
-
     @commands.guild_only()
     @commands.admin()
     @commands.group(name="qotd", aliases=["qotdd"])
@@ -520,7 +501,6 @@ class QuestionOfTheDay(commands.Cog):
         await self.config.approval_channel.set(channel.id)
         await ctx.send(f"Approval channel set to {channel.mention}.")
 
-    # --- SETTINGS COMMANDS ---
     @qotd.group(name="set")
     async def qotd_set(self, ctx: commands.Context):
         """Configure QOTD settings, including rewards."""
@@ -544,7 +524,6 @@ class QuestionOfTheDay(commands.Cog):
         currency = await bank.get_currency_name(ctx.guild)
         await ctx.send(success(f"Approval reward set to **{amount} {currency}**."))
 
-    # --- QUESTION COMMANDS (including listuser) ---
     @qotd.group(name="question")
     async def qotd_question(self, ctx: commands.Context):
         """Manage individual questions."""
@@ -559,7 +538,6 @@ class QuestionOfTheDay(commands.Cog):
         for qid, qdata in all_questions.items():
             if qdata.get("suggested_by") == user.id:
                 try:
-                    # Deserialize dates for display
                     if isinstance(qdata.get('added_on'), str):
                         qdata['added_on'] = datetime.fromisoformat(qdata['added_on'])
                     qdata['id'] = qid
@@ -573,9 +551,8 @@ class QuestionOfTheDay(commands.Cog):
 
         user_questions.sort(key=lambda q: q.added_on, reverse=True)
 
-        # Build output 
         msg = f"**Questions by {user.name}**\n\n"
-        for q in user_questions[:15]: # Limit to 15 to prevent overflow
+        for q in user_questions[:15]: 
             status_icon = "⏳" if q.status == "pending" else ("✅" if q.status == "not asked" else "📢")
             short_id = q.id.split('-')[0]
             msg += f"`{short_id}` {status_icon} **[{q.status.upper()}]** - {q.question[:50]}...\n"
@@ -640,7 +617,6 @@ class QuestionOfTheDay(commands.Cog):
         await self.delete_question_by_id(matched_qid)
         await ctx.send(success(f"Question `{matched_qid.split('-')[0]}` deleted."))
 
-    # --- SUGGEST COMMANDS ---
     @qotd.group(name="suggest")
     async def qotd_suggest_admin(self, ctx: commands.Context):
         """Admin commands for managing pending question suggestions."""
@@ -719,7 +695,6 @@ class QuestionOfTheDay(commands.Cog):
         question_data.added_on = datetime.now(timezone.utc) 
         await self.update_question_data(full_qid, question_data)
         
-        # Grant approval reward
         reward = await self.config.approval_reward()
         if reward > 0 and question_data.suggested_by:
             guild = ctx.guild
@@ -755,7 +730,7 @@ class QuestionOfTheDay(commands.Cog):
     async def qotd_list_add(self, ctx: commands.Context, list_name: str, list_id: Optional[str] = None):
         """Adds a new question list."""
         lists_data = await self.config.lists()
-        if any(l.get('name', '').lower() == list_name.lower() for l in lists_data.values()):
+        if any(l.get('name', '').lower() == list_name.lower() for l in lists.values()):
              return await ctx.send(warning(f"A list named **{list_name}** already exists."))
 
         if list_id is None:
@@ -914,37 +889,113 @@ class QuestionOfTheDay(commands.Cog):
         schedule_id = str(uuid.uuid4()).split('-')[0]
         now_utc = datetime.now(timezone.utc)
         try:
-            # Simplified validation
-            if len(frequency.split()) != 2: raise ValueError
-        except: return await ctx.send(warning("Invalid frequency (e.g. '1 day')."))
-
+            time_unit = frequency.split()
+            if len(time_unit) != 2: raise ValueError
+            amount = int(time_unit[0])
+            unit = time_unit[1].lower().rstrip('s')
+            if unit not in ('minute', 'hour', 'day', 'week'): raise ValueError
+        except (ValueError, IndexError):
+            return await ctx.send(warning("Invalid frequency format. Must be like '1 day' or '3 hours'."))
         temp_schedule = Schedule(id=schedule_id, list_id=list_id, channel_id=channel.id, frequency=frequency, post_time=post_time, next_run_time=now_utc)
-        next_run = self._calculate_next_run_time(temp_schedule, now_utc - timedelta(minutes=1))
+        next_run = self._calculate_next_run_time(temp_schedule, now_utc - timedelta(minutes=1)) 
         new_schedule = Schedule(id=schedule_id, list_id=list_id, channel_id=channel.id, frequency=frequency, post_time=post_time, next_run_time=next_run)
-        
+        serialized_schedule = json.loads(new_schedule.model_dump_json())
         async with self.config.schedules() as schedules:
-            schedules[schedule_id] = json.loads(new_schedule.model_dump_json())
-        await ctx.send(f"Added schedule `{schedule_id}`.")
-
+            schedules[schedule_id] = serialized_schedule
+        time_str = f"at **{post_time} UTC**" if post_time else ""
+        await ctx.send(f"Added new schedule (ID: `{schedule_id}`). Next run: {discord.utils.format_dt(next_run_time, 'R')}.")
+        
     @qotd_schedule_management.command(name="remove")
     async def qotd_schedule_remove(self, ctx: commands.Context, schedule_id: str):
         """Removes a schedule."""
+        schedules_data = await self.config.schedules()
+        if schedule_id not in schedules_data: return await ctx.send(warning(f"Schedule ID `{schedule_id}` not found."))
         async with self.config.schedules() as schedules:
-            if schedule_id in schedules:
-                del schedules[schedule_id]
-                await ctx.send("Schedule removed.")
-            else:
-                await ctx.send("Schedule not found.")
+            del schedules[schedule_id]
+        await ctx.send(f"Successfully removed schedule **`{schedule_id}`**.")
+
+    @qotd_schedule_management.command(name="list")
+    async def qotd_schedule_list(self, ctx: commands.Context):
+        """Lists all active schedules in a summary format."""
+        await self.qotd_schedule_view(ctx) # Alias for view, per request
 
     @qotd_schedule_management.command(name="view")
     async def qotd_schedule_view(self, ctx: commands.Context):
-        """View schedules."""
-        data = await self.config.schedules()
-        if not data: return await ctx.send("No schedules.")
-        embed = discord.Embed(title="Schedules", color=discord.Color.blue())
-        for sid, s in data.items():
-            embed.add_field(name=sid, value=f"List: {s['list_id']}\nChannel: <#{s['channel_id']}>", inline=False)
+        """Displays all configured schedules."""
+        schedules_data = await self.config.schedules()
+        lists_data = await self.config.lists()
+        if not schedules_data: return await ctx.send("No schedules currently configured.")
+        embed = discord.Embed(title="🗓️ Configured QOTD Schedules", color=discord.Color.blue())
+        for schedule_id, schedule_dict in schedules_data.items():
+            try:
+                next_run_time_data = schedule_dict.get('next_run_time')
+                if isinstance(next_run_time_data, str):
+                    dt_obj = datetime.fromisoformat(next_run_time_data)
+                    if dt_obj.tzinfo is None: dt_obj = dt_obj.replace(tzinfo=timezone.utc)
+                    schedule_dict['next_run_time'] = dt_obj
+                schedule = Schedule.model_validate(schedule_dict)
+            except (ValidationError, ValueError):
+                embed.add_field(name=f"ID: `{schedule_id}`", value="Corrupt Data", inline=False)
+                continue
+            list_name = lists_data.get(schedule.list_id, {}).get('name', 'UNKNOWN LIST')
+            channel = self.bot.get_channel(schedule.channel_id)
+            channel_mention = channel.mention if channel else f"ID: {schedule.channel_id} (Missing)"
+            run_time = schedule.next_run_time
+            if run_time.tzinfo is None: run_time = run_time.replace(tzinfo=timezone.utc)
+            next_run_str = discord.utils.format_dt(run_time, "R")
+            time_info = f" at **{schedule.post_time} UTC**" if schedule.post_time else ""
+            field_value = f"**List:** `{list_name}`\n**Channel:** {channel_mention}\n**Frequency:** `{schedule.frequency}`{time_info}\n**Next Run:** {next_run_str}"
+            embed.add_field(name=f"Schedule ID: `{schedule_id}`", value=field_value, inline=False)
         await ctx.send(embed=embed)
+
+    @qotd_schedule_management.group(name="rule")
+    async def qotd_schedule_rule(self, ctx: commands.Context):
+        """Manage date-based rules."""
+        pass
+
+    @qotd_schedule_rule.command(name="addpriority")
+    async def qotd_schedule_rule_add_priority(self, ctx: commands.Context, schedule_id: str, list_id: str, start_date: str, end_date: str):
+        """Adds a priority rule."""
+        schedules_data = await self.config.schedules()
+        if schedule_id not in schedules_data: return await ctx.send(warning("Schedule ID not found."))
+        schedule_dict = schedules_data[schedule_id]
+        schedule_dict['next_run_time'] = datetime.fromisoformat(schedule_dict['next_run_time'])
+        schedule = Schedule.model_validate(schedule_dict)
+        new_rule = ScheduleRule(start_month_day=start_date, end_month_day=end_date, action="use_list", list_id_override=list_id)
+        schedule.rules.append(new_rule)
+        serialized_schedule = json.loads(schedule.model_dump_json())
+        async with self.config.schedules() as schedules:
+            schedules[schedule_id] = serialized_schedule
+        await ctx.send(f"Added priority rule.")
+
+    @qotd_schedule_rule.command(name="addskip")
+    async def qotd_schedule_rule_add_skip(self, ctx: commands.Context, schedule_id: str, start_date: str, end_date: str):
+        """Adds a skip rule."""
+        schedules_data = await self.config.schedules()
+        if schedule_id not in schedules_data: return await ctx.send(warning("Schedule ID not found."))
+        schedule_dict = schedules_data[schedule_id]
+        schedule_dict['next_run_time'] = datetime.fromisoformat(schedule_dict['next_run_time'])
+        schedule = Schedule.model_validate(schedule_dict)
+        new_rule = ScheduleRule(start_month_day=start_date, end_month_day=end_date, action="skip_run")
+        schedule.rules.append(new_rule)
+        serialized_schedule = json.loads(schedule.model_dump_json())
+        async with self.config.schedules() as schedules:
+            schedules[schedule_id] = serialized_schedule
+        await ctx.send(f"Added skip rule.")
+
+    @qotd_schedule_rule.command(name="removerule")
+    async def qotd_schedule_rule_remove(self, ctx: commands.Context, schedule_id: str, rule_id: str):
+        """Removes a rule."""
+        schedules_data = await self.config.schedules()
+        if schedule_id not in schedules_data: return await ctx.send(warning("Schedule ID not found."))
+        schedule_dict = schedules_data[schedule_id]
+        schedule_dict['next_run_time'] = datetime.fromisoformat(schedule_dict['next_run_time'])
+        schedule = Schedule.model_validate(schedule_dict)
+        schedule.rules = [rule for rule in schedule.rules if rule.id != rule_id]
+        serialized_schedule = json.loads(schedule.model_dump_json())
+        async with self.config.schedules() as schedules:
+            schedules[schedule_id] = serialized_schedule
+        await ctx.send(f"Removed rule.")
 
     @qotd.command(name="import")
     async def qotd_import(self, ctx: commands.Context, list_id: str):
@@ -1053,6 +1104,6 @@ class QuestionOfTheDay(commands.Cog):
     async def suggest_qotd_command(self, ctx: commands.Context):
         """Suggest a question."""
         lists_data = await self.config.lists()
-        list_names = [v['name'] for v in lists_data.values() if v['id'] != "suggestions"]
+        list_names = [v['name'] for v in lists_data.values() if v['id'] not in ["suggestions", "unassigned"]]
         view = SuggestionButton(self, list_names)
         await ctx.send("Click below to suggest!", view=view)
