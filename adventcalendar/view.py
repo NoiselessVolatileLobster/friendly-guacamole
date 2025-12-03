@@ -143,7 +143,7 @@ class SetRewardsView(discord.ui.View):
                             else ""
                         ),
                     ),
-                    value=f"+ {reward['amount']} credits",
+                    value=f"+ {reward['amount']} applepods",
                     inline=False,
                 )
             elif reward["type"] == "levelup_xp":
