@@ -123,7 +123,7 @@ class AdventCalendar(Cog):
     async def cog_load(self) -> None:
         await super().cog_load()
         await self.settings.add_commands()
-        currency_name = await bank.get_currency_name(ctx.guild)
+        
         self.loops.append(
             Loop(
                 cog=self,
