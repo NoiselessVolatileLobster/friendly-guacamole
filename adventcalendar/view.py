@@ -19,7 +19,7 @@ class SetRewardsView(discord.ui.View):
 
         self.role.label = _("Role")
         self.temp_role.label = _("Temp Role")
-        self.bank_credits.label = _("Bank Credits")
+        self.bank_credits.label = _("Applepods")
         self.levelup_xp.label = _("LevelUp XP")
         self.custom_reward.label = _("Custom Reward")
         self.message.label = _("Message")
@@ -131,7 +131,7 @@ class SetRewardsView(discord.ui.View):
             elif reward["type"] == "bank_credits":
                 embed.add_field(
                     name=_(
-                        "• Bank Credits Reward ({priority} ; {percent}%{multiplied_priority_percent})"
+                        "• Applepods Reward ({priority} ; {percent}%{multiplied_priority_percent})"
                     ).format(
                         priority=reward["priority"],
                         percent=round(
@@ -323,7 +323,7 @@ class SetRewardsView(discord.ui.View):
             TempRoleRewardModal(self.cog, self.current_day, self)
         )
 
-    @discord.ui.button(label="Bank Credits", style=discord.ButtonStyle.success, row=1)
+    @discord.ui.button(label="Applepods", style=discord.ButtonStyle.success, row=1)
     async def bank_credits(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
@@ -565,11 +565,11 @@ class TempRoleRewardModal(RoleRewardModal):
 
 class BankCreditsRewardModal(PriorityModal):
     def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs, title=_("Bank Credits Reward"))
+        super().__init__(*args, **kwargs, title=_("Applepods Reward"))
 
         self.amount: discord.ui.TextInput = discord.ui.TextInput(
-            label=_("Bank Credits Amount:"),
-            placeholder=_("Enter the bank credits amount to give..."),
+            label=_("Applepods Amount:"),
+            placeholder=_("Enter the applepods amount to give..."),
             min_length=1,
             max_length=10,
             required=True,
@@ -593,7 +593,7 @@ class BankCreditsRewardModal(PriorityModal):
                 raise ValueError()
         except ValueError:
             await interaction.response.send_message(
-                _("The bank credits amount must be a positive number."), ephemeral=True
+                _("The applepods amount must be a positive number."), ephemeral=True
             )
             return
         await interaction.response.defer()
