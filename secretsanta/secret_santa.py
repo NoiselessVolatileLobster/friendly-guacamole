@@ -7,12 +7,10 @@ from typing import Optional, List, Dict, Set
 from datetime import datetime, timezone
 from tabulate import tabulate
 
-# --- UI Components ---
+# --- UI Components for Sign-Up ---
 
 class SecretSantaModal(discord.ui.Modal, title="Secret Santa Sign-Up"):
     """Discord Modal for users to enter their sign-up information."""
-    
-    # User's current username is captured automatically via interaction.user.
     
     country = discord.ui.TextInput(
         label="Your Country",
@@ -115,6 +113,40 @@ class SantaButtonView(discord.ui.View):
         # If open, show the Modal form
         await interaction.response.send_modal(SecretSantaModal(self.cog))
 
+# --- UI Components for Post-Match Actions ---
+
+class SantaActionView(discord.ui.View):
+    """
+    View containing buttons for the Santa to interact anonymously with their recipient.
+    This view is sent via DM after matching.
+    """
+    def __init__(self, cog: "SecretSanta", santa_id: int):
+        # Setting timeout to None allows buttons to be active indefinitely in the DM.
+        super().__init__(timeout=None) 
+        self.cog = cog
+        # Store the ID of the GIVER (Santa) who received this specific DM/View
+        self.santa_id = str(santa_id) 
+
+    @discord.ui.button(label="Report Wishlist Error", style=discord.ButtonStyle.red, emoji="❗")
+    async def report_error_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Red button: Sends an anonymous DM about a wishlist error to the recipient."""
+        await self.cog.send_anonymous_dm(
+            interaction, 
+            self.santa_id, 
+            "I have been asked to tell you there is an error with your Secret Santa 2025 wishlist.", 
+            "Wishlist Error Report"
+        )
+
+    @discord.ui.button(label="Gift is on its way!", style=discord.ButtonStyle.green, emoji="🚚")
+    async def gift_sent_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Green button: Sends an anonymous DM that the gift is in transit to the recipient."""
+        await self.cog.send_anonymous_dm(
+            interaction, 
+            self.santa_id, 
+            "I have been asked to tell you your Secret Santa 2025 gift is on its way!", 
+            "Gift Sent Notification"
+        )
+
 # --- Main Cog ---
 
 class SecretSanta(commands.Cog):
@@ -137,6 +169,7 @@ class SecretSanta(commands.Cog):
             "signups": {},     # {user_id_str: {"country": "...", "username": "...", "wishlist": "...", "timestamp": float}}
             "matches": {},     # {santa_user_id_str: recipient_user_id_str}
             "dm_confirm": {},  # {santa_user_id_str: True/False}
+            "log_channel_id": None, # NEW: Channel to log anonymous actions
         }
         
         self.config.register_global(**default_global)
@@ -151,6 +184,87 @@ class SecretSanta(commands.Cog):
         if message_id and channel_id:
             # The bot needs to be aware of the view object to process interactions
             self.bot.add_view(SantaButtonView(self))
+
+    # --- Helper Functions for Anonymous Actions and Logging ---
+
+    async def _log_action(self, guild: discord.Guild, title: str, status: str, santa: discord.User, recipient: discord.User):
+        """Helper function to log action status to the configured channel."""
+        log_channel_id = await self.config.log_channel_id()
+        if not log_channel_id:
+            return
+
+        channel = guild.get_channel(log_channel_id)
+        if not channel:
+            # If the channel is gone, clear the config setting
+            await self.config.log_channel_id.set(None) 
+            return
+
+        embed = discord.Embed(
+            title=f"Secret Santa Action Log: {title}",
+            description=f"Action attempted by **{santa.name}** (`{santa.id}`).",
+            color=discord.Color.red() if status.startswith("FAILED") else discord.Color.green(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.add_field(name="Giver (Santa)", value=f"{santa.mention}\n`{santa.id}`", inline=True)
+        embed.add_field(name="Recipient", value=f"{recipient.mention}\n`{recipient.id}`", inline=True)
+        embed.add_field(name="Status", value=status, inline=False)
+        
+        try:
+            await channel.send(embed=embed)
+        except (discord.Forbidden, discord.HTTPException):
+            # Cannot send to log channel
+            pass
+
+    async def send_anonymous_dm(self, interaction: discord.Interaction, santa_id_str: str, message_content: str, log_title: str):
+        """Handles the anonymous DM and logging process for Santa actions."""
+        
+        # Defer the interaction response to prevent timeout, showing "Bot is thinking..."
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        
+        matches = await self.config.matches()
+        signups = await self.config.signups()
+        
+        # 1. Get Recipient ID
+        recipient_id_str = matches.get(santa_id_str)
+        if not recipient_id_str:
+            await interaction.followup.send("❌ Could not find a match for you. Has matching been run?", ephemeral=True)
+            return
+
+        # 2. Get User Objects
+        santa = self.bot.get_user(int(santa_id_str))
+        recipient = self.bot.get_user(int(recipient_id_str))
+
+        if not santa or not recipient:
+            await interaction.followup.send("❌ Recipient or Santa user could not be found. They might have left the server.", ephemeral=True)
+            return
+            
+        recipient_username = signups.get(recipient_id_str, {}).get("username", recipient.name)
+
+        # 3. Send Anonymous DM
+        log_status = ""
+        try:
+            await recipient.send(f"🎅 **Secret Santa 2025 Notification**\n\n{message_content}")
+            log_status = "SUCCESS"
+            await interaction.followup.send(
+                f"✅ Your message for **{recipient_username}** has been sent anonymously.", 
+                ephemeral=True
+            )
+        except discord.Forbidden:
+            log_status = "FAILED (DMs blocked)"
+            await interaction.followup.send(
+                f"❌ Failed to send DM to **{recipient_username}**. They likely have DMs disabled.", 
+                ephemeral=True
+            )
+        except Exception as e:
+            log_status = f"FAILED (Error: {e})"
+            await interaction.followup.send(
+                f"❌ An unknown error occurred while trying to send the DM to **{recipient_username}**.", 
+                ephemeral=True
+            )
+            
+        # 4. Log the action
+        await self._log_action(interaction.guild, log_title, log_status, santa, recipient)
+
 
     # --- Admin Commands ---
 
@@ -290,6 +404,16 @@ class SecretSanta(commands.Cog):
             f"The new message ID (`{message.id}`) has been stored."
         )
 
+    @ss.command(name="setlogchannel")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def ss_set_log_channel(self, ctx: commands.Context, channel: discord.TextChannel):
+        """Sets the channel where anonymous Secret Santa actions (like gift sent) will be logged."""
+        await self.config.log_channel_id.set(channel.id)
+        await ctx.send(
+            f"✅ Anonymous action log channel set to {channel.mention}. "
+            "Successful and failed anonymous communications will be logged here."
+        )
+
     @ss.command(name="open")
     @commands.admin_or_permissions(manage_guild=True)
     async def ss_open_signup(self, ctx: commands.Context):
@@ -407,12 +531,18 @@ class SecretSanta(commands.Cog):
             
             if santa:
                 try:
+                    # Send the DM with the new SantaActionView
+                    action_view = SantaActionView(self, santa.id)
                     await santa.send(
                         f"🎉 **Your Secret Santa Recipient!** 🎉\n\n"
                         f"Your recipient is **{recipient_username}**.\n"
                         f"Their location is **{recipient_country}**.\n"
                         f"Their Wishlist: <{recipient_wishlist}>\n\n" # Uses <URL> format for clickability
-                        "It is important that this is kept a secret! Happy gifting!"
+                        "It is important that this is kept a secret! Happy gifting!\n\n"
+                        "--- **Anonymous Gifting Actions** ---\n"
+                        "Use the buttons below to communicate anonymously with your recipient via the bot. "
+                        "These messages are logged to the configured admin channel.",
+                        view=action_view # Add the view here
                     )
                     dm_success_count += 1
                     dm_confirm[santa_id_str] = True
@@ -431,6 +561,55 @@ class SecretSanta(commands.Cog):
             f"Successful DMs: **{dm_success_count}/{len(participant_ids)}**\n"
             "Use `[p]secretsanta listmatches` to view the results and DM confirmations."
         )
+
+    @ss.command(name="sendactions")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def ss_send_actions(self, ctx: commands.Context):
+        """
+        Sends a dedicated DM with ONLY the Anonymous Gifting Action buttons
+        to all users who have been successfully matched (Santas).
+        
+        This is useful for providing the buttons to users matched before this feature existed.
+        """
+        matches = await self.config.matches()
+        
+        if not matches:
+            return await ctx.send("❌ No matches found. You must run `[p]secretsanta match` first.")
+            
+        santa_ids = list(matches.keys())
+        await ctx.send(f"🔄 Attempting to send anonymous action buttons to **{len(santa_ids)}** matched Santas...")
+        
+        success_count = 0
+        fail_count = 0
+        
+        for santa_id_str in santa_ids:
+            santa = self.bot.get_user(int(santa_id_str))
+            
+            if santa:
+                try:
+                    action_view = SantaActionView(self, santa.id)
+                    await santa.send(
+                        "--- **Anonymous Gifting Actions Update** ---\n\n"
+                        "The Secret Santa bot has been updated with new anonymous communication features. "
+                        "Use the buttons below to send anonymous status updates or requests to your recipient. "
+                        "These actions will be logged by the server administration.",
+                        view=action_view
+                    )
+                    success_count += 1
+                except discord.Forbidden:
+                    fail_count += 1
+                except Exception:
+                    fail_count += 1
+            else:
+                # User left server or bot can't find them
+                fail_count += 1
+                
+        await ctx.send(
+            f"📊 **Anonymous Action Button Distribution Complete**\n"
+            f"✅ Successfully Sent: **{success_count}**\n"
+            f"❌ Failed (DMs blocked or user unavailable): **{fail_count}**"
+        )
+
 
     @ss.command(name="retrydms")
     @commands.admin_or_permissions(manage_guild=True)
@@ -467,12 +646,18 @@ class SecretSanta(commands.Cog):
             
             if santa:
                 try:
+                    # Resend the DM with the new SantaActionView
+                    action_view = SantaActionView(self, santa.id)
                     await santa.send(
                         f"🎉 **Your Secret Santa Recipient!** 🎉\n\n"
                         f"Your recipient is **{recipient_username}**.\n"
                         f"Their location is **{recipient_country}**.\n"
                         f"Their Wishlist: <{recipient_wishlist}>\n\n"
-                        "It is important that this is kept a secret! Happy gifting!"
+                        "It is important that this is kept a secret! Happy gifting!\n\n"
+                        "--- **Anonymous Gifting Actions** ---\n"
+                        "Use the buttons below to communicate anonymously with your recipient via the bot. "
+                        "These messages are logged to the configured admin channel.",
+                        view=action_view
                     )
                     dm_confirm[santa_id_str] = True
                     retry_success += 1
