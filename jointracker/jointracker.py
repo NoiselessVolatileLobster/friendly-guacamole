@@ -234,11 +234,9 @@ class JoinTracker(commands.Cog):
         if count < 0:
             return await ctx.send("The rejoin count must be zero or a positive number.")
 
-        # --- FINAL FIX: Use the top-level Config.member method with the guild= keyword argument. ---
-        # This properly scopes the member data to the guild without relying on the target object
-        # having a 'guild' attribute (AttributeError: 'User' object has no attribute 'guild') 
-        # or the guild object having a nested 'member' method (AttributeError: 'member' is not a valid registered Group).
-        config_member = self.config.member(target, guild=ctx.guild)
+        # --- FINAL FIX: Use raw IDs for explicit scoping (member(user_id, guild_id)). ---
+        # This bypasses all object-attribute checking and keyword argument issues.
+        config_member = self.config.member(target.id, ctx.guild.id)
         
         # 1. Set the rejoin count
         await config_member.rejoin_count.set(count)
