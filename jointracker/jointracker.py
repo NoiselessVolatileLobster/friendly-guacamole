@@ -1,395 +1,306 @@
+import re
 import discord
+from discord.ui import View, Button
 from redbot.core import Config, commands
 from redbot.core.commands import Context
 from redbot.core import checks
-from redbot.core.utils.chat_formatting import humanize_list
 from datetime import datetime, timezone
-from typing import Union # Required for Union[discord.Member, discord.User]
+from typing import Optional
 
-# Define the default configuration structure for the cog
 DEFAULT_GUILD = {
     "welcome_channel_id": None,
-    # Store role ID for mention in the welcome message
-    "welcome_role_id": None, 
-    # Customizable message template for REJOINS (supports {user}, {role}, {count}, and {last_join_date})
-    "welcome_message": "Welcome back, {user}! We're glad you're here for your {count} time. You were last here on {last_join_date}. Please check out {role} for next steps.",
-    # Customizable message template for FIRST TIME JOINS (supports {user} and {role})
-    "first_join_message": "Welcome, {user}! We are thrilled to have you here for the first time. Check out {role} to get started.",
-}
-DEFAULT_MEMBER = {
-    "rejoin_count": 0,
-    "last_join_date": None,  # Timestamp of when they last joined the server
+    "welcome_role_id": None,
+    "welcome_message": (
+        "Welcome back, {user}! We're glad you're here for your {count} time. "
+        "You were last here on {last_join_date}. Please check out {role}."
+    ),
+    "first_join_message": (
+        "Welcome, {user}! We are thrilled to have you here for the first time. "
+        "Check out {role} to get started."
+    ),
 }
 
+DEFAULT_MEMBER = {
+    "rejoin_count": 0,
+    "last_join_date": None,
+}
+
+
+class PaginatorView(View):
+    def __init__(self, ctx: Context, pages: list[str]):
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.pages = pages
+        self.index = 0
+        self.message = None
+
+    async def send(self):
+        self.message = await self.ctx.send(f"```{self.pages[0]}```", view=self)
+
+    async def interaction_check(self, interaction: discord.Interaction):
+        return interaction.user.id == self.ctx.author.id
+
+    @discord.ui.button(label="Prev", style=discord.ButtonStyle.secondary)
+    async def prev_page(self, interaction: discord.Interaction, button: Button):
+        if self.index > 0:
+            self.index -= 1
+        await interaction.response.edit_message(
+            content=f"```{self.pages[self.index]}```", view=self
+        )
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary)
+    async def next_page(self, interaction: discord.Interaction, button: Button):
+        if self.index < len(self.pages) - 1:
+            self.index += 1
+        await interaction.response.edit_message(
+            content=f"```{self.pages[self.index]}```", view=self
+        )
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger)
+    async def close(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.edit_message(view=None)
+        self.stop()
 class JoinTracker(commands.Cog):
-    """
-    Tracks member join dates, calculates rejoin counts, and provides customizable welcome messages.
-    """
+    """Tracks joins, rejoins, and generates welcome messages."""
 
     def __init__(self, bot):
         self.bot = bot
-        # Initialize configuration using Red's Config system
-        self.config = Config.get_conf(self, identifier=148008422401290145, force_registration=True)
+        self.config = Config.get_conf(self, identifier=148008422401290145)
         self.config.register_guild(**DEFAULT_GUILD)
         self.config.register_member(**DEFAULT_MEMBER)
 
-    def _get_ordinal(self, n: int) -> str:
-        """Converts an integer to its ordinal string representation (1 -> 1st, 2 -> 2nd, etc.)."""
+    # Utility
+    def ordinal(self, n: int) -> str:
         if 10 <= n % 100 <= 20:
-            return str(n) + 'th'
-        else:
-            return str(n) + {1 : 'st', 2 : 'nd', 3 : 'rd'}.get(n % 10, 'th')
+            return f"{n}th"
+        return f"{n}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th') }"
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        """Handle new members joining the guild."""
         if member.bot:
             return
 
-        guild = member.guild
-        member_data = await self.config.member(member).all()
-        guild_settings = await self.config.guild(guild).all() # Fetch all guild settings
-        
-        # Determine if this is a first-time join (no previous join date stored AND rejoin count is 0)
-        is_first_join = member_data["last_join_date"] is None and member_data["rejoin_count"] == 0
-        rejoin_count = member_data["rejoin_count"]
+        data = await self.config.member(member).all()
+        settings = await self.config.guild(member.guild).all()
 
-        # Store the old last_join_date before updating it
-        previous_join_date_iso = member_data["last_join_date"]
+        first = data["last_join_date"] is None and data["rejoin_count"] == 0
+        rejoin = data["rejoin_count"]
+        prev_date = data["last_join_date"]
 
-        # 1. Update/Calculate Rejoin Count
-        if not is_first_join:
-            # They are rejoining, increment the counter
-            rejoin_count += 1
-            await self.config.member(member).rejoin_count.set(rejoin_count)
+        # Update counters
+        if not first:
+            rejoin += 1
+            await self.config.member(member).rejoin_count.set(rejoin)
 
-        # 2. Store the current join date
-        join_date_iso = member.joined_at.astimezone(timezone.utc).isoformat()
-        await self.config.member(member).last_join_date.set(join_date_iso)
-        
-        # 3. Send Welcome Message
-        channel_id = guild_settings["welcome_channel_id"]
+        if member.joined_at:
+            await self.config.member(member).last_join_date.set(
+                member.joined_at.astimezone(timezone.utc).isoformat()
+            )
 
-        if channel_id:
-            channel = guild.get_channel(channel_id)
-            if channel:
-                
-                role_id = guild_settings["welcome_role_id"]
-                
-                # Prepare role mention
-                role_mention = ""
-                if role_id:
-                    role = guild.get_role(role_id)
-                    
-                    if role:
-                        # Role exists: use the proper mention
-                        role_mention = role.mention
-                    else:
-                        # Role is missing: Fallback to the raw mention string format 
-                        role_mention = f"<@&{role_id}>"
-
-                if is_first_join:
-                    # Case A: First Time Join
-                    msg_template = guild_settings["first_join_message"]
-                    template_vars = {
-                        "user": member.mention,
-                        "role": role_mention,
-                    }
-                else:
-                    # Case B: Rejoin
-                    msg_template = guild_settings["welcome_message"]
-                    
-                    # Calculate total times here (rejoin_count + 1 is the total times here)
-                    count_int = rejoin_count + 1 
-                    count_display = self._get_ordinal(count_int)
-                    
-                    # Prepare the previous join date for the message
-                    if previous_join_date_iso:
-                        # Format the previous join date (only show date for brevity in message)
-                        prev_date = datetime.fromisoformat(previous_join_date_iso).strftime('%Y-%m-%d')
-                    else:
-                        prev_date = "an unknown date"
-                        
-                    template_vars = {
-                        "user": member.mention,
-                        "role": role_mention,
-                        "count": count_display,
-                        "last_join_date": prev_date, # New variable
-                    }
-
-                # Format the message using the template variables
-                try:
-                    formatted_message = msg_template.format(**template_vars)
-                except KeyError:
-                    # Fallback message if the template is broken or variables are missing
-                    if is_first_join:
-                        formatted_message = f"Welcome, {member.mention}! (Error formatting custom first-join message.)"
-                    else:
-                        formatted_message = (
-                            f"Welcome back, {member.mention}! This is your {rejoin_count + 1} time "
-                            f"joining the server. (Error formatting custom rejoin message.)"
-                        )
-                
-                # Explicitly allow mentions
-                allowed_mentions = discord.AllowedMentions(
-                    users=True, 
-                    roles=True,
-                    everyone=False,
-                )
-
-                # Send the customized message with explicit allowed mentions
-                await channel.send(formatted_message, allowed_mentions=allowed_mentions)
-
-    @commands.Cog.listener()
-    async def on_member_remove(self, member: discord.Member):
-        """
-        Handle members leaving. No explicit action is needed here.
-        """
-        if member.bot:
+        # Get welcome channel
+        channel = member.guild.get_channel(settings["welcome_channel_id"])
+        if not channel:
             return
-        pass
-        
+
+        # Role mention
+        role_mention = ""
+        role_id = settings["welcome_role_id"]
+        if role_id:
+            role = member.guild.get_role(role_id)
+            role_mention = role.mention if role else f"<@&{role_id}>"
+
+        # Message formatting
+        if first:
+            tmpl = settings["first_join_message"]
+            fields = {"user": member.mention, "role": role_mention}
+        else:
+            tmpl = settings["welcome_message"]
+            prev = (
+                datetime.fromisoformat(prev_date).strftime("%Y-%m-%d")
+                if prev_date
+                else "an unknown date"
+            )
+            fields = {
+                "user": member.mention,
+                "role": role_mention,
+                "count": self.ordinal(rejoin + 1),
+                "last_join_date": prev,
+            }
+
+        try:
+            msg = tmpl.format(**fields)
+        except Exception:
+            msg = f"Welcome back, {member.mention}!"
+
+        await channel.send(msg)
     @commands.group(name="jointracker", aliases=["jt"])
     @checks.admin_or_permissions(manage_guild=True)
     async def jointracker(self, ctx: Context):
-        """Manage the member join tracking settings."""
         pass
 
-    @jointracker.command(name="setchannel")
-    async def jointracker_setchannel(self, ctx: Context, channel: discord.TextChannel = None):
-        """
-        Sets the channel where "Welcome" messages are sent.
-        
-        If no channel is provided, the current setting will be cleared.
-        """
-        if channel:
-            await self.config.guild(ctx.guild).welcome_channel_id.set(channel.id)
-            await ctx.send(f"The welcome channel has been set to {channel.mention}.")
-        else:
-            await self.config.guild(ctx.guild).welcome_channel_id.set(None)
-            await ctx.send("The welcome channel has been cleared. No automated welcome messages will be sent.")
-
-    @jointracker.command(name="setwelcomerole")
-    async def jointracker_setwelcomerole(self, ctx: Context, role: discord.Role = None):
-        """
-        Sets the role to be mentioned using the {role} variable in welcome messages.
-        
-        If no role is provided, the current setting will be cleared.
-        """
-        if role:
-            await self.config.guild(ctx.guild).welcome_role_id.set(role.id)
-            await ctx.send(f"The welcome role to mention has been set to **{role.name}**.")
-        else:
-            await self.config.guild(ctx.guild).welcome_role_id.set(None)
-            await ctx.send("The welcome role mention has been cleared.")
-
-    @jointracker.command(name="setfirstjoinmsg")
-    async def jointracker_setfirstjoinmsg(self, ctx: Context, *, message: str):
-        """
-        Sets the custom "First time join" message template.
-        
-        Use the following variables:
-        - {user}: The member mention.
-        - {role}: The mention of the configured welcome role.
-        
-        Example: [p]jointracker setfirstjoinmsg Hello {user}! Check out {role}.
-        """
-        await self.config.guild(ctx.guild).first_join_message.set(message)
-        await ctx.send(
-            "The custom **first time join** message template has been set to:\n"
-            f"```\n{message}\n```\n"
-            "Ensure you use `{user}` and `{role}` for dynamic content."
+    @jointracker.command()
+    async def setchannel(self, ctx: Context, channel: Optional[discord.TextChannel] = None):
+        await self.config.guild(ctx.guild).welcome_channel_id.set(
+            channel.id if channel else None
         )
+        await ctx.send("Welcome channel updated." if channel else "Welcome channel cleared.")
 
-    @jointracker.command(name="setwelcomemsg")
-    async def jointracker_setwelcomemsg(self, ctx: Context, *, message: str):
-        """
-        Sets the custom "Welcome back" message template for returning users.
-        
-        Use the following variables:
-        - {user}: The member mention.
-        - {role}: The mention of the configured welcome role.
-        - {count}: The total number of times the user has joined (e.g., 2nd, 3rd, 4th...).
-        - {last_join_date}: The date (YYYY-MM-DD) the user was last seen in the server.
-        
-        Example: [p]jointracker setwelcomemsg Welcome back, {user}! You were last here on {last_join_date}!
-        """
-        await self.config.guild(ctx.guild).welcome_message.set(message)
-        await ctx.send(
-            "The custom **welcome back** message template has been set to:\n"
-            f"```\n{message}\n```\n"
-            "Ensure you use `{user}`, `{role}`, `{count}`, and `{last_join_date}` for dynamic content."
+    @jointracker.command()
+    async def setwelcomerole(self, ctx: Context, role: Optional[discord.Role] = None):
+        await self.config.guild(ctx.guild).welcome_role_id.set(
+            role.id if role else None
         )
+        await ctx.send("Welcome role updated." if role else "Welcome role cleared.")
 
-    @jointracker.command(name="setrejoins")
-    async def jointracker_setrejoins(self, ctx: Context, target: Union[discord.Member, discord.User], count: int):
-        """
-        Overrides the rejoin counter for a specific member/user.
+    @jointracker.command()
+    async def setfirstjoinmsg(self, ctx: Context, *, msg: str):
+        await self.config.guild(ctx.guild).first_join_message.set(msg)
+        await ctx.send("First join message updated.")
 
-        <target>: The member (mention/ID) or user (ID) whose counter you want to change.
-        <count>: The new number of times they have rejoined (e.g., 0 for a first-timer).
+    @jointracker.command()
+    async def setwelcomemsg(self, ctx: Context, *, msg: str):
+        await self.config.guild(ctx.guild).welcome_message.set(msg)
+        await ctx.send("Rejoin message updated.")
 
-        This works even if the user is not currently in the server.
-        """
+    @jointracker.command()
+    async def setrejoins(self, ctx: Context, target: str, count: int):
+        """Set rejoins by name OR raw user ID (even if not in server)."""
         if count < 0:
-            return await ctx.send("The rejoin count must be zero or a positive number.")
+            return await ctx.send("Count must be non-negative.")
 
-        # --- FINAL FIX: Use the correct positional argument structure for Config.member() ---
-        
-        if isinstance(target, discord.Member):
-            # 1. If it's a Member object, use the object directly (Guild context is implicit).
-            config_member = self.config.member(target)
-            
-            # Use their current join date
-            join_date_iso = target.joined_at.astimezone(timezone.utc).isoformat()
-            await config_member.last_join_date.set(join_date_iso)
-            
-        elif isinstance(target, discord.User):
-            # 2. If it's a User object, we MUST pass the Guild object as the second positional argument.
-            # This satisfies the requirement for guild context without using the rejected 'guild=' keyword.
-            config_member = self.config.member(target, ctx.guild)
-            
-            # Clear/set last_join_date to None since they are not currently in the server
-            await config_member.last_join_date.set(None)
-            
+        # Detect raw user ID
+        m = re.search(r"(\\d{17,20})", target)
+        if m:
+            uid = int(m.group(1))
+            member = ctx.guild.get_member(uid)
+            try:
+                user = member or self.bot.get_user(uid) or await self.bot.fetch_user(uid)
+            except Exception:
+                user = discord.Object(id=uid)
+            target_obj = user
         else:
-            return await ctx.send("Could not determine the target user type.")
+            member = ctx.guild.get_member_named(target)
+            if not member:
+                return await ctx.send("Invalid target.")
+            target_obj = member
 
-        # 3. Set the rejoin count (Common to both branches)
-        await config_member.rejoin_count.set(count)
-             
-        await ctx.send(
-            f"Successfully set the rejoin counter for {target.display_name} (ID: {target.id}) to **{count}**."
-        )
+        await self.config.member(target_obj).rejoin_count.set(count)
 
-    @jointracker.command(name="populate")
-    async def jointracker_populate(self, ctx: Context):
-        """
-        Sets the initial join count to 1 for all members currently in the server 
-        that do not have existing tracking data.
-        """
+        # Update join date if applicable
+        if isinstance(target_obj, discord.Member) and target_obj.joined_at:
+            await self.config.member(target_obj).last_join_date.set(
+                target_obj.joined_at.astimezone(timezone.utc).isoformat()
+            )
+        else:
+            await self.config.member(target_obj).last_join_date.set(None)
+
+        await ctx.send(f"Updated rejoins for {target_obj.id} to {count}.")
+
+    @jointracker.command()
+    async def populate(self, ctx: Context):
+        """Assign missing members a join count of 1."""
         await ctx.defer()
-        guild = ctx.guild
-        members_updated = 0
-        
-        # Get all members' config data in one go
-        all_member_data = await self.config.all_members(guild)
+        data = await self.config.all_members(ctx.guild)
+        updated = 0
 
-        for member in guild.members:
+        for member in ctx.guild.members:
             if member.bot:
                 continue
 
-            # Check if we have join date data for this member
-            # If the member ID is not in our data structure, or the date is missing/None
-            member_id_str = str(member.id)
-            if member_id_str not in all_member_data or all_member_data[member_id_str].get("last_join_date") is None:
-                # Populate the initial join date (which will be the date they joined the server)
-                join_date_iso = member.joined_at.astimezone(timezone.utc).isoformat()
-                
-                # Set rejoin_count to 0 (meaning 1 total join)
+            mdata = data.get(str(member.id), {})
+            if mdata.get("rejoin_count") is None:
                 await self.config.member(member).rejoin_count.set(0)
-                await self.config.member(member).last_join_date.set(join_date_iso)
-                
-                members_updated += 1
+                if member.joined_at:
+                    await self.config.member(member).last_join_date.set(
+                        member.joined_at.astimezone(timezone.utc).isoformat()
+                    )
+                updated += 1
 
-        await ctx.send(
-            f"Successfully checked and initialized tracking data for **{members_updated}** untracked members."
-        )
-
-    @jointracker.command(name="list")
-    async def jointracker_list(self, ctx: Context):
-        """
-        Generates a table of all recorded user join/rejoin history, paginating if needed.
-        
-        Displays User ID, Username, Number of join times, and Last joined date.
-        """
+        await ctx.send(f"Populated {updated} members.")
+    @jointracker.command()
+    async def list(self, ctx: Context):
         await ctx.defer()
         guild = ctx.guild
-        all_member_data = await self.config.all_members(guild)
-        
-        data_rows = []
-        
-        # Define padding for columns
-        USER_ID_PAD = 18
-        USERNAME_PAD = 20
-        JOINS_PAD = 5
-        DATE_PAD = 10
-        
-        # Create header and separator
-        header_text = "{:<{uid}} | {:<{un}} | {:<{joins}} | {:<{date}}".format(
-            "USER ID", "USERNAME", "JOINS", "LAST JOINED",
-            uid=USER_ID_PAD, un=USERNAME_PAD, joins=JOINS_PAD, date=DATE_PAD
-        )
-        separator_text = "-" * len(header_text)
-        
-        # Gather all data rows
-        for user_id_str, data in all_member_data.items():
-            user_id = int(user_id_str)
-            
-            # --- Get Username ---
-            user = self.bot.get_user(user_id)
-            username = user.name if user else '?'
-            
-            # Truncate username if too long for clean display
-            if len(username) > USERNAME_PAD:
-                username = username[:USERNAME_PAD - 3] + '...'
-            
-            # --- Calculate Joins ---
-            rejoin_count = data.get("rejoin_count", 0)
-            times_here = rejoin_count + 1
-            count_display = str(times_here)
-            
-            # --- Get Last Joined Date ---
-            last_join_date_iso = data.get("last_join_date")
-            if last_join_date_iso:
+        data = await self.config.all_members(guild)
+
+        ids = set(int(k) for k in data.keys()) | {
+            m.id for m in guild.members if not m.bot
+        }
+
+        rows = []
+        for uid in sorted(ids):
+            d = data.get(str(uid), {})
+            count = d.get("rejoin_count", 0)
+            iso = d.get("last_join_date")
+
+            member = guild.get_member(uid)
+            if member:
+                name = member.display_name
+            else:
                 try:
-                    # Format the date to YYYY-MM-DD
-                    date_display = datetime.fromisoformat(last_join_date_iso).strftime('%Y-%m-%d')
-                except ValueError:
-                    date_display = '?'
+                    user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
+                    name = user.name
+                except Exception:
+                    name = "?"
+
+            last = iso or "?"
+            rows.append((str(uid), name, last, str(count + 1)))
+
+        # Build pages
+        header = f"{'User ID':<20} {'Name':<30} {'Last Join':<20} Joined\n"
+        sep = "-" * 80 + "\n"
+
+        pages = []
+        page = header + sep
+        count = 0
+
+        for uid, name, last, joined in rows:
+            page += f"{uid:<20} {name:<30} {last:<20} {joined}\n"
+            count += 1
+            if count >= 12:
+                pages.append(page)
+                page = header + sep
+                count = 0
+
+        if count:
+            pages.append(page)
+
+        view = PaginatorView(ctx, pages)
+        await view.send()
+
+    @jointracker.command()
+    async def downloadcsv(self, ctx: Context):
+        """Download the full join tracker data as CSV."""
+        import csv
+        from io import StringIO
+
+        guild = ctx.guild
+        data = await self.config.all_members(guild)
+
+        ids = set(int(k) for k in data) | {m.id for m in guild.members if not m.bot}
+
+        buffer = StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(["User ID", "Name", "Last Join Date", "Times Joined"])
+
+        for uid in sorted(ids):
+            d = data.get(str(uid), {})
+            count = d.get("rejoin_count", 0)
+            iso = d.get("last_join_date")
+
+            member = guild.get_member(uid)
+            if member:
+                name = member.display_name
             else:
-                date_display = '?'
-                
-            # Create the data row
-            row = "{:<{uid}} | {:<{un}} | {:<{joins}} | {:<{date}}".format(
-                user_id_str, username, count_display, date_display,
-                uid=USER_ID_PAD, un=USERNAME_PAD, joins=JOINS_PAD, date=DATE_PAD
-            )
-            data_rows.append(row)
+                try:
+                    user = self.bot.get_user(uid) or await self.bot.fetch_user(uid)
+                    name = user.name
+                except Exception:
+                    name = "?"
 
+            writer.writerow([uid, name, iso or "?", count + 1])
 
-        if not data_rows:
-            return await ctx.send("No user join history records found for this server.")
-
-        # --- Dynamic Pagination Logic ---
-        # Discord message limit is 2000. We use 1900 to safely account for wrappers (` ``` ` and page title).
-        MAX_MESSAGE_LENGTH = 1900 
-        current_page_content = [header_text, separator_text]
-        page_number = 1
-        
-        async def send_page(content_list, page_num):
-            message_content = "\n".join(content_list)
-            # Send the current page with title and code block wrapper
-            await ctx.send(
-                f"**Join Tracker Report (Page {page_num})**\n"
-                f"```{message_content}```"
-            )
-
-        for row in data_rows:
-            # Check length: current content + new row + newline
-            test_content = "\n".join(current_page_content + [row])
-            
-            if len(test_content) > MAX_MESSAGE_LENGTH:
-                # If adding the new row exceeds the limit, send the current page
-                await send_page(current_page_content, page_number)
-                
-                # Start a new page with the header and the row that caused the overflow
-                page_number += 1
-                current_page_content = [header_text, separator_text, row]
-            else:
-                # Otherwise, add the row to the current page
-                current_page_content.append(row)
-
-        # Send the final, remaining page
-        if len(current_page_content) > 2: # Check if there is data beyond the header/separator
-            await send_page(current_page_content, page_number)
+        buffer.seek(0)
+        await ctx.send(
+            file=discord.File(buffer, filename="jointracker.csv")
+        )
