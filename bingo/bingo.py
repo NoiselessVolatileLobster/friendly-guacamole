@@ -5,13 +5,13 @@ import re
 import sys
 import textwrap
 from io import BytesIO
-from typing import List, Optional, Pattern, Tuple, Dict, Any, Callable
+from typing import List, Optional, Pattern, Tuple, Dict, Any
 
 import aiohttp
 import discord
 from PIL import Image, ImageColor, ImageDraw, ImageFont
 from red_commons.logging import getLogger
-from redbot.core import Config, commands, bank # <-- ADDED bank IMPORT
+from redbot.core import Config, commands, bank
 from redbot.core.data_manager import bundled_data_path, cog_data_path
 
 from .converter import Stamp
@@ -31,9 +31,30 @@ GAME_TYPES: Dict[str, str] = {
     "COVERALL": "All 25 squares must be stamped (Blackout).",
 }
 
+class NewGameView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=120)
+        self.cog = cog
+
+    @discord.ui.button(label="Start New Game & Deal Cards", style=discord.ButtonStyle.success, emoji="🎲")
+    async def start_new_game(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Reset the game state (new seed, clear cards)
+        await self.cog.reset_game_state(interaction.guild)
+        
+        # Disable the button so it can't be clicked again
+        button.disabled = True
+        button.label = "Game Started"
+        button.style = discord.ButtonStyle.secondary
+        await interaction.message.edit(view=self)
+        
+        # Announce the new game
+        await interaction.response.send_message(
+            f"🔄 **{interaction.user.display_name}** has started a new game! All cards have been reset and reshuffled.",
+        )
+        self.stop()
 
 class Bingo(commands.Cog):
-    __version__ = "1.2.5" # Version bump for direct bank API fix
+    __version__ = "1.2.6"
     __author__ = ["TrustyJAID"]
 
     def __init__(self, bot):
@@ -64,8 +85,11 @@ class Bingo(commands.Cog):
         """
         return
 
-    # Removed _get_deposit_function, _get_currency_name_function, and get_currency_name
-    # as we now use the standard 'bank' object from redbot.core.
+    async def reset_game_state(self, guild: discord.Guild):
+        """Resets the game state: new seed and clears member stamps."""
+        new_seed = random.randint(100000, 999999)
+        await self.config.guild(guild).seed.set(new_seed)
+        await self.config.clear_all_members(guild=guild)
 
     @commands.group(name="bingoset")
     @commands.mod_or_permissions(manage_messages=True)
@@ -346,12 +370,11 @@ class Bingo(commands.Cog):
         Starts a new game of bingo by resetting all player cards and shuffling
         the tiles for everyone using a new random seed.
         """
-        # 1. Generate a new random 6-digit seed
-        new_seed = random.randint(100000, 999999)
-        await self.config.guild(ctx.guild).seed.set(new_seed)
+        await self.reset_game_state(ctx.guild)
         
-        # 2. Reset all player cards
-        await self.config.clear_all_members(guild=ctx.guild)
+        # Manually generate seed for message if needed, but it's set in reset_game_state
+        # fetching it just for display
+        new_seed = await self.config.guild(ctx.guild).seed()
         
         await ctx.send(
             f"🎉 Starting a new bingo game! All player cards have been reset, and a new card arrangement has been generated using seed `{new_seed}`."
@@ -520,6 +543,8 @@ class Bingo(commands.Cog):
         stamps = await self.config.member(ctx.author).stamps()
         bank_prize = await self.config.guild(ctx.guild).bank_prize()
         msg = None
+        win_embed = None
+        view = None
         
         # Step 1: Handle stamping/unstamping logic
         if stamp is not None:
@@ -535,10 +560,13 @@ class Bingo(commands.Cog):
             
         # Step 2: Check for a BINGO win
         if await self.check_stamps(stamps, ctx.guild):
-            if msg:
-                msg += f"\n🎉 {ctx.author.mention} has a **BINGO!**"
-            else:
-                msg = f"🎉 {ctx.author.mention} has a **BINGO!**"
+            # Create Win Embed
+            win_embed = discord.Embed(
+                title="🚨 BINGO! 🚨", 
+                description=f"Congratulations **{ctx.author.display_name}**! You have won the game!", 
+                color=discord.Color.green()
+            )
+            win_embed.set_thumbnail(url=ctx.author.display_avatar.url)
             
             # --- STANDARD BANK INTEGRATION LOGIC ---
             if bank_prize > 0:
@@ -546,12 +574,16 @@ class Bingo(commands.Cog):
                     # Using the standard Red V3 bank module, as confirmed by your working snippet
                     await bank.deposit_credits(ctx.author, bank_prize)
                     currency = await bank.get_currency_name(ctx.guild)
-                    msg += f" (and won **{bank_prize}** {currency}!)"
+                    win_embed.add_field(name="Prize Won", value=f"🏆 **{bank_prize}** {currency}", inline=False)
                 except Exception as e:
                     # This will catch issues like Economy not being loaded or transaction failures
                     log.error("Failed to deposit bank prize using redbot.core.bank.", exc_info=True)
-                    msg += "\n*Bank prize error: Failed to award prize. Ensure the Economy cog is loaded and configured.*"
+                    win_embed.add_field(name="Prize Error", value="Could not deposit credits. Please contact an admin.", inline=False)
             # --- END STANDARD BANK INTEGRATION LOGIC ---
+            
+            # Add Footer and View
+            win_embed.set_footer(text="Click the button below to start a new game!")
+            view = NewGameView(self)
         
         # Step 3: Generate and send the card
         seed = int(await self.config.guild(ctx.guild).seed()) + ctx.author.id
@@ -564,9 +596,12 @@ class Bingo(commands.Cog):
         )
         
         # Send the message and the generated card image
+        # If there is a win, we attach the embed and view.
         await ctx.send(
             content=msg,
             file=temp,
+            embed=win_embed,
+            view=view,
             allowed_mentions=discord.AllowedMentions(users=False),
         )
 
