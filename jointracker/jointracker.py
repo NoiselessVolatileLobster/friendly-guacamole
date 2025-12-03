@@ -234,17 +234,23 @@ class JoinTracker(commands.Cog):
         if count < 0:
             return await ctx.send("The rejoin count must be zero or a positive number.")
 
-        # Set the rejoin count using the member scope (tied to the guild ID)
-        await self.config.member(target).rejoin_count.set(count)
+        # --- FIX: Anchor the config data to the current guild (ctx.guild) ---
+        # This resolves the AttributeError when 'target' is a discord.User object
+        # which lacks the .guild attribute required by self.config.member().
+        config_member = self.config.member(target, ctx.guild)
         
-        # Update the last_join_date. If they are currently a member, use their current join date.
+        # 1. Set the rejoin count
+        await config_member.rejoin_count.set(count)
+        
+        # 2. Update the last_join_date based on object type
         if isinstance(target, discord.Member):
+             # If they are currently a member, use their current join date
              join_date_iso = target.joined_at.astimezone(timezone.utc).isoformat()
-             await self.config.member(target).last_join_date.set(join_date_iso)
+             await config_member.last_join_date.set(join_date_iso)
         else:
-             # If target is only a User (not in guild), we set last_join_date to None 
-             # and rely on the next join event to populate it.
-             await self.config.member(target).last_join_date.set(None)
+             # If target is only a User (not in guild), clear/set last_join_date to None
+             # to ensure it's recorded on the next join event.
+             await config_member.last_join_date.set(None)
              
         await ctx.send(
             f"Successfully set the rejoin counter for {target.display_name} (ID: {target.id}) to **{count}**."
