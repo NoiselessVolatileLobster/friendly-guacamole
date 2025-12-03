@@ -234,11 +234,10 @@ class JoinTracker(commands.Cog):
         if count < 0:
             return await ctx.send("The rejoin count must be zero or a positive number.")
 
-        # --- FINAL FIX: Use explicit guild scoping when target is a discord.User object. ---
-        # We must branch the logic here to prevent the 'User' object from causing an 
-        # AttributeError by ensuring 'guild=ctx.guild' is only provided when necessary.
+        # --- FINAL FIX: Use the correct positional argument structure for Config.member() ---
+        
         if isinstance(target, discord.Member):
-            # If it's a Member object, the guild context is implicit
+            # 1. If it's a Member object, use the object directly (Guild context is implicit).
             config_member = self.config.member(target)
             
             # Use their current join date
@@ -246,17 +245,17 @@ class JoinTracker(commands.Cog):
             await config_member.last_join_date.set(join_date_iso)
             
         elif isinstance(target, discord.User):
-            # If it's a User object, we MUST provide the guild explicitly for member-scoped data
-            config_member = self.config.member(target, guild=ctx.guild)
+            # 2. If it's a User object, we MUST pass the Guild object as the second positional argument.
+            # This satisfies the requirement for guild context without using the rejected 'guild=' keyword.
+            config_member = self.config.member(target, ctx.guild)
             
             # Clear/set last_join_date to None since they are not currently in the server
             await config_member.last_join_date.set(None)
             
         else:
-            # Fallback for unexpected object types, though Union should cover it
             return await ctx.send("Could not determine the target user type.")
 
-        # 1. Set the rejoin count (Common to both branches)
+        # 3. Set the rejoin count (Common to both branches)
         await config_member.rejoin_count.set(count)
              
         await ctx.send(
