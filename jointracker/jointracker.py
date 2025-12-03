@@ -234,10 +234,10 @@ class JoinTracker(commands.Cog):
         if count < 0:
             return await ctx.send("The rejoin count must be zero or a positive number.")
 
-        # --- FIX: Use .with_context(ctx.guild) to explicitly scope the user data to the guild ---
-        # This resolves the 'AttributeError: 'User' object has no attribute 'guild'' (previous issue)
-        # AND avoids the 'TypeError: takes 2 positional arguments' (current issue)
-        config_member = self.config.member(target).with_context(ctx.guild)
+        # --- FIX: Access the guild scope first, then the member data. ---
+        # This provides the necessary context (ctx.guild) before attempting to use the user object
+        # which prevents the 'AttributeError: 'User' object has no attribute 'guild''.
+        config_member = self.config.guild(ctx.guild).member(target)
         
         # 1. Set the rejoin count
         await config_member.rejoin_count.set(count)
