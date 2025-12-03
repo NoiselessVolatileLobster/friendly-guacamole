@@ -234,9 +234,9 @@ class JoinTracker(commands.Cog):
         if count < 0:
             return await ctx.send("The rejoin count must be zero or a positive number.")
 
-        # --- FINAL FIX: Use raw IDs for explicit scoping (member(user_id, guild_id)). ---
-        # This bypasses all object-attribute checking and keyword argument issues.
-        config_member = self.config.member(target.id, ctx.guild.id)
+        # --- FIX: Use the target object directly. Config.member() expects the object, not the raw IDs. ---
+        # This resolves the TypeError caused by passing too many arguments.
+        config_member = self.config.member(target)
         
         # 1. Set the rejoin count
         await config_member.rejoin_count.set(count)
