@@ -25,7 +25,6 @@ from .view import SetRewardsView
 
 _: Translator = Translator("AdventCalendar", __file__)
 
-
 @cog_i18n(_)
 class AdventCalendar(Cog):
     """Set up an Advent Calendar for your members, with custom rewards or messages each day! Work in december only..."""
@@ -124,6 +123,7 @@ class AdventCalendar(Cog):
     async def cog_load(self) -> None:
         await super().cog_load()
         await self.settings.add_commands()
+        currency_name = await bank.get_currency_name(ctx.guild)
         self.loops.append(
             Loop(
                 cog=self,
