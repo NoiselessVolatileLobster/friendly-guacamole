@@ -19,17 +19,6 @@ class VibeCheck(getattr(commands, "Cog", object)):
     """
     Allows you to get a vibe check on users. Members can give goodvibes and badvibes to others.
     Goodvibes add 1 vibe. Badvibes subtract 1 vibe.
-
-    --- Public API Usage ---
-    To get a user's vibe score from another cog, use:
-
-    async def check_user_vibes(self, ctx, user_id: int):
-        vibe_cog = self.bot.get_cog("VibeCheck")
-        if vibe_cog:
-            score = await vibe_cog.get_vibe_score(user_id)
-            await ctx.send(f"That user has a vibe score of {score}")
-        else:
-            await ctx.send("VibeCheck cog is not loaded.")
     """
 
     def __init__(self, bot):
