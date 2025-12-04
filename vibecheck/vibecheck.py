@@ -16,7 +16,7 @@ MemberInfo = namedtuple("MemberInfo", "id name vibes")
 
 
 class VibeCheck(getattr(commands, "Cog", object)):
-    """Keep track of vibes for all users in the bot's scope.
+    """Keep track of vibes for all users in the bot's scope. Vibecheck.
 
     Emojis which affect vibes are customised by the owner.
     Upvotes add 1 vibe. Downvotes subtract 1 vibe.
