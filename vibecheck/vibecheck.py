@@ -269,3 +269,23 @@ class VibeCheck(getattr(commands, "Cog", object)):
                 continue
             ret.append(MemberInfo(id=user_id, name=str(user), vibes=vibes))
         return ret
+    
+    # --- Public API Methods ---
+
+    async def get_vibe_score(self, user_id: int) -> int:
+        """
+        Public API to get the vibe score of a user.
+        
+        This method is designed to be used by other cogs.
+
+        Parameters
+        ----------
+        user_id : int
+            The Discord ID of the user.
+
+        Returns
+        -------
+        int
+            The user's vibe score (defaults to 0 if not found).
+        """
+        return await self.conf.user_from_id(user_id).vibes()
