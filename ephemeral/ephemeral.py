@@ -55,7 +55,8 @@ class EphemeralButton(discord.ui.View):
     @discord.ui.button(label="Click to Start Ephemeral Mode", style=discord.ButtonStyle.green, custom_id="ephemeral:start_button")
     async def start_ephemeral(self, interaction: discord.Interaction, button: discord.ui.Button):
         user = interaction.user
-        guild = interaction.guild
+        # Use bot cache to ensure full guild object (helper for channel lookup reliability)
+        guild = self.cog.bot.get_guild(interaction.guild_id) or interaction.guild
         
         settings = await self.cog.config.guild(guild).all()
         button_data = settings.get("embed_data", {})
@@ -212,7 +213,12 @@ class Ephemeral(commands.Cog):
         if not log_channel_id:
             return
 
+        # Attempt to find the channel using the guild object first
         channel = guild.get_channel(log_channel_id)
+        # Fallback to bot global cache if guild fetch fails (sometimes needed for interactions)
+        if not channel:
+            channel = self.bot.get_channel(log_channel_id)
+
         if channel and isinstance(channel, discord.TextChannel):
             try:
                 # Send with allowed_mentions=none to prevent mass pings in logs
@@ -221,6 +227,8 @@ class Ephemeral(commands.Cog):
                 print(f"Ephemeral ERROR: Cannot send log to {channel.name} ({channel.id}) - Missing Permissions")
             except Exception as e:
                 print(f"Ephemeral ERROR logging event: {e}")
+        elif log_channel_id:
+             print(f"Ephemeral DEBUG: Log channel {log_channel_id} configured but could not be resolved.")
 
     async def _send_custom_message(self, guild: discord.Guild, user: discord.Member, channel_id: typing.Optional[int], message: str, time_passed: typing.Optional[timedelta] = None):
         if not channel_id:
