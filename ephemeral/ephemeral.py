@@ -43,7 +43,7 @@ class Ephemeral(commands.Cog):
             ephemeral_role_id=None,
             ephemeral_failed_role_id=None,
             
-            # --- NEW CONFIGURATION FOR ACTIVATION SCOPE ---
+            # --- CONFIGURATION FOR ACTIVATION SCOPE ---
             activation_phrase="let me in", 
             ephemeral_timer_channel_id=None,
             ephemeral_not_started_role_id=None, 
@@ -217,7 +217,10 @@ class Ephemeral(commands.Cog):
         
         # Crucial configuration check
         if not ephemeral_role or not not_started_role:
-            await message.delete() # Hide the failed attempt
+            try:
+                await message.delete() # Hide the failed attempt
+            except Exception:
+                pass
             await message.channel.send(f"{user.mention}, Ephemeral Mode is not fully configured (missing roles). Please notify an admin.", delete_after=10)
             return
 
@@ -462,6 +465,52 @@ class Ephemeral(commands.Cog):
         if new_count >= settings["messages_threshold"]:
             await self._handle_ephemeral_success(guild, member, settings)
 
+    @commands.command()
+    @checks.admin_or_permissions(manage_guild=True)
+    async def ephemeralstatus(self, ctx: commands.Context):
+        """Displays all users currently in Ephemeral mode and their time remaining."""
+        all_member_data = await self.config.all_members(ctx.guild)
+        settings = await self.config.guild(ctx.guild).all()
+        failed_threshold_seconds = settings["ephemeral_failed_threshold"]
+        ephemeral_users = []
+        
+        for member_id, data in all_member_data.items():
+            if data.get("is_ephemeral") and data.get("start_time"):
+                member = ctx.guild.get_member(member_id)
+                if not member:
+                    # Clean up data for users who left
+                    await self.config.member_from_id(member_id).clear()
+                    self.stop_user_timer(ctx.guild.id, member_id)
+                    continue
+
+                start_time_ts = data["start_time"]
+                expiration_ts = start_time_ts + failed_threshold_seconds
+                output_line = (
+                    f"{member.mention} ({data['message_count']}/{settings['messages_threshold']}) | "
+                    f"Expires: <t:{int(expiration_ts)}:R>"
+                )
+                ephemeral_users.append(output_line)
+
+        if not ephemeral_users:
+            await ctx.send("No users are currently in Ephemeral mode.")
+            return
+
+        pages = []
+        for i, page in enumerate(pagify("\n".join(ephemeral_users), page_length=1000)):
+            embed = discord.Embed(
+                title=f"Ephemeral Users Status ({len(ephemeral_users)} active)",
+                description=page,
+                color=await ctx.embed_color()
+            )
+            if len(ephemeral_users) > 20: 
+                 embed.title = f"Ephemeral Users Status (Page {i+1})"
+            pages.append(embed)
+        
+        if len(pages) > 1:
+            await menu(ctx, pages, DEFAULT_CONTROLS)
+        else:
+            await ctx.send(embed=pages[0])
+            
     # --- Configuration Commands ---
 
     @commands.group(invoke_without_command=True)
@@ -496,7 +545,7 @@ class Ephemeral(commands.Cog):
         e_role = ctx.guild.get_role(settings["ephemeral_role_id"])
         f_role = ctx.guild.get_role(settings["ephemeral_failed_role_id"])
         nm_role = ctx.guild.get_role(settings["nomessages_role_id"])
-        ns_role = ctx.guild.get_role(settings["ephemeral_not_started_role_id"]) # New role lookup
+        ns_role = ctx.guild.get_role(settings["ephemeral_not_started_role_id"]) 
         
         failed_td = timedelta(seconds=settings['ephemeral_failed_threshold'])
         nomessages_td = timedelta(seconds=settings['nomessages_threshold'])
