@@ -113,9 +113,12 @@ class Ephemeral(commands.Cog):
         self.timers[task_key] = task
     
     def stop_user_timer(self, guild_id: int, user_id: int):
+        """Stops the background timer task for a specific user."""
         task = self.timers.pop((guild_id, user_id), None)
         if task and not task.done():
             task.cancel()
+            print(f"Ephemeral DEBUG: Timer task STOPPED for User {user_id} in Guild {guild_id}")
+
 
     async def _log_event(self, guild: discord.Guild, message: str):
         """Logs an event to the configured log channel."""
@@ -181,15 +184,15 @@ class Ephemeral(commands.Cog):
         except Exception as e:
             print(f"Ephemeral ERROR in Guild {guild.id}: Unexpected error: {e}")
 
-    async def _handle_ephemeral_success(self, guild: discord.Guild, user: discord.Member, settings: dict):
-        """Handles the success case: message threshold met."""
+    async def _handle_ephemeral_success(self, guild: discord.Guild, user: discord.Member, settings: dict, manual: bool = False):
+        """Handles the success case: message threshold met OR manual intervention."""
         ephemeral_role = guild.get_role(settings["ephemeral_role_id"])
         not_started_role = guild.get_role(settings["ephemeral_not_started_role_id"])
 
         # 1. Remove Ephemeral Role (MANDATORY)
         if ephemeral_role and ephemeral_role in user.roles:
             try:
-                await user.remove_roles(ephemeral_role, reason="Ephemeral message threshold met.")
+                await user.remove_roles(ephemeral_role, reason="Ephemeral success." + (" (Manual)" if manual else " (Threshold met)"))
             except discord.Forbidden:
                 print(f"Ephemeral ERROR: Forbidden to remove ephemeral role for {user.id} on success.")
         
@@ -207,7 +210,11 @@ class Ephemeral(commands.Cog):
             guild, user, settings["removed_message_channel_id"], settings["removed_message"]
         )
 
-        await self._log_event(guild, f"✅ **Success:** {user.mention} (`{user.id}`) met the message threshold and is no longer Ephemeral.")
+        log_msg = f"✅ **Success:** {user.mention} (`{user.id}`) met the message threshold and is no longer Ephemeral."
+        if manual:
+            log_msg = f"⭐ **Manual Success:** {user.mention} (`{user.id}`) was manually removed from Ephemeral mode."
+
+        await self._log_event(guild, log_msg)
                 
 
     async def _handle_activation(self, message: discord.Message, settings: dict, guild: discord.Guild, user: discord.Member):
@@ -341,9 +348,11 @@ class Ephemeral(commands.Cog):
     async def check_ephemeral_status(self, guild_id: int, user_id: int):
         print(f"Ephemeral DEBUG: Timer task STARTED execution for User {user_id}")
         
+        # Wait a short period to allow for startup race conditions
         await asyncio.sleep(10)
 
         while True:
+            # Check status every 10 seconds
             await asyncio.sleep(10)
 
             guild = self.bot.get_guild(guild_id)
@@ -356,7 +365,7 @@ class Ephemeral(commands.Cog):
 
             member_data = await self.config.member(user).all()
             if not member_data["is_ephemeral"]:
-                print(f"Ephemeral DEBUG: Task EXITING (is_ephemeral is False): {user_id}")
+                print(f"Ephemeral DEBUG: Task EXITING (is_ephemeral is False, likely cleared by a command): {user_id}")
                 self.stop_user_timer(guild_id, user_id)
                 return
 
@@ -511,6 +520,26 @@ class Ephemeral(commands.Cog):
         else:
             await ctx.send(embed=pages[0])
             
+    @commands.command()
+    @checks.admin_or_permissions(manage_guild=True)
+    async def ephemeralsuccess(self, ctx: commands.Context, user: discord.Member):
+        """Manually removes a user from Ephemeral mode (treating it as a success).
+        
+        This removes the Ephemeral role, stops their timer, clears their data, 
+        and logs a success event.
+        """
+        member_data = await self.config.member(user).all()
+        if not member_data["is_ephemeral"]:
+            await ctx.send(f"{user.mention} is not currently in Ephemeral mode.")
+            return
+            
+        settings = await self.config.guild(ctx.guild).all()
+
+        # Call the success handler with the manual flag set to True
+        await self._handle_ephemeral_success(ctx.guild, user, settings, manual=True)
+
+        await ctx.send(f"✅ **Success:** Manually removed {user.mention} from Ephemeral mode, treating it as a successful completion.")
+
     # --- Configuration Commands ---
 
     @commands.group(invoke_without_command=True)
