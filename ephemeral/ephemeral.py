@@ -312,10 +312,12 @@ class Ephemeral(commands.Cog):
         await self.config.member(user).clear()
 
     async def check_ephemeral_status(self, guild_id: int, user_id: int):
-        await asyncio.sleep(60)
+        # Initial short sleep to ensure startup/initial config load is complete.
+        await asyncio.sleep(10)
 
+        # Loop runs every 10 seconds for high-frequency checks.
         while True:
-            await asyncio.sleep(120)
+            await asyncio.sleep(10)
 
             guild = self.bot.get_guild(guild_id)
             user = guild.get_member(user_id)
