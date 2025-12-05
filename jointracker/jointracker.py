@@ -15,6 +15,8 @@ DEFAULT_GUILD = {
     "welcome_message": "Welcome back, {user}! We're glad you're here for your {count} time. You were last here on {last_join_date}. Please check out {role} for next steps.",
     # Customizable message template for FIRST TIME JOINS (supports {user} and {role})
     "first_join_message": "Welcome, {user}! We are thrilled to have you here for the first time. Check out {role} to get started.",
+    # Toggle for enabling/disabling welcome messages
+    "welcome_enabled": True,
 }
 DEFAULT_MEMBER = {
     "rejoin_count": 0,
@@ -93,6 +95,10 @@ class JoinTracker(commands.Cog):
         await self.config.member(member).last_join_date.set(join_date_iso)
         
         # 3. Send Welcome Message
+        # Check if messages are enabled in settings
+        if not guild_settings["welcome_enabled"]:
+            return
+
         channel_id = guild_settings["welcome_channel_id"]
 
         if channel_id:
@@ -178,6 +184,21 @@ class JoinTracker(commands.Cog):
         """Manage the member join tracking settings."""
         pass
 
+    @jointracker.command(name="messagetoggle")
+    async def jointracker_toggle(self, ctx: Context):
+        """
+        Toggles whether welcome messages are sent.
+        
+        When disabled, the bot will still track user join counts and dates, 
+        but will not send welcome messages to the channel.
+        """
+        current_setting = await self.config.guild(ctx.guild).welcome_enabled()
+        new_setting = not current_setting
+        await self.config.guild(ctx.guild).welcome_enabled.set(new_setting)
+        
+        status = "enabled" if new_setting else "disabled"
+        await ctx.send(f"Welcome messages have been **{status}**.")
+
     @jointracker.command(name="settings")
     async def jointracker_settings(self, ctx: Context):
         """
@@ -189,12 +210,19 @@ class JoinTracker(commands.Cog):
         role_id = guild_settings["welcome_role_id"]
         welcome_msg = guild_settings["welcome_message"]
         first_join_msg = guild_settings["first_join_message"]
+        enabled = guild_settings["welcome_enabled"]
 
         channel = ctx.guild.get_channel(channel_id) if channel_id else None
         role = ctx.guild.get_role(role_id) if role_id else None
 
         embed = discord.Embed(title=f"JoinTracker Settings for {ctx.guild.name}", color=await ctx.embed_color())
         
+        embed.add_field(
+            name="Messages Enabled",
+            value="✅ Yes" if enabled else "❌ No",
+            inline=True
+        )
+
         embed.add_field(
             name="Welcome Channel", 
             value=channel.mention if channel else "Not Set", 
