@@ -83,6 +83,9 @@ class EphemeralButton(discord.ui.View):
             return
             
         try:
+            # 1. Clear any existing timer for this user/guild combination first
+            self.cog.stop_user_timer(guild.id, user.id)
+
             await user.add_roles(ephemeral_role, reason="Started Ephemeral mode via button.")
             now = datetime.now().timestamp()
             
@@ -97,8 +100,10 @@ class EphemeralButton(discord.ui.View):
                 "Be sure to meet the message threshold before you time out."
                 , ephemeral=True
             )
-            self.cog.start_user_timer(guild.id, user.id)
             
+            # 2. Start the new timer only after config is set
+            self.cog.start_user_timer(guild.id, user.id)
+
             # Log event
             await self.cog._log_event(guild, f"▶️ **Started:** {user.mention} (`{user.id}`) clicked the button and started their timer.")
 
