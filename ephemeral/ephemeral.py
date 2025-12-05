@@ -411,71 +411,62 @@ class Ephemeral(commands.Cog):
         guild = message.guild
         settings = await self.config.guild(guild).all()
         
+        # --- PHASE 0: CHANNEL CHECK (Crucial for Scoping) ---
+        timer_channel_id = settings.get("ephemeral_timer_channel_id")
+        if not timer_channel_id or message.channel.id != timer_channel_id:
+            # Not in the configured channel, ignore the message entirely.
+            return
+
         member_data = await self.config.member(member).all()
         is_ephemeral = member_data["is_ephemeral"]
-
-        # --- PHASE 3: MESSAGE COUNTING (SERVER-WIDE) ---
-        if is_ephemeral:
-            # Check for message length threshold
-            if len(message.content) >= settings["message_length_threshold"]:
-                new_count = member_data["message_count"] + 1
-                await self.config.member(member).message_count.set(new_count)
-
-                # Check for successful completion
-                if new_count >= settings["messages_threshold"]:
-                    await self._handle_ephemeral_success(guild, member, settings)
-                
-            # Channel-specific deletion check for Ephemeral users (Phase 1 continuation)
-            timer_channel_id = settings.get("ephemeral_timer_channel_id")
-            if timer_channel_id and message.channel.id == timer_channel_id:
-                # 1. Log the message content before deletion
-                await self._log_ephemeral_message(message, settings)
-                
-                # 2. Delete the message
-                try:
-                    await message.delete()
-                except discord.Forbidden:
-                    print(f"Ephemeral CRITICAL ERROR: Bot cannot delete messages from ephemeral user {member.id} in channel {message.channel.id}.")
-                except discord.NotFound:
-                    pass
+        
+        
+        # --- PHASE 1: ACTIVATION CHECK (If user is NOT ephemeral) ---
+        if not is_ephemeral:
+            not_started_role_id = settings.get("ephemeral_not_started_role_id")
             
-            # Message counting/deletion complete, stop processing this message.
-            return 
-        
-        # --- PHASES 1 & 2: ACTIVATION AND DELETION (CHANNEL-SPECIFIC) ---
-        
-        timer_channel_id = settings.get("ephemeral_timer_channel_id")
-        
-        # If the user is NOT ephemeral and not in the timer channel, we stop.
-        if not timer_channel_id or message.channel.id != timer_channel_id:
-            return 
+            if not not_started_role_id:
+                # Configuration error, but let the message stay (no deletion)
+                return
 
-        # We are in the correct channel, now check for the required 'not started' role.
-        not_started_role_id = settings.get("ephemeral_not_started_role_id")
-        if not not_started_role_id:
-            # If the config is missing, let the message stay and stop.
-            return 
+            not_started_role = guild.get_role(not_started_role_id)
+            if not not_started_role or not (not_started_role in member.roles):
+                # User does not have the required role to enter Ephemeral Mode, let the message stay and stop.
+                return
             
-        not_started_role = guild.get_role(not_started_role_id)
-        if not not_started_role or not (not_started_role in member.roles):
-            # User doesn't have the required role to enter Ephemeral Mode, let the message stay and stop.
-            return
+            activation_phrase = settings.get("activation_phrase", "let me in")
+            
+            # Use .lower().strip() for robust phrase matching
+            if message.content.lower().strip() == activation_phrase.lower().strip():
+                await self._handle_activation(message, settings, guild, member)
+            
+            # If the phrase doesn't match, the message stays (as requested: "If a user does not have the 'Ephemeral Timer Not Started' role, we do not delete that message.")
+            return 
 
-        activation_phrase = settings.get("activation_phrase", "let me in")
-
-        # PHASE 2: Activation Check
-        if message.content.lower().strip() == activation_phrase.lower().strip():
-            await self._handle_activation(message, settings, guild, member)
-            return
-
-        # PHASE 1: Deletion Check (Any other message in the timer channel by a 'not started' user)
-        # Log and delete the message.
-        await self._log_ephemeral_message(message, settings) # Log message before deletion
+        # --- PHASE 2: EPHEMERAL MESSAGE HANDLING (If user IS ephemeral) ---
+        
+        # 1. Log the message content
+        await self._log_ephemeral_message(message, settings)
+        
+        # 2. Delete the message
         try:
             await message.delete()
-            await self._log_event(guild, f"🗑️ **Deleted:** Message from {member.mention} (`{member.id}`) deleted in activation channel (Phase 1).")
-        except Exception as e:
-            print(f"Ephemeral ERROR: Could not delete Phase 1 message for {member.id}: {e}")
+        except discord.Forbidden:
+            print(f"Ephemeral CRITICAL ERROR: Bot cannot delete messages from user {member.id} in channel {message.channel.id}.")
+        except discord.NotFound:
+            pass
+        
+        # 3. Message count and removal logic
+        if len(message.content) < settings["message_length_threshold"]:
+            return
+        
+        new_count = member_data["message_count"] + 1
+        await self.config.member(member).message_count.set(new_count)
+
+        if new_count >= settings["messages_threshold"]:
+            await self._handle_ephemeral_success(guild, member, settings)
+
+    # --- Configuration Commands ---
 
     @commands.command()
     @checks.admin_or_permissions(manage_guild=True)
@@ -497,10 +488,9 @@ class Ephemeral(commands.Cog):
         if not ephemeral_members:
             return await ctx.send("No users are currently in Ephemeral mode.")
 
-        # --- NEW EMBED LOGIC for Rich Text Output ---
+        # --- NEW EMBED LOGIC for Rich Text Output with Pagination (10 per page) ---
         
-        # Determine max fields per page (10 is standard, using 5 for cleaner display)
-        MAX_FIELDS_PER_PAGE = 5
+        MAX_FIELDS_PER_PAGE = 10
         
         failed_threshold = timedelta(seconds=settings["ephemeral_failed_threshold"])
         
@@ -513,14 +503,11 @@ class Ephemeral(commands.Cog):
                 if current_embed:
                     pages.append(current_embed)
                 
-                page_num = (i // MAX_FIELDS_PER_PAGE) + 1
                 current_embed = discord.Embed(
                     title="👻 Ephemeral Mode Status",
                     description=f"Showing **{len(ephemeral_members)}** active ephemeral users in total.",
                     color=await ctx.embed_color()
                 )
-                
-                # Set the footer text later when we know the total page count
                 
             start_time = datetime.fromtimestamp(data["start_time"])
             
@@ -536,27 +523,27 @@ class Ephemeral(commands.Cog):
             messages_required = settings["messages_threshold"]
             
             progress_value = (
+                f"**User:** {member.mention} (`{member.id}`)\n"
                 f"**Progress:** {messages_sent}/{messages_required} messages\n"
                 f"**Started:** {start_time.strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
                 f"**Expires In:** {timedelta_to_human(time_remaining)}"
             )
             
-            # Use the member's mention as the field name title
+            # Use the member's display name as field title (Mentions don't render in titles)
             current_embed.add_field(
-                name=f"{member.mention} ({member.id})",
+                name=f"{member.display_name}", 
                 value=progress_value,
                 inline=False
             )
 
         # Append the last embed
-        if current_embed and current_embed not in pages:
+        if current_embed:
             pages.append(current_embed)
 
         # Update footers with correct total page count
         total_pages = len(pages)
         for idx, embed in enumerate(pages):
              embed.set_footer(text=f"Page {idx + 1}/{total_pages}")
-
 
         # Use menu for navigation
         await menu(ctx, pages, DEFAULT_CONTROLS)
