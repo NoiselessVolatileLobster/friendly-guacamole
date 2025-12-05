@@ -207,7 +207,9 @@ class Ephemeral(commands.Cog):
         if task_key in self.timers:
             self.timers[task_key].cancel()
 
-        # Added name for easier debugging of running tasks
+        # --- DEBUG LOG 1: Confirming task creation
+        print(f"Ephemeral DEBUG: Timer task CREATED for User {user_id} in Guild {guild_id}")
+        
         task = self.bot.loop.create_task(
             self.check_ephemeral_status(guild_id, user_id), 
             name=f"ephemeral_timer_{guild_id}_{user_id}"
@@ -317,6 +319,9 @@ class Ephemeral(commands.Cog):
         await self.config.member(user).clear()
 
     async def check_ephemeral_status(self, guild_id: int, user_id: int):
+        # --- DEBUG LOG 2: Confirming task execution start
+        print(f"Ephemeral DEBUG: Timer task STARTED execution for User {user_id}")
+        
         # Initial short sleep to ensure startup/initial config load is complete.
         await asyncio.sleep(10)
 
@@ -328,11 +333,13 @@ class Ephemeral(commands.Cog):
             user = guild.get_member(user_id)
             
             if not guild or not user:
+                print(f"Ephemeral DEBUG: Task EXITING (Guild/User not found): {user_id}")
                 self.stop_user_timer(guild_id, user_id)
                 return
 
             member_data = await self.config.member(user).all()
             if not member_data["is_ephemeral"]:
+                print(f"Ephemeral DEBUG: Task EXITING (is_ephemeral is False): {user_id}")
                 self.stop_user_timer(guild_id, user_id)
                 return
 
@@ -346,7 +353,7 @@ class Ephemeral(commands.Cog):
             start_time = datetime.fromtimestamp(member_data["start_time"])
             time_passed: timedelta = datetime.now() - start_time
 
-            # --- DEBUG LOGGING ADDED HERE ---
+            # --- DEBUG LOG 3: High-frequency status check ---
             print(f"Ephemeral DEBUG: Checking {user.id}. Time Passed: {time_passed.total_seconds():.0f}s. Message Count: {member_data['message_count']}.")
             # --------------------------------
 
