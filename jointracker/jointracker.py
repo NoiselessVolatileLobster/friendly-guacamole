@@ -153,6 +153,50 @@ class JoinTracker(commands.Cog):
         """Manage the member join tracking settings."""
         pass
 
+    @jointracker.command(name="settings")
+    async def jointracker_settings(self, ctx: Context):
+        """
+        Shows the current settings for JoinTracker.
+        """
+        guild_settings = await self.config.guild(ctx.guild).all()
+        
+        channel_id = guild_settings["welcome_channel_id"]
+        role_id = guild_settings["welcome_role_id"]
+        welcome_msg = guild_settings["welcome_message"]
+        first_join_msg = guild_settings["first_join_message"]
+
+        channel = ctx.guild.get_channel(channel_id) if channel_id else None
+        role = ctx.guild.get_role(role_id) if role_id else None
+
+        embed = discord.Embed(title=f"JoinTracker Settings for {ctx.guild.name}", color=await ctx.embed_color())
+        
+        embed.add_field(
+            name="Welcome Channel", 
+            value=channel.mention if channel else "Not Set", 
+            inline=True
+        )
+        embed.add_field(
+            name="Welcome Role", 
+            value=role.mention if role else "Not Set", 
+            inline=True
+        )
+        
+        embed.add_field(name="\u200b", value="\u200b", inline=False) # Spacer
+
+        embed.add_field(
+            name="First Join Message", 
+            value=f"```\n{first_join_msg}\n```", 
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Welcome Back Message", 
+            value=f"```\n{welcome_msg}\n```", 
+            inline=False
+        )
+
+        await ctx.send(embed=embed)
+
     @jointracker.command(name="setchannel")
     async def jointracker_setchannel(self, ctx: Context, channel: discord.TextChannel = None):
         """
