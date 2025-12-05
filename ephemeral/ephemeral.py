@@ -486,20 +486,37 @@ class Ephemeral(commands.Cog):
         if not ephemeral_members:
             return await ctx.send("No users are currently in Ephemeral mode.")
 
-        # Prepare output pages
-        output = [bold("Ephemeral Mode Status")]
+        # --- NEW EMBED LOGIC for Rich Text Output ---
+        
+        # Determine max fields per page (10 is standard, using 5 for cleaner display)
+        MAX_FIELDS_PER_PAGE = 5
         
         failed_threshold = timedelta(seconds=settings["ephemeral_failed_threshold"])
         
-        for member, data in ephemeral_members:
+        pages = []
+        current_embed = None
+        
+        for i, (member, data) in enumerate(ephemeral_members):
+            if i % MAX_FIELDS_PER_PAGE == 0:
+                # Start a new page/embed
+                if current_embed:
+                    pages.append(current_embed)
+                
+                page_num = (i // MAX_FIELDS_PER_PAGE) + 1
+                current_embed = discord.Embed(
+                    title="👻 Ephemeral Mode Status",
+                    description=f"Showing **{len(ephemeral_members)}** active ephemeral users in total.",
+                    color=await ctx.embed_color()
+                )
+                
+                # Set the footer text later when we know the total page count
+                
             start_time = datetime.fromtimestamp(data["start_time"])
-            time_passed = datetime.now() - start_time
             
             # Calculate expiry time
             expiry_time = start_time + failed_threshold
             time_remaining = expiry_time - datetime.now()
             
-            # Ensure time remaining is not negative (shouldn't happen with the background task, but good practice)
             if time_remaining.total_seconds() < 0:
                 time_remaining = timedelta(seconds=0)
 
@@ -507,16 +524,30 @@ class Ephemeral(commands.Cog):
             messages_sent = data["message_count"]
             messages_required = settings["messages_threshold"]
             
-            progress_line = (
-                f"{member.mention} (`{member.id}`) | "
-                f"Messages: {messages_sent}/{messages_required} | "
-                f"Started: {start_time.strftime('%Y-%m-%d %H:%M:%S')} UTC | "
-                f"Expires In: {timedelta_to_human(time_remaining)}"
+            progress_value = (
+                f"**Progress:** {messages_sent}/{messages_required} messages\n"
+                f"**Started:** {start_time.strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
+                f"**Expires In:** {timedelta_to_human(time_remaining)}"
             )
-            output.append(progress_line)
+            
+            # Use the member's mention as the field name title
+            current_embed.add_field(
+                name=f"{member.mention} ({member.id})",
+                value=progress_value,
+                inline=False
+            )
 
-        # Use pagify and menu for clean output
-        pages = [box(page, lang="prolog") for page in pagify('\n'.join(output))]
+        # Append the last embed
+        if current_embed and current_embed not in pages:
+            pages.append(current_embed)
+
+        # Update footers with correct total page count
+        total_pages = len(pages)
+        for idx, embed in enumerate(pages):
+             embed.set_footer(text=f"Page {idx + 1}/{total_pages}")
+
+
+        # Use menu for navigation
         await menu(ctx, pages, DEFAULT_CONTROLS)
 
 
@@ -608,9 +639,6 @@ class Ephemeral(commands.Cog):
             "",
             f"No Messages Failed Channel: **{get_channel_info(settings['nomessages_failed_message_channel_id'])}**",
             f"No Messages Failed Message: `{settings['nomessages_failed_message']}`",
-            "",
-            f"Removed Message Channel: **{get_channel_info(settings['removed_message_channel_id'])}**",
-            f"Removed Message: `{settings['removed_message']}`",
             "",
             bold("--- Logging ---"),
             f"Log Channel: **{get_channel_info(settings['log_channel_id'])}** (Logs all deleted messages.)",
