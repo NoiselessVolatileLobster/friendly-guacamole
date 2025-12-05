@@ -49,9 +49,13 @@ class Ephemeral(commands.Cog):
             ephemeral_not_started_role_id=None, 
             # --- END CONFIGURATION ---
 
-            # --- NEW START MESSAGE CONFIGURATION ---
-            timer_start_channel_id=None,
-            timer_start_message="{mention} has started the Ephemeral Timer!",
+            # --- START MESSAGE CONFIGURATION (CONDITIONAL) ---
+            # Storing separate configs for first-time vs returning users
+            start_message_first_channel_id=None,
+            start_message_first_content="{mention} has joined for the first time!",
+            
+            start_message_returning_channel_id=None,
+            start_message_returning_content="Welcome back {mention}!",
             # --- END START MESSAGE CONFIGURATION ---
             
             nomessages_threshold=timedelta(hours=4).total_seconds(), 
@@ -238,7 +242,8 @@ class Ephemeral(commands.Cog):
             await message.delete()
         except discord.Forbidden:
             print(f"Ephemeral CRITICAL ERROR: Cannot delete activation message by {user.id}. Bot is missing 'manage_messages' permission.")
-            # If we can't delete, we still proceed but warn in console
+            await message.channel.send(f"{user.mention}, I cannot start Ephemeral Mode because I am missing the **Manage Messages** permission required to hide your activity. Please ask an admin to grant this.", delete_after=15)
+            return
         except discord.NotFound:
             pass # Already deleted
             
@@ -258,9 +263,28 @@ class Ephemeral(commands.Cog):
                 "is_ephemeral": True,
             })
             
-            # 3. Send Start Message to configured channel (Silent in current channel)
+            # 3. Determine and Send Start Message (Conditional on Join Count)
+            
+            # Default to "first time" config if tracker is unavailable or count is 0
+            start_channel_id = settings.get("start_message_first_channel_id")
+            start_message_content = settings.get("start_message_first_content")
+            
+            # Check JoinTracker for history
+            join_tracker = self.bot.get_cog("JoinTracker")
+            if join_tracker:
+                try:
+                    count = await join_tracker.get_join_count(guild, user.id)
+                    # If count > 0 (meaning they have previous joins recorded), use returning config
+                    # Note: Depending on how JoinTracker counts the *current* join, 0 means this is the first one tracked.
+                    if count > 0:
+                        start_channel_id = settings.get("start_message_returning_channel_id")
+                        start_message_content = settings.get("start_message_returning_content")
+                except Exception as e:
+                    print(f"Ephemeral ERROR: Could not fetch join count from JoinTracker: {e}")
+            
+            # Send the selected message
             await self._send_custom_message(
-                guild, user, settings["timer_start_channel_id"], settings["timer_start_message"]
+                guild, user, start_channel_id, start_message_content
             )
             
             self.start_user_timer(guild.id, user.id)
@@ -271,10 +295,10 @@ class Ephemeral(commands.Cog):
 
         except discord.Forbidden:
             print(f"Ephemeral ERROR: Forbidden to add/remove role for {user.id}")
-            # Try to inform user if possible, but we wanted silence in channel. Log error instead.
-            await self._log_event(guild, f"⚠️ **Error:** Could not start Ephemeral Mode for {user.mention} - Forbidden to assign roles.")
+            await message.channel.send(f"{user.mention}, I do not have permissions to assign/remove roles. Please check my permissions.", delete_after=10)
         except Exception as e:
             print(f"Ephemeral ERROR: Unhandled exception during activation for {user.id}: {e}")
+            await message.channel.send(f"{user.mention}, an unexpected error occurred during activation: {e}", delete_after=10)
 
     async def _handle_nomessages_failed(self, guild: discord.Guild, user: discord.Member, settings: dict):
         ephemeral_role = guild.get_role(settings["ephemeral_role_id"])
@@ -417,71 +441,60 @@ class Ephemeral(commands.Cog):
         guild = message.guild
         settings = await self.config.guild(guild).all()
         
+        # --- PHASE 0: CHANNEL CHECK (Crucial for Scoping) ---
+        timer_channel_id = settings.get("ephemeral_timer_channel_id")
+        if not timer_channel_id or message.channel.id != timer_channel_id:
+            # Not in the configured channel, ignore the message entirely.
+            return
+
         member_data = await self.config.member(member).all()
         is_ephemeral = member_data["is_ephemeral"]
-
-        # --- PHASE 3: MESSAGE COUNTING (SERVER-WIDE) ---
-        if is_ephemeral:
-            # Check for message length threshold
-            if len(message.content) >= settings["message_length_threshold"]:
-                new_count = member_data["message_count"] + 1
-                await self.config.member(member).message_count.set(new_count)
-
-                # Check for successful completion
-                if new_count >= settings["messages_threshold"]:
-                    await self._handle_ephemeral_success(guild, member, settings)
-                
-            # Channel-specific deletion check for Ephemeral users (Phase 1 continuation)
-            timer_channel_id = settings.get("ephemeral_timer_channel_id")
-            if timer_channel_id and message.channel.id == timer_channel_id:
-                # 1. Log the message content before deletion
-                await self._log_ephemeral_message(message, settings)
-                
-                # 2. Delete the message
-                try:
-                    await message.delete()
-                except discord.Forbidden:
-                    print(f"Ephemeral CRITICAL ERROR: Bot cannot delete messages from ephemeral user {member.id} in channel {message.channel.id}.")
-                except discord.NotFound:
-                    pass
+        
+        
+        # --- PHASE 1: ACTIVATION CHECK (If user is NOT ephemeral) ---
+        if not is_ephemeral:
+            not_started_role_id = settings.get("ephemeral_not_started_role_id")
             
-            # Message counting/deletion complete, stop processing this message.
-            return 
-        
-        # --- PHASES 1 & 2: ACTIVATION AND DELETION (CHANNEL-SPECIFIC) ---
-        
-        timer_channel_id = settings.get("ephemeral_timer_channel_id")
-        
-        # If the user is NOT ephemeral and not in the timer channel, we stop.
-        if not timer_channel_id or message.channel.id != timer_channel_id:
-            return 
+            if not not_started_role_id:
+                # Configuration error, but let the message stay (no deletion)
+                return
 
-        # We are in the correct channel, now check for the required 'not started' role.
-        not_started_role_id = settings.get("ephemeral_not_started_role_id")
-        if not not_started_role_id:
-            # If the config is missing, let the message stay and stop.
-            return 
+            not_started_role = guild.get_role(not_started_role_id)
+            if not not_started_role or not (not_started_role in member.roles):
+                # User doesn't have the required role to enter Ephemeral Mode, let the message stay and stop.
+                return
             
-        not_started_role = guild.get_role(not_started_role_id)
-        if not not_started_role or not (not_started_role in member.roles):
-            # User doesn't have the required role to enter Ephemeral Mode, let the message stay and stop.
-            return
+            activation_phrase = settings.get("activation_phrase", "let me in")
+            
+            # Use .lower().strip() for robust phrase matching
+            if message.content.lower().strip() == activation_phrase.lower().strip():
+                await self._handle_activation(message, settings, guild, member)
+            
+            # If the phrase doesn't match, the message stays (as requested: "If a user does not have the 'Ephemeral Timer Not Started' role, we do not delete that message.")
+            return 
 
-        activation_phrase = settings.get("activation_phrase", "let me in")
-
-        # PHASE 2: Activation Check (Correct phrase used)
-        if message.content.lower().strip() == activation_phrase.lower().strip():
-            await self._handle_activation(message, settings, guild, member)
-            return
-
-        # PHASE 1: Deletion Check (Any other message in the timer channel by a 'not started' user)
-        # Log and delete the message.
-        await self._log_ephemeral_message(message, settings) # Log message before deletion
+        # --- PHASE 2: EPHEMERAL MESSAGE HANDLING (If user IS ephemeral) ---
+        
+        # 1. Log the message content
+        await self._log_ephemeral_message(message, settings)
+        
+        # 2. Delete the message
         try:
             await message.delete()
-            await self._log_event(guild, f"🗑️ **Deleted:** Message from {member.mention} (`{member.id}`) deleted in activation channel (Phase 1).")
-        except Exception as e:
-            print(f"Ephemeral ERROR: Could not delete Phase 1 message for {member.id}: {e}")
+        except discord.Forbidden:
+            print(f"Ephemeral CRITICAL ERROR: Bot cannot delete messages from user {member.id} in channel {message.channel.id}.")
+        except discord.NotFound:
+            pass
+        
+        # 3. Message count and removal logic
+        if len(message.content) < settings["message_length_threshold"]:
+            return
+        
+        new_count = member_data["message_count"] + 1
+        await self.config.member(member).message_count.set(new_count)
+
+        if new_count >= settings["messages_threshold"]:
+            await self._handle_ephemeral_success(guild, member, settings)
 
     # --- Configuration Commands ---
 
@@ -594,15 +607,28 @@ class Ephemeral(commands.Cog):
         await ctx.send(f"The Ephemeral activation phrase has been set to: `{phrase}`")
 
     @ephemeralset.command(name="startmessage")
-    async def ephemeralset_startmessage(self, ctx: commands.Context, channel: discord.TextChannel, *, message: str):
-        """Sets the message sent when a user successfully activates the timer.
+    async def ephemeralset_startmessage(self, ctx: commands.Context, msg_type: str, channel: discord.TextChannel, *, message: str):
+        """Sets the start message based on user history.
         
-        Use {mention} to ping the user.
+        Args:
+            msg_type: "firsttime" or "notfirsttime" (or "returning")
+            channel: The channel to post the message in
+            message: The message content
         """
-        await self.config.guild(ctx.guild).timer_start_channel_id.set(channel.id)
-        await self.config.guild(ctx.guild).timer_start_message.set(message)
+        msg_type = msg_type.lower()
+        if msg_type in ["firsttime", "first"]:
+            await self.config.guild(ctx.guild).start_message_first_channel_id.set(channel.id)
+            await self.config.guild(ctx.guild).start_message_first_content.set(message)
+            key_name = "First Time"
+        elif msg_type in ["notfirsttime", "returning"]:
+            await self.config.guild(ctx.guild).start_message_returning_channel_id.set(channel.id)
+            await self.config.guild(ctx.guild).start_message_returning_content.set(message)
+            key_name = "Returning User"
+        else:
+            return await ctx.send("Invalid type! Use `firsttime` or `notfirsttime`.")
+            
         await ctx.send(
-            f"Start message configured:\n"
+            f"{key_name} start message configured:\n"
             f"Channel: {channel.mention}\n"
             f"Message: `{message}`"
         )
@@ -642,8 +668,8 @@ class Ephemeral(commands.Cog):
             f"Activation Phrase: **`{settings['activation_phrase']}`**",
             f"Timer/Deletion Channel: **{get_channel_info(settings['ephemeral_timer_channel_id'])}**",
             f"Required 'Not Started' Role: **{ns_role.name if ns_role else 'Not Set'}** ({settings['ephemeral_not_started_role_id'] or 'N/A'})",
-            f"Start Message Channel: **{get_channel_info(settings['timer_start_channel_id'])}**",
-            f"Start Message: `{settings['timer_start_message']}`",
+            f"Start Msg (First Time): **{get_channel_info(settings['start_message_first_channel_id'])}**",
+            f"Start Msg (Returning): **{get_channel_info(settings['start_message_returning_channel_id'])}**",
             "",
             bold("--- Time/Message Thresholds ---"),
             f"Ephemeral Failed Threshold (General): **{timedelta_to_human(failed_td)}**",
