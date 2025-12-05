@@ -47,7 +47,7 @@ class Ephemeral(commands.Cog):
             activation_phrase="let me in", 
             ephemeral_timer_channel_id=None,
             ephemeral_not_started_role_id=None, 
-            # --- END NEW CONFIGURATION ---
+            # --- END CONFIGURATION ---
             
             nomessages_threshold=timedelta(hours=4).total_seconds(), 
             nomessages_role_id=None,
@@ -113,12 +113,9 @@ class Ephemeral(commands.Cog):
         self.timers[task_key] = task
     
     def stop_user_timer(self, guild_id: int, user_id: int):
-        """Stops the background timer task for a specific user."""
         task = self.timers.pop((guild_id, user_id), None)
         if task and not task.done():
             task.cancel()
-            print(f"Ephemeral DEBUG: Timer task STOPPED for User {user_id} in Guild {guild_id}")
-
 
     async def _log_event(self, guild: discord.Guild, message: str):
         """Logs an event to the configured log channel."""
@@ -184,15 +181,15 @@ class Ephemeral(commands.Cog):
         except Exception as e:
             print(f"Ephemeral ERROR in Guild {guild.id}: Unexpected error: {e}")
 
-    async def _handle_ephemeral_success(self, guild: discord.Guild, user: discord.Member, settings: dict, manual: bool = False):
-        """Handles the success case: message threshold met OR manual intervention."""
+    async def _handle_ephemeral_success(self, guild: discord.Guild, user: discord.Member, settings: dict):
+        """Handles the success case: message threshold met or manually triggered."""
         ephemeral_role = guild.get_role(settings["ephemeral_role_id"])
         not_started_role = guild.get_role(settings["ephemeral_not_started_role_id"])
 
         # 1. Remove Ephemeral Role (MANDATORY)
         if ephemeral_role and ephemeral_role in user.roles:
             try:
-                await user.remove_roles(ephemeral_role, reason="Ephemeral success." + (" (Manual)" if manual else " (Threshold met)"))
+                await user.remove_roles(ephemeral_role, reason="Ephemeral message threshold met/manually succeeded.")
             except discord.Forbidden:
                 print(f"Ephemeral ERROR: Forbidden to remove ephemeral role for {user.id} on success.")
         
@@ -210,11 +207,7 @@ class Ephemeral(commands.Cog):
             guild, user, settings["removed_message_channel_id"], settings["removed_message"]
         )
 
-        log_msg = f"✅ **Success:** {user.mention} (`{user.id}`) met the message threshold and is no longer Ephemeral."
-        if manual:
-            log_msg = f"⭐ **Manual Success:** {user.mention} (`{user.id}`) was manually removed from Ephemeral mode."
-
-        await self._log_event(guild, log_msg)
+        await self._log_event(guild, f"✅ **Success:** {user.mention} (`{user.id}`) met the message threshold/was manually marked as succeeded and is no longer Ephemeral.")
                 
 
     async def _handle_activation(self, message: discord.Message, settings: dict, guild: discord.Guild, user: discord.Member):
@@ -224,10 +217,7 @@ class Ephemeral(commands.Cog):
         
         # Crucial configuration check
         if not ephemeral_role or not not_started_role:
-            try:
-                await message.delete() # Hide the failed attempt
-            except Exception:
-                pass
+            await message.delete() # Hide the failed attempt
             await message.channel.send(f"{user.mention}, Ephemeral Mode is not fully configured (missing roles). Please notify an admin.", delete_after=10)
             return
 
@@ -255,6 +245,8 @@ class Ephemeral(commands.Cog):
                 "start_time": now,
                 "message_count": 0,
                 "is_ephemeral": True,
+                "first_greeting_sent": False,
+                "second_greeting_sent": False,
             })
             
             # 3. Send confirmation
@@ -348,11 +340,9 @@ class Ephemeral(commands.Cog):
     async def check_ephemeral_status(self, guild_id: int, user_id: int):
         print(f"Ephemeral DEBUG: Timer task STARTED execution for User {user_id}")
         
-        # Wait a short period to allow for startup race conditions
         await asyncio.sleep(10)
 
         while True:
-            # Check status every 10 seconds
             await asyncio.sleep(10)
 
             guild = self.bot.get_guild(guild_id)
@@ -365,7 +355,7 @@ class Ephemeral(commands.Cog):
 
             member_data = await self.config.member(user).all()
             if not member_data["is_ephemeral"]:
-                print(f"Ephemeral DEBUG: Task EXITING (is_ephemeral is False, likely cleared by a command): {user_id}")
+                print(f"Ephemeral DEBUG: Task EXITING (is_ephemeral is False): {user_id}")
                 self.stop_user_timer(guild_id, user_id)
                 return
 
@@ -474,73 +464,61 @@ class Ephemeral(commands.Cog):
         if new_count >= settings["messages_threshold"]:
             await self._handle_ephemeral_success(guild, member, settings)
 
+    # --- Configuration Commands ---
+
     @commands.command()
     @checks.admin_or_permissions(manage_guild=True)
     async def ephemeralstatus(self, ctx: commands.Context):
-        """Displays all users currently in Ephemeral mode and their time remaining."""
-        all_member_data = await self.config.all_members(ctx.guild)
-        settings = await self.config.guild(ctx.guild).all()
-        failed_threshold_seconds = settings["ephemeral_failed_threshold"]
-        ephemeral_users = []
+        """Shows all users currently in Ephemeral mode with their progress and timer."""
+        guild = ctx.guild
+        settings = await self.config.guild(guild).all()
         
+        # Get all members marked as ephemeral
+        all_member_data = await self.config.all_members(guild)
+        ephemeral_members = []
+
         for member_id, data in all_member_data.items():
-            if data.get("is_ephemeral") and data.get("start_time"):
-                member = ctx.guild.get_member(member_id)
-                if not member:
-                    # Clean up data for users who left
-                    await self.config.member_from_id(member_id).clear()
-                    self.stop_user_timer(ctx.guild.id, member_id)
-                    continue
+            if data["is_ephemeral"] and data["start_time"] is not None:
+                member = guild.get_member(member_id)
+                if member:
+                    ephemeral_members.append((member, data))
+        
+        if not ephemeral_members:
+            return await ctx.send("No users are currently in Ephemeral mode.")
 
-                start_time_ts = data["start_time"]
-                expiration_ts = start_time_ts + failed_threshold_seconds
-                output_line = (
-                    f"{member.mention} ({data['message_count']}/{settings['messages_threshold']}) | "
-                    f"Expires: <t:{int(expiration_ts)}:R>"
-                )
-                ephemeral_users.append(output_line)
+        # Prepare output pages
+        output = [bold("Ephemeral Mode Status")]
+        
+        failed_threshold = timedelta(seconds=settings["ephemeral_failed_threshold"])
+        
+        for member, data in ephemeral_members:
+            start_time = datetime.fromtimestamp(data["start_time"])
+            time_passed = datetime.now() - start_time
+            
+            # Calculate expiry time
+            expiry_time = start_time + failed_threshold
+            time_remaining = expiry_time - datetime.now()
+            
+            # Ensure time remaining is not negative (shouldn't happen with the background task, but good practice)
+            if time_remaining.total_seconds() < 0:
+                time_remaining = timedelta(seconds=0)
 
-        if not ephemeral_users:
-            await ctx.send("No users are currently in Ephemeral mode.")
-            return
-
-        pages = []
-        for i, page in enumerate(pagify("\n".join(ephemeral_users), page_length=1000)):
-            embed = discord.Embed(
-                title=f"Ephemeral Users Status ({len(ephemeral_users)} active)",
-                description=page,
-                color=await ctx.embed_color()
+            # Format progress
+            messages_sent = data["message_count"]
+            messages_required = settings["messages_threshold"]
+            
+            progress_line = (
+                f"{member.mention} (`{member.id}`) | "
+                f"Messages: {messages_sent}/{messages_required} | "
+                f"Started: {start_time.strftime('%Y-%m-%d %H:%M:%S')} UTC | "
+                f"Expires In: {timedelta_to_human(time_remaining)}"
             )
-            if len(ephemeral_users) > 20: 
-                 embed.title = f"Ephemeral Users Status (Page {i+1})"
-            pages.append(embed)
-        
-        if len(pages) > 1:
-            await menu(ctx, pages, DEFAULT_CONTROLS)
-        else:
-            await ctx.send(embed=pages[0])
-            
-    @commands.command()
-    @checks.admin_or_permissions(manage_guild=True)
-    async def ephemeralsuccess(self, ctx: commands.Context, user: discord.Member):
-        """Manually removes a user from Ephemeral mode (treating it as a success).
-        
-        This removes the Ephemeral role, stops their timer, clears their data, 
-        and logs a success event.
-        """
-        member_data = await self.config.member(user).all()
-        if not member_data["is_ephemeral"]:
-            await ctx.send(f"{user.mention} is not currently in Ephemeral mode.")
-            return
-            
-        settings = await self.config.guild(ctx.guild).all()
+            output.append(progress_line)
 
-        # Call the success handler with the manual flag set to True
-        await self._handle_ephemeral_success(ctx.guild, user, settings, manual=True)
+        # Use pagify and menu for clean output
+        pages = [box(page, lang="prolog") for page in pagify('\n'.join(output))]
+        await menu(ctx, pages, DEFAULT_CONTROLS)
 
-        await ctx.send(f"✅ **Success:** Manually removed {user.mention} from Ephemeral mode, treating it as a successful completion.")
-
-    # --- Configuration Commands ---
 
     @commands.group(invoke_without_command=True)
     @checks.admin_or_permissions(manage_guild=True)
@@ -549,6 +527,20 @@ class Ephemeral(commands.Cog):
         if ctx.invoked_subcommand is None:
             await ctx.send_help(ctx.command)
             
+    @ephemeralset.command(name="success")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def ephemeralset_success(self, ctx: commands.Context, user: discord.Member):
+        """Manually marks a user as having succeeded Ephemeral mode (removes role, clears data)."""
+        member_data = await self.config.member(user).all()
+
+        if not member_data["is_ephemeral"]:
+            return await ctx.send(f"{user.mention} is not currently in Ephemeral mode.")
+
+        settings = await self.config.guild(ctx.guild).all()
+        await self._handle_ephemeral_success(ctx.guild, user, settings)
+        await ctx.send(f"✅ Successfully marked {user.mention} as succeeded in Ephemeral mode. Roles removed and data cleared.")
+
+
     @ephemeralset.command(name="phrase")
     async def ephemeralset_phrase(self, ctx: commands.Context, *, phrase: str):
         """Sets the activation phrase a user must type to start Ephemeral Mode."""
@@ -574,7 +566,7 @@ class Ephemeral(commands.Cog):
         e_role = ctx.guild.get_role(settings["ephemeral_role_id"])
         f_role = ctx.guild.get_role(settings["ephemeral_failed_role_id"])
         nm_role = ctx.guild.get_role(settings["nomessages_role_id"])
-        ns_role = ctx.guild.get_role(settings["ephemeral_not_started_role_id"]) 
+        ns_role = ctx.guild.get_role(settings["ephemeral_not_started_role_id"]) # New role lookup
         
         failed_td = timedelta(seconds=settings['ephemeral_failed_threshold'])
         nomessages_td = timedelta(seconds=settings['nomessages_threshold'])
