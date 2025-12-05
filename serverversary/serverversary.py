@@ -6,6 +6,7 @@ import io
 from datetime import datetime, timedelta, timezone
 from redbot.core import commands, Config, checks
 from redbot.core.utils.chat_formatting import humanize_list, pagify, box
+from redbot.core.utils.views import SimpleMenu
 
 log = logging.getLogger("red.serverversary")
 
@@ -294,16 +295,32 @@ class Serverversary(commands.Cog):
 
         # Sort by date
         upcoming.sort(key=lambda x: x[0])
-
-        lines = ["**Upcoming Serverversaries**"]
-        for next_anniv, name, years in upcoming:
-            date_str = next_anniv.strftime("%d %b %Y")
-            lines.append(f"{name}: {date_str} ({years} years)")
-
-        msg = "\n".join(lines)
         
-        for page in pagify(msg, page_length=1900):
-            await ctx.send(page)
+        # Pagination chunks
+        chunk_size = 10
+        chunks = [upcoming[i:i + chunk_size] for i in range(0, len(upcoming), chunk_size)]
+        
+        if not chunks:
+            return await ctx.send("No valid data to display.")
+
+        embeds = []
+        for i, chunk in enumerate(chunks, 1):
+            embed = discord.Embed(
+                title="Upcoming Serverversaries", 
+                color=await ctx.embed_color()
+            )
+            
+            lines = []
+            for next_anniv, name, years in chunk:
+                date_str = next_anniv.strftime("%d %b %Y")
+                # Calculate relative time string (e.g. "in 2 days") or just leave as date
+                lines.append(f"`{date_str}`: **{name}** ({years} years)")
+            
+            embed.description = "\n".join(lines)
+            embed.set_footer(text=f"Page {i}/{len(chunks)}")
+            embeds.append(embed)
+
+        await SimpleMenu(embeds).start(ctx)
 
     @serverversary.command()
     async def export(self, ctx):
