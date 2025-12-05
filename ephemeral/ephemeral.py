@@ -97,6 +97,9 @@ class EphemeralButton(discord.ui.View):
                 , ephemeral=True
             )
             self.cog.start_user_timer(guild.id, user.id)
+            
+            # Log event
+            await self.cog._log_event(guild, f"▶️ **Started:** {user.mention} (`{user.id}`) clicked the button and started their timer.")
 
         except discord.Forbidden:
             await interaction.followup.send("I do not have permissions to assign the Ephemeral role.", ephemeral=True)
@@ -142,6 +145,8 @@ class Ephemeral(commands.Cog):
             removed_message_channel_id=None,
             removed_message="{mention} is no longer in Ephemeral mode! 🎉",
             
+            log_channel_id=None,
+
             embed_channel_id=None,
             embed_message_id=None,
             embed_data={
@@ -200,6 +205,22 @@ class Ephemeral(commands.Cog):
         task = self.timers.pop((guild_id, user_id), None)
         if task and not task.done():
             task.cancel()
+
+    async def _log_event(self, guild: discord.Guild, message: str):
+        """Logs an event to the configured log channel."""
+        log_channel_id = await self.config.guild(guild).log_channel_id()
+        if not log_channel_id:
+            return
+
+        channel = guild.get_channel(log_channel_id)
+        if channel and isinstance(channel, discord.TextChannel):
+            try:
+                # Send with allowed_mentions=none to prevent mass pings in logs
+                await channel.send(message, allowed_mentions=discord.AllowedMentions.none())
+            except discord.Forbidden:
+                print(f"Ephemeral ERROR: Cannot send log to {channel.name} ({channel.id}) - Missing Permissions")
+            except Exception as e:
+                print(f"Ephemeral ERROR logging event: {e}")
 
     async def _send_custom_message(self, guild: discord.Guild, user: discord.Member, channel_id: typing.Optional[int], message: str, time_passed: typing.Optional[timedelta] = None):
         if not channel_id:
@@ -261,6 +282,8 @@ class Ephemeral(commands.Cog):
                     guild, user, settings["second_greeting_channel_id"], settings["second_greeting_message"], time_passed=time_passed
                 )
                 await self.config.member(user).second_greeting_sent.set(True)
+                # Log Event
+                await self._log_event(guild, f"🕑 **Second Greeting:** Sent to {user.mention} (`{user.id}`).")
 
             elif time_passed >= first_greeting_threshold and not member_data["first_greeting_sent"]:
                 print(f"Ephemeral DEBUG: 1st Greeting trigger for {user.id}")
@@ -268,6 +291,8 @@ class Ephemeral(commands.Cog):
                     guild, user, settings["first_greeting_channel_id"], settings["first_greeting_message"], time_passed=time_passed
                 )
                 await self.config.member(user).first_greeting_sent.set(True)
+                # Log Event
+                await self._log_event(guild, f"🕐 **First Greeting:** Sent to {user.mention} (`{user.id}`).")
 
     async def _handle_ephemeral_failed(self, guild: discord.Guild, user: discord.Member, settings: dict):
         ephemeral_role = guild.get_role(settings["ephemeral_role_id"])
@@ -288,6 +313,9 @@ class Ephemeral(commands.Cog):
         await self._send_custom_message(
             guild, user, settings["failed_message_channel_id"], settings["failed_message"]
         )
+        
+        # Log Event
+        await self._log_event(guild, f"❌ **Failed:** {user.mention} (`{user.id}`) timed out and received the failed role.")
 
         self.stop_user_timer(guild.id, user.id)
         await self.config.member(user).clear()
@@ -325,6 +353,9 @@ class Ephemeral(commands.Cog):
                     await self._send_custom_message(
                         guild, member, settings["removed_message_channel_id"], settings["removed_message"]
                     )
+
+                    # Log Event
+                    await self._log_event(guild, f"✅ **Success:** {member.mention} (`{member.id}`) met the message threshold and is no longer Ephemeral.")
                     
                 except discord.Forbidden:
                     pass
@@ -420,9 +451,25 @@ class Ephemeral(commands.Cog):
             "",
             f"Removed Message Channel: **{get_channel_info(settings['removed_message_channel_id'])}**",
             f"Removed Message: `{settings['removed_message']}`",
+            "",
+            bold("Logging:"),
+            f"Log Channel: **{get_channel_info(settings['log_channel_id'])}**",
         ]
         
         await ctx.send(box('\n'.join(output)))
+
+    @ephemeralset.command(name="logchannel")
+    async def ephemeralset_logchannel(self, ctx: commands.Context, channel: typing.Optional[discord.TextChannel] = None):
+        """Sets the channel for logging Ephemeral events.
+        
+        Leave empty to disable logging.
+        """
+        if channel:
+            await self.config.guild(ctx.guild).log_channel_id.set(channel.id)
+            await ctx.send(f"Ephemeral events will be logged to {channel.mention}.")
+        else:
+            await self.config.guild(ctx.guild).log_channel_id.set(None)
+            await ctx.send("Ephemeral event logging has been disabled.")
 
     @ephemeralset.command(name="failedtime")
     async def ephemeralset_failedtime(self, ctx: commands.Context, time: commands.TimedeltaConverter(default_unit="hours")):
