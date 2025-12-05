@@ -33,6 +33,31 @@ class JoinTracker(commands.Cog):
         self.config.register_guild(**DEFAULT_GUILD)
         self.config.register_member(**DEFAULT_MEMBER)
 
+    async def get_join_count(self, guild: discord.Guild, user_id: int) -> int:
+        """
+        Public API to retrieve the number of times a user has joined a guild.
+        
+        Usage from another cog:
+            cog = bot.get_cog("JoinTracker")
+            count = await cog.get_join_count(guild, user_id)
+
+        Args:
+            guild (discord.Guild): The guild to query.
+            user_id (int): The discord ID of the user.
+
+        Returns:
+            int: The number of times the user has joined. Returns 0 if no record exists.
+        """
+        member_config = self.config.member_from_ids(guild.id, user_id)
+        data = await member_config.all()
+        
+        # If last_join_date is None, they haven't been tracked joining yet.
+        if data["last_join_date"] is None:
+            return 0
+            
+        # rejoin_count is 0 for the first join, so we add 1 for the total count
+        return data["rejoin_count"] + 1
+
     def _get_ordinal(self, n: int) -> str:
         """Converts an integer to its ordinal string representation (1 -> 1st, 2 -> 2nd, etc.)."""
         if 10 <= n % 100 <= 20:
