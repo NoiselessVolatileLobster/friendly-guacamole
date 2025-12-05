@@ -184,7 +184,11 @@ class Ephemeral(commands.Cog):
             formatted_message = formatted_message.replace("{time_passed}", timedelta_to_human(time_passed))
 
         try:
-            await channel.send(formatted_message)
+            # Explicitly allow user and role pings if they are in the message string
+            await channel.send(
+                formatted_message, 
+                allowed_mentions=discord.AllowedMentions(roles=True, users=True)
+            )
         except discord.Forbidden:
             print(f"Ephemeral ERROR in Guild {guild.id}: Missing permissions in {channel.name}.")
         except Exception as e:
@@ -461,7 +465,7 @@ class Ephemeral(commands.Cog):
 
             not_started_role = guild.get_role(not_started_role_id)
             if not not_started_role or not (not_started_role in member.roles):
-                # User doesn't have the required role to enter Ephemeral Mode, let the message stay and stop.
+                # User does not have the required role to enter Ephemeral Mode, let the message stay and stop.
                 return
             
             activation_phrase = settings.get("activation_phrase", "let me in")
