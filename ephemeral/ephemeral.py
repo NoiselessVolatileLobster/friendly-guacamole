@@ -132,6 +132,13 @@ class Ephemeral(commands.Cog):
             ephemeral_role_id=None,
             ephemeral_failed_role_id=None,
             
+            # --- NEW NOMESSAGES CONFIGURATION ---
+            nomessages_threshold=timedelta(hours=4).total_seconds(), # Default 4 hours
+            nomessages_role_id=None,
+            nomessages_failed_message_channel_id=None,
+            nomessages_failed_message="👻 {mention} has failed Ephemeral mode (No Messages) and has been assigned the No Messages role.",
+            # --- END NEW CONFIGURATION ---
+            
             first_greeting_threshold=timedelta(hours=3).total_seconds(),
             first_greeting_channel_id=None,
             first_greeting_message="It looks like you haven't sent enough messages yet in {time_passed}. {mention}",
@@ -252,55 +259,31 @@ class Ephemeral(commands.Cog):
         except Exception as e:
             print(f"Ephemeral ERROR in Guild {guild.id}: Unexpected error: {e}")
 
-    async def check_ephemeral_status(self, guild_id: int, user_id: int):
-        await asyncio.sleep(60)
+    async def _handle_nomessages_failed(self, guild: discord.Guild, user: discord.Member, settings: dict):
+        ephemeral_role = guild.get_role(settings["ephemeral_role_id"])
+        nomessages_role = guild.get_role(settings["nomessages_role_id"])
 
-        while True:
-            await asyncio.sleep(120)
+        if ephemeral_role and ephemeral_role in user.roles:
+            try:
+                await user.remove_roles(ephemeral_role, reason="Ephemeral Failed: No Messages sent.")
+            except discord.Forbidden:
+                pass
 
-            guild = self.bot.get_guild(guild_id)
-            user = guild.get_member(user_id)
-            
-            if not guild or not user:
-                self.stop_user_timer(guild_id, user_id)
-                return
+        if nomessages_role:
+            try:
+                await user.add_roles(nomessages_role, reason="Ephemeral Failed: No Messages sent.")
+            except discord.Forbidden:
+                pass
 
-            member_data = await self.config.member(user).all()
-            if not member_data["is_ephemeral"]:
-                self.stop_user_timer(guild_id, user_id)
-                return
+        await self._send_custom_message(
+            guild, user, settings["nomessages_failed_message_channel_id"], settings["nomessages_failed_message"]
+        )
+        
+        # Log Event
+        await self._log_event(guild, f"👻 **No messages:** {user.mention} (`{user.id}`) did not send any messages and received the No Messages role.")
 
-            settings = await self.config.guild(guild).all()
-            
-            failed_threshold = timedelta(seconds=settings["ephemeral_failed_threshold"])
-            second_greeting_threshold = timedelta(seconds=settings["second_greeting_threshold"])
-            first_greeting_threshold = timedelta(seconds=settings["first_greeting_threshold"])
-            
-            start_time = datetime.fromtimestamp(member_data["start_time"])
-            time_passed: timedelta = datetime.now() - start_time
-
-            if time_passed >= failed_threshold:
-                print(f"Ephemeral DEBUG: FAILED trigger for {user.id}")
-                await self._handle_ephemeral_failed(guild, user, settings)
-                return
-
-            elif time_passed >= second_greeting_threshold and not member_data["second_greeting_sent"]:
-                print(f"Ephemeral DEBUG: 2nd Greeting trigger for {user.id}")
-                await self._send_custom_message(
-                    guild, user, settings["second_greeting_channel_id"], settings["second_greeting_message"], time_passed=time_passed
-                )
-                await self.config.member(user).second_greeting_sent.set(True)
-                # Log Event
-                await self._log_event(guild, f"🕑 **Second Greeting:** Sent to {user.mention} (`{user.id}`).")
-
-            elif time_passed >= first_greeting_threshold and not member_data["first_greeting_sent"]:
-                print(f"Ephemeral DEBUG: 1st Greeting trigger for {user.id}")
-                await self._send_custom_message(
-                    guild, user, settings["first_greeting_channel_id"], settings["first_greeting_message"], time_passed=time_passed
-                )
-                await self.config.member(user).first_greeting_sent.set(True)
-                # Log Event
-                await self._log_event(guild, f"🕐 **First Greeting:** Sent to {user.mention} (`{user.id}`).")
+        self.stop_user_timer(guild.id, user.id)
+        await self.config.member(user).clear()
 
     async def _handle_ephemeral_failed(self, guild: discord.Guild, user: discord.Member, settings: dict):
         ephemeral_role = guild.get_role(settings["ephemeral_role_id"])
@@ -327,6 +310,65 @@ class Ephemeral(commands.Cog):
 
         self.stop_user_timer(guild.id, user.id)
         await self.config.member(user).clear()
+
+    async def check_ephemeral_status(self, guild_id: int, user_id: int):
+        await asyncio.sleep(60)
+
+        while True:
+            await asyncio.sleep(120)
+
+            guild = self.bot.get_guild(guild_id)
+            user = guild.get_member(user_id)
+            
+            if not guild or not user:
+                self.stop_user_timer(guild_id, user_id)
+                return
+
+            member_data = await self.config.member(user).all()
+            if not member_data["is_ephemeral"]:
+                self.stop_user_timer(guild_id, user_id)
+                return
+
+            settings = await self.config.guild(guild).all()
+            
+            failed_threshold = timedelta(seconds=settings["ephemeral_failed_threshold"])
+            nomessages_threshold = timedelta(seconds=settings["nomessages_threshold"])
+            second_greeting_threshold = timedelta(seconds=settings["second_greeting_threshold"])
+            first_greeting_threshold = timedelta(seconds=settings["first_greeting_threshold"])
+            
+            start_time = datetime.fromtimestamp(member_data["start_time"])
+            time_passed: timedelta = datetime.now() - start_time
+
+            # Check 1: No Messages Failure (Highest Priority, specific failure)
+            if time_passed >= nomessages_threshold and member_data["message_count"] == 0:
+                print(f"Ephemeral DEBUG: NO MESSAGES FAILED trigger for {user.id}")
+                await self._handle_nomessages_failed(guild, user, settings)
+                return
+
+            # Check 2: General Time Out Failure
+            if time_passed >= failed_threshold:
+                print(f"Ephemeral DEBUG: FAILED trigger for {user.id}")
+                await self._handle_ephemeral_failed(guild, user, settings)
+                return
+
+            # Greeting checks (only run if not failed yet)
+            elif time_passed >= second_greeting_threshold and not member_data["second_greeting_sent"]:
+                print(f"Ephemeral DEBUG: 2nd Greeting trigger for {user.id}")
+                await self._send_custom_message(
+                    guild, user, settings["second_greeting_channel_id"], settings["second_greeting_message"], time_passed=time_passed
+                )
+                await self.config.member(user).second_greeting_sent.set(True)
+                # Log Event
+                await self._log_event(guild, f"🕑 **Second Greeting:** Sent to {user.mention} (`{user.id}`).")
+
+            elif time_passed >= first_greeting_threshold and not member_data["first_greeting_sent"]:
+                print(f"Ephemeral DEBUG: 1st Greeting trigger for {user.id}")
+                await self._send_custom_message(
+                    guild, user, settings["first_greeting_channel_id"], settings["first_greeting_message"], time_passed=time_passed
+                )
+                await self.config.member(user).first_greeting_sent.set(True)
+                # Log Event
+                await self._log_event(guild, f"🕐 **First Greeting:** Sent to {user.mention} (`{user.id}`).")
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -426,8 +468,10 @@ class Ephemeral(commands.Cog):
         settings = await self.config.guild(ctx.guild).all()
         e_role = ctx.guild.get_role(settings["ephemeral_role_id"])
         f_role = ctx.guild.get_role(settings["ephemeral_failed_role_id"])
+        nm_role = ctx.guild.get_role(settings["nomessages_role_id"]) # New role lookup
         
         failed_td = timedelta(seconds=settings['ephemeral_failed_threshold'])
+        nomessages_td = timedelta(seconds=settings['nomessages_threshold']) # New time lookup
         first_td = timedelta(seconds=settings['first_greeting_threshold'])
         second_td = timedelta(seconds=settings['second_greeting_threshold'])
 
@@ -437,13 +481,15 @@ class Ephemeral(commands.Cog):
         
         output = [
             bold("Time/Message Thresholds:"),
-            f"Ephemeral Failed Threshold: **{timedelta_to_human(failed_td)}**",
+            f"Ephemeral Failed Threshold (General): **{timedelta_to_human(failed_td)}**",
+            f"No Messages Threshold (Zero messages): **{timedelta_to_human(nomessages_td)}**", # New display
             f"Messages Threshold: **{settings['messages_threshold']}** messages",
             f"Message Length Threshold: **{settings['message_length_threshold']}** characters",
             "",
             bold("Role Configuration:"),
             f"Ephemeral Role: **{e_role.name if e_role else 'Not Set'}** ({settings['ephemeral_role_id'] or 'N/A'})",
             f"Ephemeral Failed Role: **{f_role.name if f_role else 'Not Set'}** ({settings['ephemeral_failed_role_id'] or 'N/A'})",
+            f"No Messages Role: **{nm_role.name if nm_role else 'Not Set'}** ({settings['nomessages_role_id'] or 'N/A'})", # New display
             "",
             bold("Greetings & Notifications:"),
             f"First Greeting Time: **{timedelta_to_human(first_td)}**",
@@ -454,8 +500,11 @@ class Ephemeral(commands.Cog):
             f"Second Greeting Channel: **{get_channel_info(settings['second_greeting_channel_id'])}**",
             f"Second Greeting Message: `{settings['second_greeting_message']}`",
             "",
-            f"Failed Message Channel: **{get_channel_info(settings['failed_message_channel_id'])}**",
+            f"Failed Message Channel (Timed Out): **{get_channel_info(settings['failed_message_channel_id'])}**",
             f"Failed Message: `{settings['failed_message']}`",
+            "",
+            f"No Messages Failed Channel: **{get_channel_info(settings['nomessages_failed_message_channel_id'])}**", # New display
+            f"No Messages Failed Message: `{settings['nomessages_failed_message']}`", # New display
             "",
             f"Removed Message Channel: **{get_channel_info(settings['removed_message_channel_id'])}**",
             f"Removed Message: `{settings['removed_message']}`",
@@ -481,11 +530,19 @@ class Ephemeral(commands.Cog):
 
     @ephemeralset.command(name="failedtime")
     async def ephemeralset_failedtime(self, ctx: commands.Context, time: commands.TimedeltaConverter(default_unit="hours")):
-        """Sets the Ephemeral Failed time threshold."""
+        """Sets the Ephemeral Failed time threshold (General Timeout)."""
         if time.total_seconds() <= 0:
             return await ctx.send("Time must be a positive duration.")
         await self.config.guild(ctx.guild).ephemeral_failed_threshold.set(time.total_seconds())
         await ctx.send(f"Ephemeral Failed threshold set to **{timedelta_to_human(time)}**.")
+
+    @ephemeralset.command(name="nomessages")
+    async def ephemeralset_nomessages(self, ctx: commands.Context, time: commands.TimedeltaConverter(default_unit="hours")):
+        """Sets the 'No Messages' time threshold. User fails if they send 0 messages by this time."""
+        if time.total_seconds() <= 0:
+            return await ctx.send("Time must be a positive duration.")
+        await self.config.guild(ctx.guild).nomessages_threshold.set(time.total_seconds())
+        await ctx.send(f"'No Messages' threshold set to **{timedelta_to_human(time)}**.")
 
     @ephemeralset.command(name="messages")
     async def ephemeralset_messages(self, ctx: commands.Context, count: int):
@@ -511,9 +568,15 @@ class Ephemeral(commands.Cog):
 
     @ephemeralset.command(name="failedrole")
     async def ephemeralset_failedrole(self, ctx: commands.Context, role: discord.Role):
-        """Sets the 'Ephemeral Failed' role."""
+        """Sets the 'Ephemeral Failed' role (General Timeout)."""
         await self.config.guild(ctx.guild).ephemeral_failed_role_id.set(role.id)
         await ctx.send(f"Ephemeral Failed role set to **{role.name}**.")
+
+    @ephemeralset.command(name="nomessagesrole")
+    async def ephemeralset_nomessagesrole(self, ctx: commands.Context, role: discord.Role):
+        """Sets the 'No Messages' role."""
+        await self.config.guild(ctx.guild).nomessages_role_id.set(role.id)
+        await ctx.send(f"'No Messages' role set to **{role.name}**.")
 
     @ephemeralset.command(name="firstgreeting")
     async def ephemeralset_firstgreeting(self, ctx: commands.Context, time: commands.TimedeltaConverter(default_unit="hours"), channel: discord.TextChannel, *, message: str):
@@ -539,10 +602,17 @@ class Ephemeral(commands.Cog):
         
     @ephemeralset.command(name="failedmessage")
     async def ephemeralset_failedmessage(self, ctx: commands.Context, channel: discord.TextChannel, *, message: str):
-        """Sets the Ephemeral Failed message."""
+        """Sets the Ephemeral Failed message (General Timeout)."""
         await self.config.guild(ctx.guild).failed_message_channel_id.set(channel.id)
         await self.config.guild(ctx.guild).failed_message.set(message)
         await ctx.send(f"Ephemeral Failed message set for {channel.mention}.")
+
+    @ephemeralset.command(name="nomessagesfailedmessage")
+    async def ephemeralset_nomessagesfailedmessage(self, ctx: commands.Context, channel: discord.TextChannel, *, message: str):
+        """Sets the 'No Messages' Failed message."""
+        await self.config.guild(ctx.guild).nomessages_failed_message_channel_id.set(channel.id)
+        await self.config.guild(ctx.guild).nomessages_failed_message.set(message)
+        await ctx.send(f"'No Messages' Failed message set for {channel.mention}.")
 
     @ephemeralset.command(name="ephemeralremoved")
     async def ephemeralset_ephemeralremoved(self, ctx: commands.Context, channel: discord.TextChannel, *, message: str):
