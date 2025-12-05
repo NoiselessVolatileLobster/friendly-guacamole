@@ -1,8 +1,9 @@
 {
-    "author": "NoiselessVolatileLobster",
+    "author": ["NoiselessVolatileLobster"],
     "version": "0.0.1",
     "min_bot_version": "3.5.0",
     "description": "Welcome new members and keep track of how many times they've been here before",
-    "short": "Hello darkness, my old friend",
+    "short": "Greet new friends, and welcome old ones back.",
+    "end_user_data_statement": "This cog stores user IDs and join dates to track join history.",
     "tags": ["utility", "userinfo"]
 }
