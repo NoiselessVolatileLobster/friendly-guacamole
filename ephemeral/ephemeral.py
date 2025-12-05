@@ -106,10 +106,13 @@ class EphemeralButton(discord.ui.View):
 
             # Log event
             await self.cog._log_event(guild, f"▶️ **Started:** {user.mention} (`{user.id}`) clicked the button and started their timer.")
+            print(f"Ephemeral DEBUG: Successful start sequence completed for {user.id}")
 
         except discord.Forbidden:
+            print(f"Ephemeral ERROR: Forbidden to add role for {user.id}")
             await interaction.followup.send("I do not have permissions to assign the Ephemeral role.", ephemeral=True)
         except Exception as e:
+            print(f"Ephemeral ERROR: Unhandled exception during button click for {user.id}: {e}")
             await interaction.followup.send(f"An error occurred: {e}", ephemeral=True)
         finally:
             button.label = original_label
