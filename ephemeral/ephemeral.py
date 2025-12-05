@@ -346,6 +346,10 @@ class Ephemeral(commands.Cog):
             start_time = datetime.fromtimestamp(member_data["start_time"])
             time_passed: timedelta = datetime.now() - start_time
 
+            # --- DEBUG LOGGING ADDED HERE ---
+            print(f"Ephemeral DEBUG: Checking {user.id}. Time Passed: {time_passed.total_seconds():.0f}s. Message Count: {member_data['message_count']}.")
+            # --------------------------------
+
             # Check 1: No Messages Failure (Highest Priority, specific failure)
             if time_passed >= nomessages_threshold and member_data["message_count"] == 0:
                 print(f"Ephemeral DEBUG: NO MESSAGES FAILED trigger for {user.id}")
