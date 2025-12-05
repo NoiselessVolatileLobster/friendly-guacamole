@@ -244,31 +244,66 @@ class Serverversary(commands.Cog):
 
     @serverversary.command()
     async def list(self, ctx):
-        """List recorded serverversaries (upcoming next)."""
+        """List upcoming serverversaries (sorted by nearest date)."""
         all_members = await self.config.all_members(ctx.guild)
         if not all_members:
             return await ctx.send("No serverversaries recorded. Run `[p]serverversary sync` first.")
 
-        lines = []
+        now = datetime.now(timezone.utc)
+        upcoming = []
+
+        # Build list of (next_anniv_date, display_name, years_joined)
         for user_id, data in all_members.items():
             if not data.get("join_date"):
                 continue
-                
+            
+            # Filter for members still in guild
             member = ctx.guild.get_member(user_id)
-            name = member.display_name if member else f"User ID: {user_id}"
-            
+            if not member:
+                continue
+
             ts = data["join_date"]
-            dt = datetime.fromtimestamp(ts, timezone.utc)
-            date_str = dt.strftime("%Y-%m-%d")
+            join_dt = datetime.fromtimestamp(ts, timezone.utc)
             
-            lines.append(f"{name}: {date_str}")
+            # Logic to find the NEXT occurrence relative to NOW
+            try:
+                anniv_this_year = join_dt.replace(year=now.year)
+            except ValueError:
+                # Handle Feb 29 on non-leap years -> Feb 28
+                anniv_this_year = join_dt.replace(year=now.year, day=28)
+
+            if anniv_this_year < now:
+                # It passed this year, next one is next year
+                target_year = now.year + 1
+            else:
+                # It is upcoming later this year
+                target_year = now.year
+
+            # Calculate precise next anniversary date
+            try:
+                next_anniv = join_dt.replace(year=target_year)
+            except ValueError:
+                # Handle Feb 29 for next year if applicable
+                next_anniv = join_dt.replace(year=target_year, day=28)
+            
+            years_joined = target_year - join_dt.year
+            upcoming.append((next_anniv, member.display_name, years_joined))
+
+        if not upcoming:
+            return await ctx.send("No current members found with recorded join dates.")
+
+        # Sort by date
+        upcoming.sort(key=lambda x: x[0])
+
+        lines = ["**Upcoming Serverversaries**"]
+        for next_anniv, name, years in upcoming:
+            date_str = next_anniv.strftime("%d %b %Y")
+            lines.append(f"{name}: {date_str} ({years} years)")
 
         msg = "\n".join(lines)
-        if not msg:
-            return await ctx.send("No valid data found.")
-            
+        
         for page in pagify(msg, page_length=1900):
-            await ctx.send(box(page))
+            await ctx.send(page)
 
     @serverversary.command()
     async def export(self, ctx):
