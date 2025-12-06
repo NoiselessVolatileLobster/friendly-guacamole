@@ -602,32 +602,35 @@ class VibeCheck(getattr(commands, "Cog", object)):
         await self._vibe_check_role_assignment(member_receiver, new_vibes)
         
         # 5. Run WarnSystem Integration Check
-        # Check if score CROSSED the threshold downwards (old > threshold >= new)
-        guild_conf = self.conf.guild(target_guild)
-        
-        warn_thresh = await guild_conf.warn_threshold()
-        if warn_thresh is not None and current_vibes > warn_thresh >= new_vibes:
-            reason = await guild_conf.warn_reason()
-            await self._trigger_warnsystem(
-                target_guild, member_receiver, giver, 1, 
-                f"{reason} (Score: {new_vibes})"
-            )
+        # Logic Updated: Now triggers if score decreased AND is below threshold (Priority: Ban > Kick > Warn)
+        if new_vibes < current_vibes:
+            guild_conf = self.conf.guild(target_guild)
             
-        kick_thresh = await guild_conf.kick_threshold()
-        if kick_thresh is not None and current_vibes > kick_thresh >= new_vibes:
-            reason = await guild_conf.kick_reason()
-            await self._trigger_warnsystem(
-                target_guild, member_receiver, giver, 3, 
-                f"{reason} (Score: {new_vibes})"
-            )
-
-        ban_thresh = await guild_conf.ban_threshold()
-        if ban_thresh is not None and current_vibes > ban_thresh >= new_vibes:
-            reason = await guild_conf.ban_reason()
-            await self._trigger_warnsystem(
-                target_guild, member_receiver, giver, 5, 
-                f"{reason} (Score: {new_vibes})"
-            )
+            ban_thresh = await guild_conf.ban_threshold()
+            kick_thresh = await guild_conf.kick_threshold()
+            warn_thresh = await guild_conf.warn_threshold()
+            
+            # Check Ban (Highest Priority)
+            if ban_thresh is not None and new_vibes <= ban_thresh:
+                reason = await guild_conf.ban_reason()
+                await self._trigger_warnsystem(
+                    target_guild, member_receiver, giver, 5, 
+                    f"{reason} (Score: {new_vibes})"
+                )
+            # Check Kick (Medium Priority)
+            elif kick_thresh is not None and new_vibes <= kick_thresh:
+                reason = await guild_conf.kick_reason()
+                await self._trigger_warnsystem(
+                    target_guild, member_receiver, giver, 3, 
+                    f"{reason} (Score: {new_vibes})"
+                )
+            # Check Warn (Lowest Priority)
+            elif warn_thresh is not None and new_vibes <= warn_thresh:
+                reason = await guild_conf.warn_reason()
+                await self._trigger_warnsystem(
+                    target_guild, member_receiver, giver, 1, 
+                    f"{reason} (Score: {new_vibes})"
+                )
         
         # 6. Perform Logging
         await self._log_vibe_change(target_guild, giver, member_receiver, amount, current_vibes, new_vibes)
