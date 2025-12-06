@@ -83,6 +83,25 @@ class Ephemeral(commands.Cog):
             },
             # --- END SUCCESS MESSAGE CONFIGURATION ---
             
+            # --- WARNING SYSTEM CONFIGURATION ---
+            # Each dict holds: enabled (bool), action (str: warn/kick/ban), reason (str)
+            warn_nomessages={
+                "enabled": False,
+                "action": "warn",
+                "reason": "Ephemeral Mode Failure: No messages sent within threshold."
+            },
+            warn_expire={
+                "enabled": False,
+                "action": "warn",
+                "reason": "Ephemeral Mode Failure: Timer expired before message count met."
+            },
+            warn_second_greeting={
+                "enabled": False,
+                "action": "warn",
+                "reason": "Ephemeral Mode Warning: Reached second greeting threshold."
+            },
+            # --- END WARNING SYSTEM CONFIGURATION ---
+
             log_channel_id=None,
         )
         self.config.register_member(
@@ -198,6 +217,49 @@ class Ephemeral(commands.Cog):
             print(f"Ephemeral ERROR in Guild {guild.id}: Missing permissions in {channel.name}.")
         except Exception as e:
             print(f"Ephemeral ERROR in Guild {guild.id}: Unexpected error: {e}")
+
+    async def _perform_automated_action(self, guild: discord.Guild, user: discord.Member, config_key: str):
+        """Executes an automated action (Warn, Kick, Ban) via WarnSystem integration."""
+        settings = await self.config.guild(guild).all()
+        action_config = settings.get(config_key)
+        
+        if not action_config or not action_config.get("enabled", False):
+            return
+
+        action = action_config.get("action", "warn").lower()
+        reason = action_config.get("reason", "Automated Ephemeral Action")
+        
+        warn_system = self.bot.get_cog("WarnSystem")
+        
+        if not warn_system:
+            print(f"Ephemeral WARNING: WarnSystem cog not found. Cannot perform automated action '{action}' for {user.id}.")
+            return
+
+        try:
+            if action == "warn":
+                # API: warn(member, author, reason)
+                await warn_system.api.warn(user, self.bot.user, reason)
+                await self._log_event(guild, f"⚠️ **Warned:** {user.mention} (`{user.id}`) - Reason: {reason}")
+                
+            elif action == "kick":
+                await guild.kick(user, reason=reason)
+                # We still try to log the warning to WarnSystem for record keeping if possible
+                try:
+                    await warn_system.api.warn(user, self.bot.user, f"[Auto-Kick] {reason}")
+                except: pass
+                await self._log_event(guild, f"👢 **Kicked:** {user.mention} (`{user.id}`) - Reason: {reason}")
+                
+            elif action == "ban":
+                await guild.ban(user, reason=reason)
+                try:
+                    await warn_system.api.warn(user, self.bot.user, f"[Auto-Ban] {reason}")
+                except: pass
+                await self._log_event(guild, f"🔨 **Banned:** {user.mention} (`{user.id}`) - Reason: {reason}")
+
+        except discord.Forbidden:
+            await self._log_event(guild, f"❌ **Error:** Failed to perform action '{action}' on {user.mention}. Missing Permissions.")
+        except Exception as e:
+            print(f"Ephemeral ERROR performing action '{action}' on {user.id}: {e}")
 
     async def _send_success_embed(self, guild: discord.Guild, user: discord.Member, settings: dict):
         """Sends the Success (formerly Removed) embed."""
@@ -380,6 +442,9 @@ class Ephemeral(commands.Cog):
         
         await self._log_event(guild, f"👻 **No messages:** {user.mention} (`{user.id}`) did not send any messages and received the No Messages role.")
 
+        # Trigger WarnSystem Action
+        await self._perform_automated_action(guild, user, "warn_nomessages")
+
         self.stop_user_timer(guild.id, user.id)
         await self.config.member(user).clear()
 
@@ -413,6 +478,9 @@ class Ephemeral(commands.Cog):
         )
         
         await self._log_event(guild, f"❌ **Expired:** {user.mention} (`{user.id}`) timer expired and received the expired role.")
+
+        # Trigger WarnSystem Action
+        await self._perform_automated_action(guild, user, "warn_expire")
 
         self.stop_user_timer(guild.id, user.id)
         await self.config.member(user).clear()
@@ -471,6 +539,8 @@ class Ephemeral(commands.Cog):
                 )
                 await self.config.member(user).second_greeting_sent.set(True)
                 await self._log_event(guild, f"🕑 **Second Greeting:** Sent to {user.mention} (`{user.id}`).")
+                # Trigger WarnSystem Action for Second Greeting
+                await self._perform_automated_action(guild, user, "warn_second_greeting")
 
             elif time_passed >= first_greeting_threshold and not member_data["first_greeting_sent"]:
                 print(f"Ephemeral DEBUG: 1st Greeting trigger for {user.id}")
@@ -769,6 +839,18 @@ class Ephemeral(commands.Cog):
         )
         embed.add_field(name="Failures", value=failures_val, inline=False)
 
+        # Warning System (New Section)
+        def format_warn(config):
+            status = "Enabled" if config.get("enabled") else "Disabled"
+            return f"{status} | Action: {config.get('action')} | Reason: {config.get('reason')}"
+        
+        warnings_val = (
+            f"**No Messages:** {format_warn(settings.get('warn_nomessages'))}\n"
+            f"**Expired:** {format_warn(settings.get('warn_expire'))}\n"
+            f"**2nd Greeting:** {format_warn(settings.get('warn_second_greeting'))}"
+        )
+        embed.add_field(name="Warning System", value=warnings_val, inline=False)
+
         # Success
         success_data = settings.get('success_embed_data', {})
         success_val = (
@@ -782,6 +864,62 @@ class Ephemeral(commands.Cog):
         embed.add_field(name="Logging", value=f"**Channel:** {get_channel_str(settings['log_channel_id'])}", inline=False)
 
         await ctx.send(embed=embed)
+
+    @ephemeralset.group(name="warnings")
+    async def ephemeralset_warnings(self, ctx: commands.Context):
+        """Configure automated Warning System actions."""
+        pass
+    
+    @ephemeralset_warnings.command(name="nomessages")
+    async def warnings_nomessages(self, ctx: commands.Context, enabled: bool, action: str, *, reason: str):
+        """Configure warning for 'No Messages' failure.
+        
+        Action must be: warn, kick, or ban.
+        """
+        if action.lower() not in ["warn", "kick", "ban"]:
+            return await ctx.send("Action must be one of: warn, kick, ban")
+            
+        config = {
+            "enabled": enabled,
+            "action": action.lower(),
+            "reason": reason
+        }
+        await self.config.guild(ctx.guild).warn_nomessages.set(config)
+        await ctx.send(f"Updated 'No Messages' warning config: {config}")
+
+    @ephemeralset_warnings.command(name="expire")
+    async def warnings_expire(self, ctx: commands.Context, enabled: bool, action: str, *, reason: str):
+        """Configure warning for 'Timer Expired' failure.
+        
+        Action must be: warn, kick, or ban.
+        """
+        if action.lower() not in ["warn", "kick", "ban"]:
+            return await ctx.send("Action must be one of: warn, kick, ban")
+            
+        config = {
+            "enabled": enabled,
+            "action": action.lower(),
+            "reason": reason
+        }
+        await self.config.guild(ctx.guild).warn_expire.set(config)
+        await ctx.send(f"Updated 'Timer Expired' warning config: {config}")
+
+    @ephemeralset_warnings.command(name="secondgreeting")
+    async def warnings_secondgreeting(self, ctx: commands.Context, enabled: bool, action: str, *, reason: str):
+        """Configure warning for 'Second Greeting' trigger.
+        
+        Action must be: warn, kick, or ban.
+        """
+        if action.lower() not in ["warn", "kick", "ban"]:
+            return await ctx.send("Action must be one of: warn, kick, ban")
+            
+        config = {
+            "enabled": enabled,
+            "action": action.lower(),
+            "reason": reason
+        }
+        await self.config.guild(ctx.guild).warn_second_greeting.set(config)
+        await ctx.send(f"Updated 'Second Greeting' warning config: {config}")
 
     @ephemeralset.command(name="logchannel")
     async def ephemeralset_logchannel(self, ctx: commands.Context, channel: typing.Optional[discord.TextChannel] = None):
