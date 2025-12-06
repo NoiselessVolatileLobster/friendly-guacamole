@@ -37,11 +37,11 @@ class Ephemeral(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=1480084004, force_registration=True)
         self.config.register_guild(
-            ephemeral_failed_threshold=timedelta(hours=8).total_seconds(),
+            ephemeral_expire_threshold=timedelta(hours=8).total_seconds(),
             messages_threshold=10,
             message_length_threshold=10,
             ephemeral_role_id=None,
-            ephemeral_failed_role_id=None,
+            ephemeral_expire_role_id=None,
             
             # --- CONFIGURATION FOR ACTIVATION SCOPE ---
             activation_phrase="let me in", 
@@ -70,8 +70,8 @@ class Ephemeral(commands.Cog):
             second_greeting_channel_id=None,
             second_greeting_message="You've been in Ephemeral mode for {time_passed}. Please continue interacting! {mention}",
             
-            failed_message_channel_id=None,
-            failed_message="⚠️ {mention} has failed Ephemeral mode (Timed out) and has been assigned the Failed role.",
+            expire_message_channel_id=None,
+            expire_message="⚠️ {mention} has had their Ephemeral Timer Expire and has been assigned the Expired role.",
             
             # --- SUCCESS (REMOVED) MESSAGE CONFIGURATION (EMBED) ---
             success_message_channel_id=None,
@@ -383,36 +383,36 @@ class Ephemeral(commands.Cog):
         self.stop_user_timer(guild.id, user.id)
         await self.config.member(user).clear()
 
-    async def _handle_ephemeral_failed(self, guild: discord.Guild, user: discord.Member, settings: dict):
+    async def _handle_ephemeral_expire(self, guild: discord.Guild, user: discord.Member, settings: dict):
         ephemeral_role = guild.get_role(settings["ephemeral_role_id"])
-        failed_role = guild.get_role(settings["ephemeral_failed_role_id"])
+        expire_role = guild.get_role(settings["ephemeral_expire_role_id"])
         not_started_role = guild.get_role(settings["ephemeral_not_started_role_id"])
 
 
         if ephemeral_role and ephemeral_role in user.roles:
             try:
-                await user.remove_roles(ephemeral_role, reason="Ephemeral Failed: Timed out.")
+                await user.remove_roles(ephemeral_role, reason="Ephemeral Timer Expired.")
             except discord.Forbidden:
                 pass
 
         # They should not have this role, but if they do, remove it.
         if not_started_role and not_started_role in user.roles:
             try:
-                await user.remove_roles(not_started_role, reason="Ephemeral failed while they still had the 'not started' role.")
+                await user.remove_roles(not_started_role, reason="Ephemeral timer expired while they still had the 'not started' role.")
             except discord.Forbidden:
                 pass
 
-        if failed_role:
+        if expire_role:
             try:
-                await user.add_roles(failed_role, reason="Ephemeral Failed: Timed out.")
+                await user.add_roles(expire_role, reason="Ephemeral Timer Expired.")
             except discord.Forbidden:
                 pass
 
         await self._send_custom_message(
-            guild, user, settings["failed_message_channel_id"], settings["failed_message"]
+            guild, user, settings["expire_message_channel_id"], settings["expire_message"]
         )
         
-        await self._log_event(guild, f"❌ **Failed:** {user.mention} (`{user.id}`) timed out and received the failed role.")
+        await self._log_event(guild, f"❌ **Expired:** {user.mention} (`{user.id}`) timer expired and received the expired role.")
 
         self.stop_user_timer(guild.id, user.id)
         await self.config.member(user).clear()
@@ -441,7 +441,7 @@ class Ephemeral(commands.Cog):
 
             settings = await self.config.guild(guild).all()
             
-            failed_threshold = timedelta(seconds=settings["ephemeral_failed_threshold"])
+            expire_threshold = timedelta(seconds=settings["ephemeral_expire_threshold"])
             nomessages_threshold = timedelta(seconds=settings["nomessages_threshold"])
             second_greeting_threshold = timedelta(seconds=settings["second_greeting_threshold"])
             first_greeting_threshold = timedelta(seconds=settings["first_greeting_threshold"])
@@ -458,9 +458,9 @@ class Ephemeral(commands.Cog):
                 return
 
             # Check 2: General Time Out Failure
-            if time_passed >= failed_threshold:
-                print(f"Ephemeral DEBUG: FAILED trigger for {user.id}")
-                await self._handle_ephemeral_failed(guild, user, settings)
+            if time_passed >= expire_threshold:
+                print(f"Ephemeral DEBUG: EXPIRE trigger for {user.id}")
+                await self._handle_ephemeral_expire(guild, user, settings)
                 return
 
             # Greeting checks
@@ -570,7 +570,7 @@ class Ephemeral(commands.Cog):
         
         MAX_FIELDS_PER_PAGE = 10
         
-        failed_threshold = timedelta(seconds=settings["ephemeral_failed_threshold"])
+        expire_threshold = timedelta(seconds=settings["ephemeral_expire_threshold"])
         
         pages = []
         current_embed = None
@@ -590,7 +590,7 @@ class Ephemeral(commands.Cog):
             start_time = datetime.fromtimestamp(data["start_time"])
             
             # Calculate expiry time
-            expiry_time = start_time + failed_threshold
+            expiry_time = start_time + expire_threshold
             time_remaining = expiry_time - datetime.now()
             
             if time_remaining.total_seconds() < 0:
@@ -697,90 +697,61 @@ class Ephemeral(commands.Cog):
     async def ephemeralset_view(self, ctx: commands.Context):
         """Displays the current Ephemeral cog settings."""
         settings = await self.config.guild(ctx.guild).all()
+        e_role = ctx.guild.get_role(settings["ephemeral_role_id"])
+        f_role = ctx.guild.get_role(settings["ephemeral_expire_role_id"])
+        nm_role = ctx.guild.get_role(settings["nomessages_role_id"])
+        ns_role = ctx.guild.get_role(settings["ephemeral_not_started_role_id"]) # New role lookup
         
-        # Helpers for consistent formatting
-        def get_role_str(role_id):
-            if not role_id: return "Not Set"
-            role = ctx.guild.get_role(role_id)
-            return role.mention if role else f"ID: {role_id} (Deleted)"
-
-        def get_channel_str(channel_id):
-            if not channel_id: return "Not Set"
-            chan = ctx.guild.get_channel(channel_id)
-            return chan.mention if chan else f"ID: {channel_id} (Deleted)"
-
-        embed = discord.Embed(
-            title="Ephemeral Mode Configuration",
-            color=await ctx.embed_color()
-        )
-
-        # Activation Scope
-        activation_scope_val = (
-            f"**Phrase:** `{settings['activation_phrase']}`\n"
-            f"**Timer Channel:** {get_channel_str(settings['ephemeral_timer_channel_id'])}\n"
-            f"**Required Role:** {get_role_str(settings['ephemeral_not_started_role_id'])}\n\n"
-            f"**Start Msg (First Time):**\n"
-            f"Channel: {get_channel_str(settings['start_message_first_channel_id'])}\n"
-            f"Message: `{settings['start_message_first_content']}`\n\n"
-            f"**Start Msg (Returning):**\n"
-            f"Channel: {get_channel_str(settings['start_message_returning_channel_id'])}\n"
-            f"Message: `{settings['start_message_returning_content']}`"
-        )
-        embed.add_field(name="Activation Scope", value=activation_scope_val, inline=False)
-
-        # Time/Message Thresholds
-        failed_td = timedelta(seconds=settings['ephemeral_failed_threshold'])
+        expire_td = timedelta(seconds=settings['ephemeral_expire_threshold'])
         nomessages_td = timedelta(seconds=settings['nomessages_threshold'])
-        
-        thresholds_val = (
-            f"**Total Timeout:** {timedelta_to_human(failed_td)}\n"
-            f"**No Messages Timeout:** {timedelta_to_human(nomessages_td)}\n"
-            f"**Required Messages:** {settings['messages_threshold']}\n"
-            f"**Min Message Length:** {settings['message_length_threshold']} chars"
-        )
-        embed.add_field(name="Thresholds", value=thresholds_val, inline=False)
-
-        # Roles
-        roles_val = (
-            f"**Ephemeral:** {get_role_str(settings['ephemeral_role_id'])}\n"
-            f"**Failed:** {get_role_str(settings['ephemeral_failed_role_id'])}\n"
-            f"**No Messages:** {get_role_str(settings['nomessages_role_id'])}"
-        )
-        embed.add_field(name="Roles", value=roles_val, inline=False)
-
-        # Notifications (Greetings)
         first_td = timedelta(seconds=settings['first_greeting_threshold'])
         second_td = timedelta(seconds=settings['second_greeting_threshold'])
+
+        def get_channel_info(cid):
+            channel = ctx.guild.get_channel(cid)
+            return f"#{channel.name}" if channel else "Not Set"
         
-        greetings_val = (
-            f"**1st Greeting:** {timedelta_to_human(first_td)} in {get_channel_str(settings['first_greeting_channel_id'])}\n"
-            f"Message: `{settings['first_greeting_message']}`\n\n"
-            f"**2nd Greeting:** {timedelta_to_human(second_td)} in {get_channel_str(settings['second_greeting_channel_id'])}\n"
-            f"Message: `{settings['second_greeting_message']}`"
-        )
-        embed.add_field(name="Greetings", value=greetings_val, inline=False)
-
-        # Notifications (Failures)
-        failures_val = (
-            f"**General Fail:** {get_channel_str(settings['failed_message_channel_id'])}\n"
-            f"Message: `{settings['failed_message']}`\n\n"
-            f"**No Messages Fail:** {get_channel_str(settings['nomessages_failed_message_channel_id'])}\n"
-            f"Message: `{settings['nomessages_failed_message']}`"
-        )
-        embed.add_field(name="Failures", value=failures_val, inline=False)
-
-        # Success
-        success_val = (
-            f"**Channel:** {get_channel_str(settings['success_message_channel_id'])}\n"
-            f"**Title:** `{settings['success_embed_data']['title']}`\n"
-            f"**Footer:** `{settings['success_embed_data']['footer']}`"
-        )
-        embed.add_field(name="Success", value=success_val, inline=False)
-
-        # Logging
-        embed.add_field(name="Logging", value=f"**Channel:** {get_channel_str(settings['log_channel_id'])}", inline=False)
-
-        await ctx.send(embed=embed)
+        output = [
+            bold("--- Activation Scope ---"),
+            f"Activation Phrase: **`{settings['activation_phrase']}`**",
+            f"Timer/Deletion Channel: **{get_channel_info(settings['ephemeral_timer_channel_id'])}**",
+            f"Required 'Not Started' Role: **{ns_role.name if ns_role else 'Not Set'}** ({settings['ephemeral_not_started_role_id'] or 'N/A'})",
+            f"Start Msg (First Time): **{get_channel_info(settings['start_message_first_channel_id'])}**",
+            f"Start Msg (Returning): **{get_channel_info(settings['start_message_returning_channel_id'])}**",
+            "",
+            bold("--- Time/Message Thresholds ---"),
+            f"Ephemeral Expire Threshold (General): **{timedelta_to_human(expire_td)}**",
+            f"No Messages Threshold (Zero messages): **{timedelta_to_human(nomessages_td)}**",
+            f"Messages Threshold: **{settings['messages_threshold']}** messages",
+            f"Message Length Threshold: **{settings['message_length_threshold']}** characters",
+            "",
+            bold("--- Role Configuration ---"),
+            f"Ephemeral Role (to be added): **{e_role.name if e_role else 'Not Set'}** ({settings['ephemeral_role_id'] or 'N/A'})",
+            f"Ephemeral Expire Role: **{f_role.name if f_role else 'Not Set'}** ({settings['ephemeral_expire_role_id'] or 'N/A'})",
+            f"No Messages Role: **{nm_role.name if nm_role else 'Not Set'}** ({settings['nomessages_role_id'] or 'N/A'})",
+            "",
+            bold("--- Greetings & Notifications ---"),
+            f"First Greeting Time: **{timedelta_to_human(first_td)}**",
+            f"First Greeting Channel: **{get_channel_info(settings['first_greeting_channel_id'])}**",
+            f"First Greeting Message: `{settings['first_greeting_message']}`",
+            "",
+            f"Second Greeting Time: **{timedelta_to_human(second_td)}**",
+            f"Second Greeting Channel: **{get_channel_info(settings['second_greeting_channel_id'])}**",
+            f"Second Greeting Message: `{settings['second_greeting_message']}`",
+            "",
+            f"Expire Message Channel (Timed Out): **{get_channel_info(settings['expire_message_channel_id'])}**",
+            f"Expire Message: `{settings['expire_message']}`",
+            "",
+            f"No Messages Failed Channel: **{get_channel_info(settings['nomessages_failed_message_channel_id'])}**",
+            f"No Messages Failed Message: `{settings['nomessages_failed_message']}`",
+            "",
+            f"Success Message Channel: **{get_channel_info(settings['success_message_channel_id'])}**",
+            "",
+            bold("--- Logging ---"),
+            f"Log Channel: **{get_channel_info(settings['log_channel_id'])}** (Logs all deleted messages.)",
+        ]
+        
+        await ctx.send(box('\n'.join(output)))
 
     @ephemeralset.command(name="logchannel")
     async def ephemeralset_logchannel(self, ctx: commands.Context, channel: typing.Optional[discord.TextChannel] = None):
@@ -795,13 +766,13 @@ class Ephemeral(commands.Cog):
             await self.config.guild(ctx.guild).log_channel_id.set(None)
             await ctx.send("Ephemeral event logging has been disabled.")
 
-    @ephemeralset.command(name="failedtime")
-    async def ephemeralset_failedtime(self, ctx: commands.Context, time: commands.TimedeltaConverter(default_unit="hours")):
-        """Sets the Ephemeral Failed time threshold (General Timeout)."""
+    @ephemeralset.command(name="expiretime")
+    async def ephemeralset_expiretime(self, ctx: commands.Context, time: commands.TimedeltaConverter(default_unit="hours")):
+        """Sets the Ephemeral Expire time threshold (General Timeout)."""
         if time.total_seconds() <= 0:
             return await ctx.send("Time must be a positive duration.")
-        await self.config.guild(ctx.guild).ephemeral_failed_threshold.set(time.total_seconds())
-        await ctx.send(f"Ephemeral Failed threshold set to **{timedelta_to_human(time)}**.")
+        await self.config.guild(ctx.guild).ephemeral_expire_threshold.set(time.total_seconds())
+        await ctx.send(f"Ephemeral Expire threshold set to **{timedelta_to_human(time)}**.")
 
     @ephemeralset.command(name="nomessages")
     async def ephemeralset_nomessages(self, ctx: commands.Context, time: commands.TimedeltaConverter(default_unit="hours")):
@@ -833,11 +804,11 @@ class Ephemeral(commands.Cog):
         await self.config.guild(ctx.guild).ephemeral_role_id.set(role.id)
         await ctx.send(f"Ephemeral role set to **{role.name}**.")
 
-    @ephemeralset.command(name="failedrole")
-    async def ephemeralset_failedrole(self, ctx: commands.Context, role: discord.Role):
-        """Sets the 'Ephemeral Failed' role (General Timeout)."""
-        await self.config.guild(ctx.guild).ephemeral_failed_role_id.set(role.id)
-        await ctx.send(f"Ephemeral Failed role set to **{role.name}**.")
+    @ephemeralset.command(name="expirerole")
+    async def ephemeralset_expirerole(self, ctx: commands.Context, role: discord.Role):
+        """Sets the 'Ephemeral Expire' role (General Timeout)."""
+        await self.config.guild(ctx.guild).ephemeral_expire_role_id.set(role.id)
+        await ctx.send(f"Ephemeral Expire role set to **{role.name}**.")
 
     @ephemeralset.command(name="nomessagesrole")
     async def ephemeralset_nomessagesrole(self, ctx: commands.Context, role: discord.Role):
@@ -867,12 +838,12 @@ class Ephemeral(commands.Cog):
         await self.config.guild(ctx.guild).second_greeting_message.set(message)
         await ctx.send(f"Second Greeting set for {channel.mention}.")
         
-    @ephemeralset.command(name="failedmessage")
-    async def ephemeralset_failedmessage(self, ctx: commands.Context, channel: discord.TextChannel, *, message: str):
-        """Sets the Ephemeral Failed message (General Timeout)."""
-        await self.config.guild(ctx.guild).failed_message_channel_id.set(channel.id)
-        await self.config.guild(ctx.guild).failed_message.set(message)
-        await ctx.send(f"Ephemeral Failed message set for {channel.mention}.")
+    @ephemeralset.command(name="expiremessage")
+    async def ephemeralset_expiremessage(self, ctx: commands.Context, channel: discord.TextChannel, *, message: str):
+        """Sets the Ephemeral Expire message (General Timeout)."""
+        await self.config.guild(ctx.guild).expire_message_channel_id.set(channel.id)
+        await self.config.guild(ctx.guild).expire_message.set(message)
+        await ctx.send(f"Ephemeral Expire message set for {channel.mention}.")
 
     @ephemeralset.command(name="nomessagesfailedmessage")
     async def ephemeralset_nomessagesfailedmessage(self, ctx: commands.Context, channel: discord.TextChannel, *, message: str):
