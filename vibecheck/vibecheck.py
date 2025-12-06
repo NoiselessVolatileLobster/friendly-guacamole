@@ -2,6 +2,7 @@
 import asyncio
 import logging
 from collections import namedtuple
+from typing import Tuple, Optional
 
 import discord
 from redbot.core import Config, checks, commands
@@ -24,14 +25,21 @@ class VibeCheck(getattr(commands, "Cog", object)):
     def __init__(self, bot):
         self.bot = bot
         self.conf = Config.get_conf(self, identifier=UNIQUE_ID, force_registration=True)
-        # Global vibes score
-        self.conf.register_user(vibes=0)
+        
+        # Global vibes score & history
+        # interactions structure: {"receiver_id": {"good": 0, "bad": 0}}
+        self.conf.register_user(
+            vibes=0,
+            good_vibes_sent=0,
+            bad_vibes_sent=0,
+            interactions={}
+        )
+        
         # Guild settings
         self.conf.register_guild(
             vibe_check_role_id=None,
             vibe_threshold=-10,  # Default negative threshold
             log_channel_id=None,  # Channel ID for logging
-            # Removed dynamic cooldown config for stability
         )
 
     # --- PUBLIC API ---
@@ -48,6 +56,20 @@ class VibeCheck(getattr(commands, "Cog", object)):
         """
         return await self.conf.user_from_id(user_id).vibes()
 
+    async def get_vibe_ratio(self, user_id: int) -> int:
+        """
+        Public API method to retrieve a user's vibe ratio.
+        Ratio = Good Vibes Sent - Bad Vibes Sent.
+
+        Args:
+            user_id (int): The Discord ID of the user.
+
+        Returns:
+            int: The vibe ratio.
+        """
+        user_data = await self.conf.user_from_id(user_id).all()
+        return user_data.get("good_vibes_sent", 0) - user_data.get("bad_vibes_sent", 0)
+
     # --- COMMANDS: VIBES ACTIONS & INFO ---
 
     @commands.command(name="goodvibes")
@@ -60,7 +82,8 @@ class VibeCheck(getattr(commands, "Cog", object)):
         if user and user.bot:
             return await ctx.send(("Awe, I appreciate it, but you can't give ME good vibes!"), ephemeral=True)
         
-        await self._add_vibes(ctx.author, user, amount)
+        # Pass True for is_good because this is goodvibes
+        await self._add_vibes(ctx.author, user, amount, is_good=True)
         await ctx.send("You sent good vibes to {}!".format(user.name))
 
     @commands.command(name="badvibes")
@@ -73,7 +96,8 @@ class VibeCheck(getattr(commands, "Cog", object)):
         if user and user.bot:
             return await ctx.send(("Now listen here, you little shit. You can't give ME bad vibes"), ephemeral=True)
 
-        await self._add_vibes(ctx.author, user, -amount)
+        # Pass False for is_good because this is badvibes
+        await self._add_vibes(ctx.author, user, -amount, is_good=False)
         await ctx.send("You sent bad vibes to {}!".format(user.name))
 
     @commands.command()
@@ -113,6 +137,60 @@ class VibeCheck(getattr(commands, "Cog", object)):
             user = ctx.author
         vibes = await self.conf.user(user).vibes()
         await ctx.send("{0} vibe score is: {1}".format(user.display_name, vibes))
+
+    @commands.command(name="viberatio")
+    @commands.guild_only()
+    @checks.admin_or_permissions(manage_guild=True)
+    async def vibe_ratio(self, ctx: commands.Context, user: discord.Member):
+        """
+        Check a user's vibe ratio statistics.
+        
+        Shows their ratio (Good Sent - Bad Sent) and who they target the most.
+        """
+        data = await self.conf.user(user).all()
+        
+        good_sent = data.get("good_vibes_sent", 0)
+        bad_sent = data.get("bad_vibes_sent", 0)
+        ratio = good_sent - bad_sent
+        interactions = data.get("interactions", {})
+
+        # Calculate top receivers
+        most_good_user = "None"
+        most_good_count = 0
+        most_bad_user = "None"
+        most_bad_count = 0
+
+        for target_id_str, stats in interactions.items():
+            # Check for most good vibes sent
+            if stats.get("good", 0) > most_good_count:
+                most_good_count = stats.get("good", 0)
+                target_user = self.bot.get_user(int(target_id_str))
+                most_good_user = target_user.name if target_user else f"Unknown User ({target_id_str})"
+
+            # Check for most bad vibes sent
+            if stats.get("bad", 0) > most_bad_count:
+                most_bad_count = stats.get("bad", 0)
+                target_user = self.bot.get_user(int(target_id_str))
+                most_bad_user = target_user.name if target_user else f"Unknown User ({target_id_str})"
+
+        embed = discord.Embed(
+            title=f"Vibe Ratio: {user.display_name}",
+            color=discord.Color.blue()
+        )
+        
+        # Add clickable username link if possible, otherwise just name
+        # Discord doesn't have a direct profile link widely supported in embeds without bots, 
+        # but using the mention syntax in description works, or just setting author.
+        embed.set_author(name=str(user), icon_url=user.display_avatar.url)
+        
+        embed.add_field(name="Vibe Ratio", value=str(ratio), inline=False)
+        embed.add_field(name="Good Vibes Sent", value=str(good_sent), inline=True)
+        embed.add_field(name="Bad Vibes Sent", value=str(bad_sent), inline=True)
+        
+        embed.add_field(name="Most Good Vibes To", value=f"{most_good_user} ({most_good_count})", inline=True)
+        embed.add_field(name="Most Bad Vibes To", value=f"{most_bad_user} ({most_bad_count})", inline=True)
+
+        await ctx.send(embed=embed)
 
     # --- COMMANDS: CONFIGURATION & ADMIN ---
 
@@ -276,14 +354,43 @@ class VibeCheck(getattr(commands, "Cog", object)):
 
     # --- CORE LOGIC AND LISTENERS ---
 
-    async def _add_vibes(self, giver: discord.User, receiver: discord.User, amount: int):
-        """Handles the core logic for adding/subtracting vibes and triggering checks."""
-        settings = self.conf.user(receiver)
-        current_vibes = await settings.vibes()
-        new_vibes = current_vibes + amount
-        await settings.vibes.set(new_vibes)
+    async def _add_vibes(self, giver: discord.User, receiver: discord.User, amount: int, is_good: bool):
+        """
+        Handles the core logic for adding/subtracting vibes and triggering checks.
         
-        # 1. Find the Guild context and Member object
+        Args:
+            giver: The user sending the vibes.
+            receiver: The user receiving the vibes.
+            amount: The number of vibes to add (negative for bad vibes).
+            is_good: Boolean indicating if this was a good vibes action (True) or bad vibes (False).
+        """
+        # 1. Update Receiver's Score
+        receiver_settings = self.conf.user(receiver)
+        current_vibes = await receiver_settings.vibes()
+        new_vibes = current_vibes + amount
+        await receiver_settings.vibes.set(new_vibes)
+
+        # 2. Update Giver's Statistics (Sent Vibes & Interactions)
+        async with self.conf.user(giver).all() as giver_data:
+            # Update global counters
+            if is_good:
+                giver_data["good_vibes_sent"] = giver_data.get("good_vibes_sent", 0) + 1
+                interaction_key = "good"
+            else:
+                giver_data["bad_vibes_sent"] = giver_data.get("bad_vibes_sent", 0) + 1
+                interaction_key = "bad"
+
+            # Update interaction history with specific receiver
+            interactions = giver_data.get("interactions", {})
+            receiver_id_str = str(receiver.id)
+            
+            if receiver_id_str not in interactions:
+                interactions[receiver_id_str] = {"good": 0, "bad": 0}
+            
+            interactions[receiver_id_str][interaction_key] += 1
+            giver_data["interactions"] = interactions
+
+        # 3. Find the Guild context and Member object for Receiver
         member_receiver = None
         target_guild = None
         
@@ -297,10 +404,10 @@ class VibeCheck(getattr(commands, "Cog", object)):
         if not member_receiver or not target_guild:
             return 
             
-        # 2. Run Role Assignment Check (THIS IS THE MISSING METHOD)
+        # 4. Run Role Assignment Check
         await self._vibe_check_role_assignment(member_receiver, new_vibes)
         
-        # 3. Perform Logging
+        # 5. Perform Logging
         await self._log_vibe_change(target_guild, giver, member_receiver, amount, current_vibes, new_vibes)
         
     async def _log_vibe_change(self, guild: discord.Guild, giver: discord.User, receiver: discord.Member, amount: int, old_vibes: int, new_vibes: int):
@@ -402,6 +509,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
             return
             
         await self.conf.user(member).vibes.set(0)
+        # Note: We do NOT clear sent statistics (good_vibes_sent, etc) so they persist if the user returns
         
         log.debug("Global vibes score for user %s cleared upon leaving guild %s.", 
                   str(member), member.guild.name)
