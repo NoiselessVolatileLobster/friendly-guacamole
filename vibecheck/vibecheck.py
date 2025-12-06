@@ -138,9 +138,16 @@ class VibeCheck(getattr(commands, "Cog", object)):
         vibes = await self.conf.user(user).vibes()
         await ctx.send("{0} vibe score is: {1}".format(user.display_name, vibes))
 
-    @commands.command(name="viberatio")
+    # --- COMMAND GROUP: VIBECHECKSET ---
+
+    @commands.group(name="vibecheckset")
     @commands.guild_only()
     @checks.admin_or_permissions(manage_guild=True)
+    async def vibecheckset(self, ctx: commands.Context):
+        """Configuration settings for VibeCheck."""
+        pass
+
+    @vibecheckset.command(name="ratio")
     async def vibe_ratio(self, ctx: commands.Context, user: discord.Member):
         """
         Check a user's vibe ratio statistics.
@@ -179,8 +186,6 @@ class VibeCheck(getattr(commands, "Cog", object)):
         )
         
         # Add clickable username link if possible, otherwise just name
-        # Discord doesn't have a direct profile link widely supported in embeds without bots, 
-        # but using the mention syntax in description works, or just setting author.
         embed.set_author(name=str(user), icon_url=user.display_avatar.url)
         
         embed.add_field(name="Vibe Ratio", value=str(ratio), inline=False)
@@ -192,10 +197,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
 
         await ctx.send(embed=embed)
 
-    # --- COMMANDS: CONFIGURATION & ADMIN ---
-
-    @commands.command(name="setviberole")
-    @commands.guild_only()
+    @vibecheckset.command(name="role")
     @checks.admin_or_permissions(manage_roles=True)
     async def set_vibe_role(self, ctx: commands.Context, *, role: discord.Role = None):
         """Sets the role to be assigned when a user's vibes drop below threshold."""
@@ -207,8 +209,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
         await self.conf.guild(ctx.guild).vibe_check_role_id.set(role.id)
         await ctx.send(f"The Vibe Check role has been set to **{role.name}**.")
             
-    @commands.command(name="setvibethreshold")
-    @commands.guild_only()
+    @vibecheckset.command(name="threshold")
     @checks.admin_or_permissions(manage_guild=True)
     async def set_vibe_threshold(self, ctx: commands.Context, threshold: int):
         """Sets the negative vibes score threshold for assigning the Vibe Check role."""
@@ -221,22 +222,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
             f" Users will receive the role if their score drops to or below this value."
         )
 
-    @commands.command(name="showvibethreshold")
-    @commands.guild_only()
-    async def show_vibe_threshold(self, ctx: commands.Context):
-        """Shows the current negative vibe threshold for this server."""
-        threshold = await self.conf.guild(ctx.guild).vibe_threshold()
-        role_id = await self.conf.guild(ctx.guild).vibe_check_role_id()
-        
-        if role_id is None:
-            await ctx.send("The Vibe Check role has not been set, so the threshold is not currently active.")
-        else:
-            await ctx.send(f"The Vibe Check role is assigned when a user's score drops to or below **{threshold}**.")
-
-    # --- COMMANDS: LOGGING ---
-
-    @commands.command(name="setvibelogchannel")
-    @commands.guild_only()
+    @vibecheckset.command(name="logchannel")
     @checks.admin_or_permissions(manage_guild=True)
     async def set_vibe_log_channel(self, ctx: commands.Context, channel: discord.TextChannel = None):
         """
@@ -252,36 +238,48 @@ class VibeCheck(getattr(commands, "Cog", object)):
         await self.conf.guild(ctx.guild).log_channel_id.set(channel.id)
         await ctx.send(f"Vibe activity will now be logged in {channel.mention}.")
 
-    @commands.command(name="showvibelogchannel")
-    @commands.guild_only()
-    async def show_vibe_log_channel(self, ctx: commands.Context):
-        """Shows the current channel configured for vibe logging."""
-        channel_id = await self.conf.guild(ctx.guild).log_channel_id()
+    @vibecheckset.command(name="view")
+    async def view_settings(self, ctx: commands.Context):
+        """Shows the current VibeCheck configuration for this server."""
+        settings = await self.conf.guild(ctx.guild).all()
         
-        if channel_id is None:
-            await ctx.send("Vibe activity logging is currently **disabled** for this server.")
+        # Threshold
+        threshold = settings.get('vibe_threshold')
+        
+        # Role
+        role_id = settings.get('vibe_check_role_id')
+        if role_id is None:
+            role_text = "Not Set (Disabled)"
         else:
-            channel = ctx.guild.get_channel(channel_id)
-            if channel:
-                await ctx.send(f"Vibe activity is currently logged in {channel.mention}.")
-            else:
-                await ctx.send("The configured log channel no longer exists. Logging is disabled until a new channel is set.")
-                await self.conf.guild(ctx.guild).log_channel_id.set(None)
-                
-    # --- COMMANDS: RESET ---
+            role = ctx.guild.get_role(role_id)
+            role_text = role.name if role else f"Deleted Role ({role_id})"
+            
+        # Log Channel
+        log_id = settings.get('log_channel_id')
+        if log_id is None:
+            log_text = "Not Set (Disabled)"
+        else:
+            chan = ctx.guild.get_channel(log_id)
+            log_text = chan.mention if chan else f"Deleted Channel ({log_id})"
+            
+        embed = discord.Embed(title=f"VibeCheck Settings for {ctx.guild.name}", color=discord.Color.blue())
+        embed.add_field(name="Vibe Threshold", value=str(threshold), inline=True)
+        embed.add_field(name="Vibe Check Role", value=role_text, inline=True)
+        embed.add_field(name="Log Channel", value=log_text, inline=False)
+        
+        await ctx.send(embed=embed)
 
-    @commands.command(name="resetvibes")
+    @vibecheckset.command(name="resetuser")
     @checks.is_owner()
-    async def reset_vibes(self, ctx: commands.Context, user: discord.Member):
+    async def reset_user(self, ctx: commands.Context, user: discord.Member):
         """Resets a user's global vibes."""
         log.debug("Resetting %s's vibes", str(user))
         await self.conf.user(user).vibes.set(0)
         await ctx.send("{}'s vibes has been reset to 0.".format(user.name))
 
-    @commands.command(name="resetallvibes")
-    @commands.guild_only() 
+    @vibecheckset.command(name="resetall")
     @checks.is_owner()
-    async def reset_all_vibes(self, ctx: commands.Context):
+    async def reset_all(self, ctx: commands.Context):
         """Resets the global vibes score for every user the bot knows."""
         
         confirmation_msg = await ctx.send(
@@ -313,10 +311,9 @@ class VibeCheck(getattr(commands, "Cog", object)):
                 
         await ctx.send(f"✅ **Success!** Reset the vibes score for **{reset_count}** users globally.")
         
-    @commands.command(name="prunevibes")
-    @commands.guild_only() 
+    @vibecheckset.command(name="prune")
     @checks.is_owner()
-    async def prune_vibes(self, ctx: commands.Context):
+    async def prune(self, ctx: commands.Context):
         """Removes global vibe scores for users who are no longer in any of the bot's guilds."""
         
         confirmation_msg = await ctx.send(
