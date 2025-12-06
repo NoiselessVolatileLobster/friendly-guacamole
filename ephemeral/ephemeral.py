@@ -50,7 +50,6 @@ class Ephemeral(commands.Cog):
             # --- END CONFIGURATION ---
 
             # --- START MESSAGE CONFIGURATION (CONDITIONAL) ---
-            # Storing separate configs for first-time vs returning users
             start_message_first_channel_id=None,
             start_message_first_content="{mention} has joined for the first time!",
             
@@ -74,8 +73,15 @@ class Ephemeral(commands.Cog):
             failed_message_channel_id=None,
             failed_message="⚠️ {mention} has failed Ephemeral mode (Timed out) and has been assigned the Failed role.",
             
-            removed_message_channel_id=None,
-            removed_message="{mention} is no longer in Ephemeral mode! 🎉",
+            # --- SUCCESS (REMOVED) MESSAGE CONFIGURATION (EMBED) ---
+            success_message_channel_id=None,
+            success_embed_data={
+                "title": "Success!",
+                "description": "{mention} is no longer in Ephemeral mode! 🎉",
+                "image_url": "none",
+                "footer": "Welcome to the server!"
+            },
+            # --- END SUCCESS MESSAGE CONFIGURATION ---
             
             log_channel_id=None,
         )
@@ -179,12 +185,11 @@ class Ephemeral(commands.Cog):
         if not channel or not isinstance(channel, discord.TextChannel):
             return
 
-        formatted_message = message.replace("{mention}", user.mention)
+        formatted_message = message.replace("{mention}", user.mention).replace("{username}", user.name)
         if time_passed is not None:
             formatted_message = formatted_message.replace("{time_passed}", timedelta_to_human(time_passed))
 
         try:
-            # Explicitly allow user and role pings if they are in the message string
             await channel.send(
                 formatted_message, 
                 allowed_mentions=discord.AllowedMentions(roles=True, users=True)
@@ -193,6 +198,46 @@ class Ephemeral(commands.Cog):
             print(f"Ephemeral ERROR in Guild {guild.id}: Missing permissions in {channel.name}.")
         except Exception as e:
             print(f"Ephemeral ERROR in Guild {guild.id}: Unexpected error: {e}")
+
+    async def _send_success_embed(self, guild: discord.Guild, user: discord.Member, settings: dict):
+        """Sends the Success (formerly Removed) embed."""
+        channel_id = settings["success_message_channel_id"]
+        embed_data = settings["success_embed_data"]
+        
+        if not channel_id:
+            return
+
+        channel = guild.get_channel(channel_id)
+        if not channel or not isinstance(channel, discord.TextChannel):
+            return
+
+        # Prepare strings with replacements
+        title = embed_data.get("title", "Success").replace("{username}", user.name).replace("{mention}", user.display_name)
+        description = embed_data.get("description", "").replace("{mention}", user.mention).replace("{username}", user.name)
+        footer_text = embed_data.get("footer", "").replace("{username}", user.name)
+        image_url = embed_data.get("image_url", "none")
+
+        embed = discord.Embed(
+            title=title,
+            description=description,
+            color=discord.Color.green()
+        )
+        
+        # Automatically set thumbnail to user profile picture
+        embed.set_thumbnail(url=user.display_avatar.url)
+        
+        if image_url and image_url.lower() != "none":
+            embed.set_image(url=image_url)
+            
+        if footer_text:
+            embed.set_footer(text=footer_text)
+
+        try:
+            await channel.send(content=user.mention, embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
+        except discord.Forbidden:
+            print(f"Ephemeral ERROR in Guild {guild.id}: Missing permissions to send Success Embed in {channel.name}.")
+        except Exception as e:
+            print(f"Ephemeral ERROR in Guild {guild.id}: Unexpected error sending Success Embed: {e}")
 
     async def _handle_ephemeral_success(self, guild: discord.Guild, user: discord.Member, settings: dict, manual: bool = False):
         """Handles the success case: message threshold met."""
@@ -216,9 +261,8 @@ class Ephemeral(commands.Cog):
         self.stop_user_timer(guild.id, user.id)
         await self.config.member(user).clear()
         
-        await self._send_custom_message(
-            guild, user, settings["removed_message_channel_id"], settings["removed_message"]
-        )
+        # Use the new Embed sender
+        await self._send_success_embed(guild, user, settings)
 
         log_msg = f"✅ **Success:** {user.mention} (`{user.id}`) met the message threshold and is no longer Ephemeral."
         if manual:
@@ -269,7 +313,7 @@ class Ephemeral(commands.Cog):
             
             # 3. Determine and Send Start Message (Conditional on Join Count)
             
-            # Default to "first time" config if tracker is unavailable or count is 0
+            # Default to "first time" config if tracker is unavailable or count is <= 1
             start_channel_id = settings.get("start_message_first_channel_id")
             start_message_content = settings.get("start_message_first_content")
             
@@ -278,9 +322,8 @@ class Ephemeral(commands.Cog):
             if join_tracker:
                 try:
                     count = await join_tracker.get_join_count(guild, user.id)
-                    # If count > 0 (meaning they have previous joins recorded), use returning config
-                    # Note: Depending on how JoinTracker counts the *current* join, 0 means this is the first one tracked.
-                    if count > 0:
+                    # If count > 1 (meaning they have joined more than once), use returning config
+                    if count > 1:
                         start_channel_id = settings.get("start_message_returning_channel_id")
                         start_message_content = settings.get("start_message_returning_content")
                 except Exception as e:
@@ -701,8 +744,7 @@ class Ephemeral(commands.Cog):
             f"No Messages Failed Channel: **{get_channel_info(settings['nomessages_failed_message_channel_id'])}**",
             f"No Messages Failed Message: `{settings['nomessages_failed_message']}`",
             "",
-            f"Removed Message Channel: **{get_channel_info(settings['removed_message_channel_id'])}**",
-            f"Removed Message: `{settings['removed_message']}`",
+            f"Success Message Channel: **{get_channel_info(settings['success_message_channel_id'])}**",
             "",
             bold("--- Logging ---"),
             f"Log Channel: **{get_channel_info(settings['log_channel_id'])}** (Logs all deleted messages.)",
@@ -809,9 +851,20 @@ class Ephemeral(commands.Cog):
         await self.config.guild(ctx.guild).nomessages_failed_message.set(message)
         await ctx.send(f"'No Messages' Failed message set for {channel.mention}.")
 
-    @ephemeralset.command(name="ephemeralremoved")
-    async def ephemeralset_ephemeralremoved(self, ctx: commands.Context, channel: discord.TextChannel, *, message: str):
-        """Sets the Ephemeral Removed message."""
-        await self.config.guild(ctx.guild).removed_message_channel_id.set(channel.id)
-        await self.config.guild(ctx.guild).removed_message.set(message)
-        await ctx.send(f"Ephemeral Removed message set for {channel.mention}.")
+    @ephemeralset.command(name="successmessage")
+    async def ephemeralset_successmessage(self, ctx: commands.Context, channel: discord.TextChannel, title: str, image_url: str, footer: str, *, description: str):
+        """Sets the Ephemeral Success Embed.
+        
+        Usage: [p]ephemeralset successmessage <channel> <title> <image_url|none> <footer> <description>
+        """
+        await self.config.guild(ctx.guild).success_message_channel_id.set(channel.id)
+        
+        embed_data = {
+            "title": title,
+            "image_url": image_url,
+            "footer": footer,
+            "description": description
+        }
+        await self.config.guild(ctx.guild).success_embed_data.set(embed_data)
+        
+        await ctx.send(f"Ephemeral Success Embed configured for {channel.mention}.")
