@@ -721,10 +721,10 @@ class Ephemeral(commands.Cog):
             f"**Required Role:** {get_role_str(settings['ephemeral_not_started_role_id'])}\n\n"
             f"**Start Msg (First Time):**\n"
             f"Channel: {get_channel_str(settings['start_message_first_channel_id'])}\n"
-            f"Message: `{settings['start_message_first_content']}`\n\n"
+            f"Message: {settings['start_message_first_content']}\n\n"
             f"**Start Msg (Returning):**\n"
             f"Channel: {get_channel_str(settings['start_message_returning_channel_id'])}\n"
-            f"Message: `{settings['start_message_returning_content']}`"
+            f"Message: {settings['start_message_returning_content']}"
         )
         embed.add_field(name="Activation Scope", value=activation_scope_val, inline=False)
 
