@@ -44,9 +44,16 @@ class VibeCheck(getattr(commands, "Cog", object)):
             log_channel_id=None,
             good_vibes_cooldown=3600,  # Default 60 minutes (in seconds)
             bad_vibes_cooldown=3600,   # Default 60 minutes (in seconds)
-            warn_threshold=-100,       # WarnSystem Level 1
-            kick_threshold=-100,       # WarnSystem Level 3
-            ban_threshold=-100         # WarnSystem Level 5
+            
+            # WarnSystem Config
+            warn_threshold=-100,       # Level 1
+            warn_reason="VibeCheck: Low vibe score",
+            
+            kick_threshold=-100,       # Level 3
+            kick_reason="VibeCheck: Very low vibe score",
+            
+            ban_threshold=-100,        # Level 5
+            ban_reason="VibeCheck: Critically low vibe score"
         )
 
     # --- PUBLIC API ---
@@ -301,74 +308,86 @@ class VibeCheck(getattr(commands, "Cog", object)):
 
     # --- WARNSYSTEM COMMANDS ---
 
-    @vibecheckset.group(name="warning")
+    @vibecheckset.command(name="warning")
     @checks.admin_or_permissions(manage_guild=True)
-    async def vibe_warning(self, ctx: commands.Context):
-        """Configure WarnSystem Level 1 (Warning) integration."""
-        pass
+    async def set_warning(self, ctx: commands.Context, threshold: int, *, reason: str = "VibeCheck: Low vibe score"):
+        """
+        Configure WarnSystem Level 1 (Warning).
+        
+        Usage: [p]vibecheckset warning <threshold> <reason>
+        Example: [p]vibecheckset warning -50 Your vibe score is quite low
+        
+        Set threshold to 0 to disable.
+        """
+        if threshold > 0:
+            return await ctx.send("The threshold must be a negative integer (e.g., `-10`). Set to 0 to disable.")
 
-    @vibe_warning.command(name="threshold")
-    async def set_warning_threshold(self, ctx: commands.Context, threshold: Optional[int]):
-        """
-        Sets the negative vibe threshold that triggers a WarnSystem Level 1 warning.
-        Leave empty or type 'none' to disable.
-        """
-        if threshold is None:
+        if threshold == 0:
             await self.conf.guild(ctx.guild).warn_threshold.set(None)
             await ctx.send("WarnSystem Level 1 triggers have been **disabled**.")
             return
 
-        if threshold >= 0:
-            return await ctx.send("The threshold must be a negative integer (e.g., `-10`).")
-
         await self.conf.guild(ctx.guild).warn_threshold.set(threshold)
-        await ctx.send(f"WarnSystem Level 1 will now trigger when a user's vibes drop to or below **{threshold}**.")
+        await self.conf.guild(ctx.guild).warn_reason.set(reason)
+        
+        await ctx.send(
+            f"WarnSystem Level 1 will now trigger at score **{threshold}**.\n"
+            f"Reason: *{reason}*"
+        )
 
-    @vibecheckset.group(name="kick")
+    @vibecheckset.command(name="kick")
     @checks.admin_or_permissions(manage_guild=True)
-    async def vibe_kick(self, ctx: commands.Context):
-        """Configure WarnSystem Level 3 (Kick) integration."""
-        pass
+    async def set_kick(self, ctx: commands.Context, threshold: int, *, reason: str = "VibeCheck: Very low vibe score"):
+        """
+        Configure WarnSystem Level 3 (Kick).
+        
+        Usage: [p]vibecheckset kick <threshold> <reason>
+        Example: [p]vibecheckset kick -100 You have failed the vibe check
+        
+        Set threshold to 0 to disable.
+        """
+        if threshold > 0:
+            return await ctx.send("The threshold must be a negative integer (e.g., `-50`). Set to 0 to disable.")
 
-    @vibe_kick.command(name="threshold")
-    async def set_kick_threshold(self, ctx: commands.Context, threshold: Optional[int]):
-        """
-        Sets the negative vibe threshold that triggers a WarnSystem Level 3 warning (Kick).
-        Leave empty or type 'none' to disable.
-        """
-        if threshold is None:
+        if threshold == 0:
             await self.conf.guild(ctx.guild).kick_threshold.set(None)
             await ctx.send("WarnSystem Level 3 triggers have been **disabled**.")
             return
 
-        if threshold >= 0:
-            return await ctx.send("The threshold must be a negative integer (e.g., `-50`).")
-
         await self.conf.guild(ctx.guild).kick_threshold.set(threshold)
-        await ctx.send(f"WarnSystem Level 3 will now trigger when a user's vibes drop to or below **{threshold}**.")
+        await self.conf.guild(ctx.guild).kick_reason.set(reason)
+        
+        await ctx.send(
+            f"WarnSystem Level 3 will now trigger at score **{threshold}**.\n"
+            f"Reason: *{reason}*"
+        )
 
-    @vibecheckset.group(name="ban")
+    @vibecheckset.command(name="ban")
     @checks.admin_or_permissions(manage_guild=True)
-    async def vibe_ban(self, ctx: commands.Context):
-        """Configure WarnSystem Level 5 (Ban) integration."""
-        pass
+    async def set_ban(self, ctx: commands.Context, threshold: int, *, reason: str = "VibeCheck: Critically low vibe score"):
+        """
+        Configure WarnSystem Level 5 (Ban).
+        
+        Usage: [p]vibecheckset ban <threshold> <reason>
+        Example: [p]vibecheckset ban -200 Critical vibe failure
+        
+        Set threshold to 0 to disable.
+        """
+        if threshold > 0:
+            return await ctx.send("The threshold must be a negative integer (e.g., `-100`). Set to 0 to disable.")
 
-    @vibe_ban.command(name="threshold")
-    async def set_ban_threshold(self, ctx: commands.Context, threshold: Optional[int]):
-        """
-        Sets the negative vibe threshold that triggers a WarnSystem Level 5 warning (Ban).
-        Leave empty or type 'none' to disable.
-        """
-        if threshold is None:
+        if threshold == 0:
             await self.conf.guild(ctx.guild).ban_threshold.set(None)
             await ctx.send("WarnSystem Level 5 triggers have been **disabled**.")
             return
 
-        if threshold >= 0:
-            return await ctx.send("The threshold must be a negative integer (e.g., `-100`).")
-
         await self.conf.guild(ctx.guild).ban_threshold.set(threshold)
-        await ctx.send(f"WarnSystem Level 5 will now trigger when a user's vibes drop to or below **{threshold}**.")
+        await self.conf.guild(ctx.guild).ban_reason.set(reason)
+        
+        await ctx.send(
+            f"WarnSystem Level 5 will now trigger at score **{threshold}**.\n"
+            f"Reason: *{reason}*"
+        )
 
     @vibecheckset.command(name="view")
     async def view_settings(self, ctx: commands.Context):
@@ -377,9 +396,15 @@ class VibeCheck(getattr(commands, "Cog", object)):
         
         # Thresholds
         threshold = settings.get('vibe_threshold')
-        warn_thresh = settings.get('warn_threshold', "Disabled")
-        kick_thresh = settings.get('kick_threshold', "Disabled")
-        ban_thresh = settings.get('ban_threshold', "Disabled")
+        
+        warn_thresh = settings.get('warn_threshold')
+        warn_thresh_str = f"{warn_thresh} ({settings.get('warn_reason')})" if warn_thresh is not None else "Disabled"
+        
+        kick_thresh = settings.get('kick_threshold')
+        kick_thresh_str = f"{kick_thresh} ({settings.get('kick_reason')})" if kick_thresh is not None else "Disabled"
+        
+        ban_thresh = settings.get('ban_threshold')
+        ban_thresh_str = f"{ban_thresh} ({settings.get('ban_reason')})" if ban_thresh is not None else "Disabled"
         
         # Role
         role_id = settings.get('vibe_check_role_id')
@@ -412,9 +437,9 @@ class VibeCheck(getattr(commands, "Cog", object)):
         embed.add_field(name="Good Vibes Cooldown", value=good_cd_str, inline=True)
         embed.add_field(name="Bad Vibes Cooldown", value=bad_cd_str, inline=True)
         
-        embed.add_field(name="WarnSystem Lvl 1", value=str(warn_thresh), inline=True)
-        embed.add_field(name="WarnSystem Lvl 3", value=str(kick_thresh), inline=True)
-        embed.add_field(name="WarnSystem Lvl 5", value=str(ban_thresh), inline=True)
+        embed.add_field(name="WarnSystem Lvl 1", value=warn_thresh_str, inline=False)
+        embed.add_field(name="WarnSystem Lvl 3", value=kick_thresh_str, inline=False)
+        embed.add_field(name="WarnSystem Lvl 5", value=ban_thresh_str, inline=False)
         
         await ctx.send(embed=embed)
 
@@ -582,23 +607,26 @@ class VibeCheck(getattr(commands, "Cog", object)):
         
         warn_thresh = await guild_conf.warn_threshold()
         if warn_thresh is not None and current_vibes > warn_thresh >= new_vibes:
+            reason = await guild_conf.warn_reason()
             await self._trigger_warnsystem(
                 target_guild, member_receiver, giver, 1, 
-                f"VibeCheck: Score dropped to {new_vibes} (Threshold: {warn_thresh})"
+                f"{reason} (Score: {new_vibes})"
             )
             
         kick_thresh = await guild_conf.kick_threshold()
         if kick_thresh is not None and current_vibes > kick_thresh >= new_vibes:
+            reason = await guild_conf.kick_reason()
             await self._trigger_warnsystem(
                 target_guild, member_receiver, giver, 3, 
-                f"VibeCheck: Score dropped to {new_vibes} (Threshold: {kick_thresh})"
+                f"{reason} (Score: {new_vibes})"
             )
 
         ban_thresh = await guild_conf.ban_threshold()
         if ban_thresh is not None and current_vibes > ban_thresh >= new_vibes:
+            reason = await guild_conf.ban_reason()
             await self._trigger_warnsystem(
                 target_guild, member_receiver, giver, 5, 
-                f"VibeCheck: Score dropped to {new_vibes} (Threshold: {ban_thresh})"
+                f"{reason} (Score: {new_vibes})"
             )
         
         # 6. Perform Logging
@@ -615,10 +643,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
 
         try:
             # Attempt to use the warn method.
-            # Signature typically: await warn(guild, members, author, reason, level)
-            # Or accessing via api object
             if hasattr(warn_cog, "warn"):
-                 # Assuming single member list based on common Red APIs
                 await warn_cog.warn(guild=guild, members=[member], author=author, reason=reason, level=level)
                 log.info(f"Triggered WarnSystem Level {level} for {member.display_name} via VibeCheck.")
             elif hasattr(warn_cog, "api") and hasattr(warn_cog.api, "warn"):
