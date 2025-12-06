@@ -323,6 +323,7 @@ class Ephemeral(commands.Cog):
                 try:
                     count = await join_tracker.get_join_count(guild, user.id)
                     # If count > 1 (meaning they have joined more than once), use returning config
+                    # 1 join means this is their first time.
                     if count > 1:
                         start_channel_id = settings.get("start_message_returning_channel_id")
                         start_message_content = settings.get("start_message_returning_content")
@@ -488,71 +489,60 @@ class Ephemeral(commands.Cog):
         guild = message.guild
         settings = await self.config.guild(guild).all()
         
+        # --- PHASE 0: CHANNEL CHECK (Crucial for Scoping) ---
+        timer_channel_id = settings.get("ephemeral_timer_channel_id")
+        if not timer_channel_id or message.channel.id != timer_channel_id:
+            # Not in the configured channel, ignore the message entirely.
+            return
+
         member_data = await self.config.member(member).all()
         is_ephemeral = member_data["is_ephemeral"]
-
-        # --- PHASE 3: MESSAGE COUNTING (SERVER-WIDE) ---
-        if is_ephemeral:
-            # Check for message length threshold
-            if len(message.content) >= settings["message_length_threshold"]:
-                new_count = member_data["message_count"] + 1
-                await self.config.member(member).message_count.set(new_count)
-
-                # Check for successful completion
-                if new_count >= settings["messages_threshold"]:
-                    await self._handle_ephemeral_success(guild, member, settings)
-                
-            # Channel-specific deletion check for Ephemeral users (Phase 1 continuation)
-            timer_channel_id = settings.get("ephemeral_timer_channel_id")
-            if timer_channel_id and message.channel.id == timer_channel_id:
-                # 1. Log the message content before deletion
-                await self._log_ephemeral_message(message, settings)
-                
-                # 2. Delete the message
-                try:
-                    await message.delete()
-                except discord.Forbidden:
-                    print(f"Ephemeral CRITICAL ERROR: Bot cannot delete messages from ephemeral user {member.id} in channel {message.channel.id}.")
-                except discord.NotFound:
-                    pass
+        
+        
+        # --- PHASE 1: ACTIVATION CHECK (If user is NOT ephemeral) ---
+        if not is_ephemeral:
+            not_started_role_id = settings.get("ephemeral_not_started_role_id")
             
-            # Message counting/deletion complete, stop processing this message.
-            return 
-        
-        # --- PHASES 1 & 2: ACTIVATION AND DELETION (CHANNEL-SPECIFIC) ---
-        
-        timer_channel_id = settings.get("ephemeral_timer_channel_id")
-        
-        # If the user is NOT ephemeral and not in the timer channel, we stop.
-        if not timer_channel_id or message.channel.id != timer_channel_id:
-            return 
+            if not not_started_role_id:
+                # Configuration error, but let the message stay (no deletion)
+                return
 
-        # We are in the correct channel, now check for the required 'not started' role.
-        not_started_role_id = settings.get("ephemeral_not_started_role_id")
-        if not not_started_role_id:
-            # If the config is missing, let the message stay and stop.
-            return 
+            not_started_role = guild.get_role(not_started_role_id)
+            if not not_started_role or not (not_started_role in member.roles):
+                # User does not have the required role to enter Ephemeral Mode, let the message stay and stop.
+                return
             
-        not_started_role = guild.get_role(not_started_role_id)
-        if not not_started_role or not (not_started_role in member.roles):
-            # User doesn't have the required role to enter Ephemeral Mode, let the message stay and stop.
-            return
+            activation_phrase = settings.get("activation_phrase", "let me in")
+            
+            # Use .lower().strip() for robust phrase matching
+            if message.content.lower().strip() == activation_phrase.lower().strip():
+                await self._handle_activation(message, settings, guild, member)
+            
+            # If the phrase doesn't match, the message stays (as requested: "If a user does not have the 'Ephemeral Timer Not Started' role, we do not delete that message.")
+            return 
 
-        activation_phrase = settings.get("activation_phrase", "let me in")
-
-        # PHASE 2: Activation Check (Correct phrase used)
-        if message.content.lower().strip() == activation_phrase.lower().strip():
-            await self._handle_activation(message, settings, guild, member)
-            return
-
-        # PHASE 1: Deletion Check (Any other message in the timer channel by a 'not started' user)
-        # Log and delete the message.
-        await self._log_ephemeral_message(message, settings) # Log message before deletion
+        # --- PHASE 2: EPHEMERAL MESSAGE HANDLING (If user IS ephemeral) ---
+        
+        # 1. Log the message content
+        await self._log_ephemeral_message(message, settings)
+        
+        # 2. Delete the message
         try:
             await message.delete()
-            await self._log_event(guild, f"🗑️ **Deleted:** Message from {member.mention} (`{member.id}`) deleted in activation channel (Phase 1).")
-        except Exception as e:
-            print(f"Ephemeral ERROR: Could not delete Phase 1 message for {member.id}: {e}")
+        except discord.Forbidden:
+            print(f"Ephemeral CRITICAL ERROR: Bot cannot delete messages from user {member.id} in channel {message.channel.id}.")
+        except discord.NotFound:
+            pass
+        
+        # 3. Message count and removal logic
+        if len(message.content) < settings["message_length_threshold"]:
+            return
+        
+        new_count = member_data["message_count"] + 1
+        await self.config.member(member).message_count.set(new_count)
+
+        if new_count >= settings["messages_threshold"]:
+            await self._handle_ephemeral_success(guild, member, settings)
 
     # --- Configuration Commands ---
 
@@ -707,61 +697,90 @@ class Ephemeral(commands.Cog):
     async def ephemeralset_view(self, ctx: commands.Context):
         """Displays the current Ephemeral cog settings."""
         settings = await self.config.guild(ctx.guild).all()
-        e_role = ctx.guild.get_role(settings["ephemeral_role_id"])
-        f_role = ctx.guild.get_role(settings["ephemeral_failed_role_id"])
-        nm_role = ctx.guild.get_role(settings["nomessages_role_id"])
-        ns_role = ctx.guild.get_role(settings["ephemeral_not_started_role_id"]) # New role lookup
         
+        # Helpers for consistent formatting
+        def get_role_str(role_id):
+            if not role_id: return "Not Set"
+            role = ctx.guild.get_role(role_id)
+            return role.mention if role else f"ID: {role_id} (Deleted)"
+
+        def get_channel_str(channel_id):
+            if not channel_id: return "Not Set"
+            chan = ctx.guild.get_channel(channel_id)
+            return chan.mention if chan else f"ID: {channel_id} (Deleted)"
+
+        embed = discord.Embed(
+            title="Ephemeral Mode Configuration",
+            color=await ctx.embed_color()
+        )
+
+        # Activation Scope
+        activation_scope_val = (
+            f"**Phrase:** `{settings['activation_phrase']}`\n"
+            f"**Timer Channel:** {get_channel_str(settings['ephemeral_timer_channel_id'])}\n"
+            f"**Required Role:** {get_role_str(settings['ephemeral_not_started_role_id'])}\n\n"
+            f"**Start Msg (First Time):**\n"
+            f"Channel: {get_channel_str(settings['start_message_first_channel_id'])}\n"
+            f"Message: `{settings['start_message_first_content']}`\n\n"
+            f"**Start Msg (Returning):**\n"
+            f"Channel: {get_channel_str(settings['start_message_returning_channel_id'])}\n"
+            f"Message: `{settings['start_message_returning_content']}`"
+        )
+        embed.add_field(name="Activation Scope", value=activation_scope_val, inline=False)
+
+        # Time/Message Thresholds
         failed_td = timedelta(seconds=settings['ephemeral_failed_threshold'])
         nomessages_td = timedelta(seconds=settings['nomessages_threshold'])
+        
+        thresholds_val = (
+            f"**Total Timeout:** {timedelta_to_human(failed_td)}\n"
+            f"**No Messages Timeout:** {timedelta_to_human(nomessages_td)}\n"
+            f"**Required Messages:** {settings['messages_threshold']}\n"
+            f"**Min Message Length:** {settings['message_length_threshold']} chars"
+        )
+        embed.add_field(name="Thresholds", value=thresholds_val, inline=False)
+
+        # Roles
+        roles_val = (
+            f"**Ephemeral:** {get_role_str(settings['ephemeral_role_id'])}\n"
+            f"**Failed:** {get_role_str(settings['ephemeral_failed_role_id'])}\n"
+            f"**No Messages:** {get_role_str(settings['nomessages_role_id'])}"
+        )
+        embed.add_field(name="Roles", value=roles_val, inline=False)
+
+        # Notifications (Greetings)
         first_td = timedelta(seconds=settings['first_greeting_threshold'])
         second_td = timedelta(seconds=settings['second_greeting_threshold'])
+        
+        greetings_val = (
+            f"**1st Greeting:** {timedelta_to_human(first_td)} in {get_channel_str(settings['first_greeting_channel_id'])}\n"
+            f"Message: `{settings['first_greeting_message']}`\n\n"
+            f"**2nd Greeting:** {timedelta_to_human(second_td)} in {get_channel_str(settings['second_greeting_channel_id'])}\n"
+            f"Message: `{settings['second_greeting_message']}`"
+        )
+        embed.add_field(name="Greetings", value=greetings_val, inline=False)
 
-        def get_channel_info(cid):
-            channel = ctx.guild.get_channel(cid)
-            return f"#{channel.name}" if channel else "Not Set"
-        
-        output = [
-            bold("--- Activation Scope ---"),
-            f"Activation Phrase: **`{settings['activation_phrase']}`**",
-            f"Timer/Deletion Channel: **{get_channel_info(settings['ephemeral_timer_channel_id'])}**",
-            f"Required 'Not Started' Role: **{ns_role.name if ns_role else 'Not Set'}** ({settings['ephemeral_not_started_role_id'] or 'N/A'})",
-            f"Start Msg (First Time): **{get_channel_info(settings['start_message_first_channel_id'])}**",
-            f"Start Msg (Returning): **{get_channel_info(settings['start_message_returning_channel_id'])}**",
-            "",
-            bold("--- Time/Message Thresholds ---"),
-            f"Ephemeral Failed Threshold (General): **{timedelta_to_human(failed_td)}**",
-            f"No Messages Threshold (Zero messages): **{timedelta_to_human(nomessages_td)}**",
-            f"Messages Threshold: **{settings['messages_threshold']}** messages",
-            f"Message Length Threshold: **{settings['message_length_threshold']}** characters",
-            "",
-            bold("--- Role Configuration ---"),
-            f"Ephemeral Role (to be added): **{e_role.name if e_role else 'Not Set'}** ({settings['ephemeral_role_id'] or 'N/A'})",
-            f"Ephemeral Failed Role: **{f_role.name if f_role else 'Not Set'}** ({settings['ephemeral_failed_role_id'] or 'N/A'})",
-            f"No Messages Role: **{nm_role.name if nm_role else 'Not Set'}** ({settings['nomessages_role_id'] or 'N/A'})",
-            "",
-            bold("--- Greetings & Notifications ---"),
-            f"First Greeting Time: **{timedelta_to_human(first_td)}**",
-            f"First Greeting Channel: **{get_channel_info(settings['first_greeting_channel_id'])}**",
-            f"First Greeting Message: `{settings['first_greeting_message']}`",
-            "",
-            f"Second Greeting Time: **{timedelta_to_human(second_td)}**",
-            f"Second Greeting Channel: **{get_channel_info(settings['second_greeting_channel_id'])}**",
-            f"Second Greeting Message: `{settings['second_greeting_message']}`",
-            "",
-            f"Failed Message Channel (Timed Out): **{get_channel_info(settings['failed_message_channel_id'])}**",
-            f"Failed Message: `{settings['failed_message']}`",
-            "",
-            f"No Messages Failed Channel: **{get_channel_info(settings['nomessages_failed_message_channel_id'])}**",
-            f"No Messages Failed Message: `{settings['nomessages_failed_message']}`",
-            "",
-            f"Success Message Channel: **{get_channel_info(settings['success_message_channel_id'])}**",
-            "",
-            bold("--- Logging ---"),
-            f"Log Channel: **{get_channel_info(settings['log_channel_id'])}** (Logs all deleted messages.)",
-        ]
-        
-        await ctx.send(box('\n'.join(output)))
+        # Notifications (Failures)
+        failures_val = (
+            f"**General Fail:** {get_channel_str(settings['failed_message_channel_id'])}\n"
+            f"Message: `{settings['failed_message']}`\n\n"
+            f"**No Messages Fail:** {get_channel_str(settings['nomessages_failed_message_channel_id'])}\n"
+            f"Message: `{settings['nomessages_failed_message']}`"
+        )
+        embed.add_field(name="Failures", value=failures_val, inline=False)
+
+        # Success
+        success_val = (
+            f"**Channel:** {get_channel_str(settings['success_message_channel_id'])}\n"
+            f"**Title:** `{settings['success_embed_data']['title']}`\n"
+            f"**Footer:** `{settings['success_embed_data']['footer']}`"
+        )
+        embed.add_field(name="Success", value=success_val, inline=False)
+
+        # Logging
+        embed.add_field(name="Logging", value=f"**Channel:** {get_channel_str(settings['log_channel_id'])}", inline=False)
+
+        await ctx.send(embed=embed)
 
     @ephemeralset.command(name="logchannel")
     async def ephemeralset_logchannel(self, ctx: commands.Context, channel: typing.Optional[discord.TextChannel] = None):
