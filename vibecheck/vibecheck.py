@@ -1,6 +1,7 @@
 """Module for the VibeCheck cog."""
 import asyncio
 import logging
+import time
 from collections import namedtuple
 from typing import Tuple, Optional
 
@@ -27,19 +28,22 @@ class VibeCheck(getattr(commands, "Cog", object)):
         self.conf = Config.get_conf(self, identifier=UNIQUE_ID, force_registration=True)
         
         # Global vibes score & history
-        # interactions structure: {"receiver_id": {"good": 0, "bad": 0}}
         self.conf.register_user(
             vibes=0,
             good_vibes_sent=0,
             bad_vibes_sent=0,
-            interactions={}
+            interactions={},
+            last_good_vibe=0,  # Timestamp of last usage
+            last_bad_vibe=0    # Timestamp of last usage
         )
         
         # Guild settings
         self.conf.register_guild(
             vibe_check_role_id=None,
-            vibe_threshold=-10,  # Default negative threshold
-            log_channel_id=None,  # Channel ID for logging
+            vibe_threshold=-10,
+            log_channel_id=None,
+            good_vibes_cooldown=3600,  # Default 60 minutes (in seconds)
+            bad_vibes_cooldown=3600    # Default 60 minutes (in seconds)
         )
 
     # --- PUBLIC API ---
@@ -73,9 +77,11 @@ class VibeCheck(getattr(commands, "Cog", object)):
     # --- COMMANDS: VIBES ACTIONS & INFO ---
 
     @commands.command(name="goodvibes")
-    @commands.cooldown(1, 3600, commands.BucketType.user)
     async def good_vibes(self, ctx: commands.Context, user: discord.User, amount: int):
         """Give someone good vibes"""
+        
+        # Check cooldown manually
+        await self._check_cooldown(ctx, "good")
         
         if user and user.id == ctx.author.id:
             return await ctx.send(("You can't give good vibes to yourself!"), ephemeral=True)
@@ -84,12 +90,18 @@ class VibeCheck(getattr(commands, "Cog", object)):
         
         # Pass True for is_good because this is goodvibes
         await self._add_vibes(ctx.author, user, amount, is_good=True)
+        
+        # Update cooldown timestamp
+        await self.conf.user(ctx.author).last_good_vibe.set(int(time.time()))
+        
         await ctx.send("You sent good vibes to {}!".format(user.name))
 
     @commands.command(name="badvibes")
-    @commands.cooldown(1, 3600, commands.BucketType.user)
     async def bad_vibes(self, ctx: commands.Context, user: discord.Member, amount: int):
         """Give someone bad vibes"""
+
+        # Check cooldown manually
+        await self._check_cooldown(ctx, "bad")
         
         if user and user.id == ctx.author.id:
             return await ctx.send(("You can't give bad vibes to yourself!"), ephemeral=True)
@@ -98,6 +110,10 @@ class VibeCheck(getattr(commands, "Cog", object)):
 
         # Pass False for is_good because this is badvibes
         await self._add_vibes(ctx.author, user, -amount, is_good=False)
+        
+        # Update cooldown timestamp
+        await self.conf.user(ctx.author).last_bad_vibe.set(int(time.time()))
+        
         await ctx.send("You sent bad vibes to {}!".format(user.name))
 
     @commands.command()
@@ -238,6 +254,48 @@ class VibeCheck(getattr(commands, "Cog", object)):
         await self.conf.guild(ctx.guild).log_channel_id.set(channel.id)
         await ctx.send(f"Vibe activity will now be logged in {channel.mention}.")
 
+    # --- COOLDOWN COMMANDS ---
+
+    @vibecheckset.group(name="cooldown")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def vibe_cooldown(self, ctx: commands.Context):
+        """Configure cooldowns for sending vibes."""
+        pass
+
+    @vibe_cooldown.command(name="goodvibes")
+    async def set_good_vibes_cooldown(self, ctx: commands.Context, minutes: int):
+        """
+        Sets the cooldown for [p]goodvibes in minutes.
+        Set to 0 to disable cooldowns.
+        """
+        if minutes < 0:
+            return await ctx.send("Cooldown cannot be negative.")
+        
+        seconds = minutes * 60
+        await self.conf.guild(ctx.guild).good_vibes_cooldown.set(seconds)
+        
+        if minutes == 0:
+            await ctx.send("Cooldown for **Good Vibes** has been disabled.")
+        else:
+            await ctx.send(f"Cooldown for **Good Vibes** set to **{minutes} minutes**.")
+
+    @vibe_cooldown.command(name="badvibes")
+    async def set_bad_vibes_cooldown(self, ctx: commands.Context, minutes: int):
+        """
+        Sets the cooldown for [p]badvibes in minutes.
+        Set to 0 to disable cooldowns.
+        """
+        if minutes < 0:
+            return await ctx.send("Cooldown cannot be negative.")
+        
+        seconds = minutes * 60
+        await self.conf.guild(ctx.guild).bad_vibes_cooldown.set(seconds)
+
+        if minutes == 0:
+            await ctx.send("Cooldown for **Bad Vibes** has been disabled.")
+        else:
+            await ctx.send(f"Cooldown for **Bad Vibes** set to **{minutes} minutes**.")
+
     @vibecheckset.command(name="view")
     async def view_settings(self, ctx: commands.Context):
         """Shows the current VibeCheck configuration for this server."""
@@ -262,10 +320,19 @@ class VibeCheck(getattr(commands, "Cog", object)):
             chan = ctx.guild.get_channel(log_id)
             log_text = chan.mention if chan else f"Deleted Channel ({log_id})"
             
+        # Cooldowns
+        good_cd = settings.get('good_vibes_cooldown', 3600)
+        bad_cd = settings.get('bad_vibes_cooldown', 3600)
+        
+        good_cd_str = f"{good_cd // 60} mins" if good_cd > 0 else "None"
+        bad_cd_str = f"{bad_cd // 60} mins" if bad_cd > 0 else "None"
+
         embed = discord.Embed(title=f"VibeCheck Settings for {ctx.guild.name}", color=discord.Color.blue())
         embed.add_field(name="Vibe Threshold", value=str(threshold), inline=True)
         embed.add_field(name="Vibe Check Role", value=role_text, inline=True)
         embed.add_field(name="Log Channel", value=log_text, inline=False)
+        embed.add_field(name="Good Vibes Cooldown", value=good_cd_str, inline=True)
+        embed.add_field(name="Bad Vibes Cooldown", value=bad_cd_str, inline=True)
         
         await ctx.send(embed=embed)
 
@@ -350,6 +417,42 @@ class VibeCheck(getattr(commands, "Cog", object)):
         await ctx.send(f"✅ **Cleanup complete!** Successfully pruned vibe scores for **{pruned_count}** departed users.")
 
     # --- CORE LOGIC AND LISTENERS ---
+
+    async def _check_cooldown(self, ctx: commands.Context, vibe_type: str):
+        """
+        Checks if a user is on cooldown for a specific vibe type.
+        Raises CommandOnCooldown if they are.
+        
+        Args:
+            ctx: The command context.
+            vibe_type: "good" or "bad"
+        """
+        # Owners bypass cooldowns
+        if await self.bot.is_owner(ctx.author):
+            return
+
+        # Fetch settings
+        if vibe_type == "good":
+            cooldown_seconds = await self.conf.guild(ctx.guild).good_vibes_cooldown()
+            last_used = await self.conf.user(ctx.author).last_good_vibe()
+        else:
+            cooldown_seconds = await self.conf.guild(ctx.guild).bad_vibes_cooldown()
+            last_used = await self.conf.user(ctx.author).last_bad_vibe()
+
+        if cooldown_seconds <= 0:
+            return
+
+        current_time = int(time.time())
+        time_passed = current_time - last_used
+        retry_after = cooldown_seconds - time_passed
+
+        if retry_after > 0:
+            # Raise exception to trigger the existing cog_command_error handler
+            raise commands.CommandOnCooldown(
+                commands.Cooldown(1, cooldown_seconds), 
+                retry_after, 
+                commands.BucketType.user
+            )
 
     async def _add_vibes(self, giver: discord.User, receiver: discord.User, amount: int, is_good: bool):
         """
@@ -514,12 +617,13 @@ class VibeCheck(getattr(commands, "Cog", object)):
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
         """Handles errors for commands in this cog, specifically custom cooldown messages."""
         
-        # Note: This is now a fixed cooldown, but the custom error handler remains
         if isinstance(error, commands.CommandOnCooldown):
             seconds = int(error.retry_after)
             
-            # Since the cooldown is fixed at 3600 seconds, we can simplify this:
-            configured_seconds = 3600
+            # Retrieve specific configured time based on command name
+            # This logic assumes the error came from a manual check raising the exception with the correct total time
+            # For formatting purposes we can calculate configured time from retry_after + elapsed,
+            # but usually just displaying "Try again in X" is sufficient for the user.
             
             if seconds >= 3600:
                 time_unit = f"{seconds // 3600} hours"
@@ -528,10 +632,8 @@ class VibeCheck(getattr(commands, "Cog", object)):
             else:
                 time_unit = f"{seconds} seconds"
 
-            configured_unit = f"{configured_seconds // 3600} hour"
-
             await ctx.send(
-                f"Slow down! You can only give vibes once every **{configured_unit}**. Try again in **{time_unit}**.",
+                f"Slow down! You are on cooldown. Try again in **{time_unit}**.",
                 ephemeral=True
             )
         else:
