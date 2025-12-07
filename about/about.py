@@ -48,15 +48,7 @@ class ChannelNavigatorView(discord.ui.View):
         voice_btn.callback = self.voice_callback
         self.add_item(voice_btn)
 
-        # 4. Add Server Guide Link Button (If Onboarding feature is present)
-        if "GUILD_ONBOARDING" in self.guild.features:
-            guide_btn = discord.ui.Button(
-                style=discord.ButtonStyle.link,
-                label="Server Guide",
-                url=f"https://discord.com/channels/{self.guild.id}/guide",
-                row=4
-            )
-            self.add_item(guide_btn)
+        # Removed Server Guide Button (as requested)
 
     def make_callback_public(self, cat_id, label):
         """Factory to create specific callbacks for loop variables."""
@@ -144,7 +136,7 @@ class About(commands.Cog):
             "first_day_description": "Welcome! Here are some channels to get you started:",
             "first_day_thumbnail": "",
             "first_day_image": "",
-            "new_member_config": { # NEW: Configuration for the New Member section
+            "new_member_config": {
                 "ephemeral_role": None,
                 "posted_intro_role": None,
                 "no_intro_role": None,
@@ -308,7 +300,7 @@ class About(commands.Cog):
         nointro_rid = new_member_config.get("no_intro_role")
         gen_level = new_member_config.get("general_only_level", 0)
 
-        # Helper to check role
+        # Helpers
         def has_role(r_id):
             if r_id is None: return False
             return member.get_role(int(r_id)) is not None
@@ -317,7 +309,7 @@ class About(commands.Cog):
         has_posted_intro = has_role(intro_rid)
         has_no_intro = has_role(nointro_rid)
 
-        # Logic Flow
+        # Logic
         if is_ephemeral:
             nm_output = "\n\n**New Member**\n💨Ephemeral Mode. Cannot see previous messages or reply to users"
         else:
@@ -393,7 +385,7 @@ class About(commands.Cog):
             activity_output + # Activity Status
             award_output +   # Awards
             helper_output +  # Teams
-            nm_output +      # NEW: New Member Section
+            nm_output +      # New Member
             role_progress_output
         )
 
@@ -702,7 +694,10 @@ class About(commands.Cog):
 
     @aboutset_channel.command(name="add")
     async def channel_add(self, ctx, category: discord.CategoryChannel, type: Literal["public", "secret"], *, label: str):
-        """Add a category to the channel navigator."""
+        """
+        Add a category to the channel navigator.
+        Type must be 'public' or 'secret'. Label is the button text.
+        """
         async with self.config.guild(ctx.guild).channel_categories() as cats:
             cats[str(category.id)] = {
                 "type": type.lower(),
