@@ -144,7 +144,7 @@ class About(commands.Cog):
             "first_day_description": "Welcome! Here are some channels to get you started:",
             "first_day_thumbnail": "",
             "first_day_image": "",
-            "new_member_config": {
+            "new_member_config": { # NEW: Configuration for the New Member section
                 "ephemeral_role": None,
                 "posted_intro_role": None,
                 "no_intro_role": None,
@@ -161,9 +161,9 @@ class About(commands.Cog):
             await ctx.send("I couldn't determine when that member joined this server.")
             return None
 
-        # --- 1. Level Retrieval (Updated) ---
+        # --- 1. Level Retrieval ---
+        user_level = 0 # Default level
         level_str = ""
-        user_level = 0 # Default level if cog not loaded or user not found
         levelup_cog = self.bot.get_cog("LevelUp")
         if levelup_cog:
             try:
@@ -171,8 +171,7 @@ class About(commands.Cog):
                 user_level = await levelup_cog.get_level(member)
                 level_str = f"**Level {user_level}** • "
             except Exception:
-                # Fail silently if user has no profile or other error
-                pass
+                pass 
 
         # --- 2. Time Calculation (Line 1) ---
         now = datetime.now(timezone.utc)
@@ -307,10 +306,9 @@ class About(commands.Cog):
         eph_rid = new_member_config.get("ephemeral_role")
         intro_rid = new_member_config.get("posted_intro_role")
         nointro_rid = new_member_config.get("no_intro_role")
-        # gen_rid = new_member_config.get("general_only_role") # Role ID stored for reference/commands
         gen_level = new_member_config.get("general_only_level", 0)
 
-        # Helpers
+        # Helper to check role
         def has_role(r_id):
             if r_id is None: return False
             return member.get_role(int(r_id)) is not None
@@ -319,7 +317,7 @@ class About(commands.Cog):
         has_posted_intro = has_role(intro_rid)
         has_no_intro = has_role(nointro_rid)
 
-        # Logic
+        # Logic Flow
         if is_ephemeral:
             nm_output = "\n\n**New Member**\n💨Ephemeral Mode. Cannot see previous messages or reply to users"
         else:
@@ -704,10 +702,7 @@ class About(commands.Cog):
 
     @aboutset_channel.command(name="add")
     async def channel_add(self, ctx, category: discord.CategoryChannel, type: Literal["public", "secret"], *, label: str):
-        """
-        Add a category to the channel navigator.
-        Type must be 'public' or 'secret'. Label is the button text.
-        """
+        """Add a category to the channel navigator."""
         async with self.config.guild(ctx.guild).channel_categories() as cats:
             cats[str(category.id)] = {
                 "type": type.lower(),
