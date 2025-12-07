@@ -17,13 +17,13 @@ class HouseButton(discord.ui.Button):
         # Create an embed with details about the selected house
         embed = discord.Embed(
             title=f"House: {self.role.name}",
-            description=f"Information for the {self.role.mention} house.",
             color=self.role.color
         )
         embed.add_field(name="Total Members", value=str(len(self.role.members)), inline=True)
         
-        # List a few members as a preview
-        members_preview = [m.display_name for m in self.role.members[:10]]
+        # List a few members as a preview, using mentions to make them clickable
+        members_preview = [m.mention for m in self.role.members[:10]]
+        
         if len(self.role.members) > 10:
             members_str = ", ".join(members_preview) + f" and {len(self.role.members) - 10} more..."
         elif members_preview:
@@ -31,7 +31,7 @@ class HouseButton(discord.ui.Button):
         else:
             members_str = "No members yet."
             
-        embed.add_field(name="Roster Preview", value=members_str, inline=False)
+        embed.add_field(name="House Members", value=members_str, inline=False)
         
         await interaction.response.edit_message(embed=embed)
 
@@ -47,7 +47,7 @@ class HouseView(discord.ui.View):
         for child in self.children:
             child.disabled = True
         # Note: We can't edit the message here easily without holding a ref to it, 
-        # but the interaction will just fail gracefully or we can pass the message in init.
+        # but the interaction will just fail gracefully.
         pass
 
 class SortingHat(commands.Cog):
