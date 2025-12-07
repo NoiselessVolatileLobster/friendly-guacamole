@@ -58,6 +58,12 @@ class Ephemeral(commands.Cog):
             start_message_returning_content="Welcome back {mention}!",
             # --- END START MESSAGE CONFIGURATION ---
             
+            # --- WELCOME EMBED CONFIGURATION (NEW) ---
+            welcome_embed_channel_id=None,
+            welcome_embed_title="Welcome to the Server!",
+            welcome_embed_description="Welcome {mention}! Please read the rules.",
+            # --- END WELCOME EMBED CONFIGURATION ---
+            
             nomessages_threshold=timedelta(hours=4).total_seconds(), 
             nomessages_role_id=None,
             nomessages_failed_message_channel_id=None,
@@ -256,7 +262,7 @@ class Ephemeral(commands.Cog):
             print(f"Ephemeral ERROR performing action '{action}' on {user.id}: {e}")
 
     async def _send_success_embed(self, guild: discord.Guild, user: discord.Member, settings: dict):
-        """Sends the Success embed."""
+        """Sends the Success (formerly Removed) embed."""
         channel_id = settings["success_message_channel_id"]
         embed_data = settings["success_embed_data"]
         
@@ -286,6 +292,34 @@ class Ephemeral(commands.Cog):
             print(f"Ephemeral ERROR in Guild {guild.id}: Missing permissions to send Success Embed in {channel.name}.")
         except Exception as e:
             print(f"Ephemeral ERROR in Guild {guild.id}: Unexpected error sending Success Embed: {e}")
+
+    async def _send_welcome_embed(self, guild: discord.Guild, user: discord.Member, settings: dict):
+        """Sends the Welcome embed when a user starts the timer."""
+        channel_id = settings.get("welcome_embed_channel_id")
+        
+        if not channel_id:
+            return
+
+        channel = guild.get_channel(channel_id)
+        if not channel or not isinstance(channel, discord.TextChannel):
+            return
+
+        title = settings.get("welcome_embed_title", "Welcome!").replace("{username}", user.name).replace("{mention}", user.display_name)
+        description = settings.get("welcome_embed_description", "").replace("{mention}", user.mention).replace("{username}", user.name)
+        
+        # Hardcoded fields as requested
+        footer_text = f"User ID: {user.id}"
+        
+        embed = discord.Embed(title=title, description=description, color=discord.Color.blue())
+        embed.set_thumbnail(url=user.display_avatar.url)
+        embed.set_footer(text=footer_text)
+
+        try:
+            await channel.send(content=user.mention, embed=embed, allowed_mentions=discord.AllowedMentions(users=True))
+        except discord.Forbidden:
+            print(f"Ephemeral ERROR in Guild {guild.id}: Missing permissions to send Welcome Embed in {channel.name}.")
+        except Exception as e:
+            print(f"Ephemeral ERROR in Guild {guild.id}: Unexpected error sending Welcome Embed: {e}")
 
     async def _handle_ephemeral_success(self, guild: discord.Guild, user: discord.Member, settings: dict, manual: bool = False):
         """Handles the success case: message threshold met."""
@@ -353,7 +387,7 @@ class Ephemeral(commands.Cog):
                 "is_ephemeral": True,
             })
             
-            # Start Message Logic
+            # --- Send Text Start Messages (Conditional) ---
             start_channel_id = settings.get("start_message_first_channel_id")
             start_message_content = settings.get("start_message_first_content")
             
@@ -361,7 +395,6 @@ class Ephemeral(commands.Cog):
             if join_tracker:
                 try:
                     count = await join_tracker.get_join_count(guild, user.id)
-                    # If count > 1 (meaning they have joined more than once), use returning config
                     if count > 1:
                         start_channel_id = settings.get("start_message_returning_channel_id")
                         start_message_content = settings.get("start_message_returning_content")
@@ -369,6 +402,9 @@ class Ephemeral(commands.Cog):
                     print(f"Ephemeral ERROR: Could not fetch join count: {e}")
             
             await self._send_custom_message(guild, user, start_channel_id, start_message_content)
+
+            # --- Send Welcome Embed (New) ---
+            await self._send_welcome_embed(guild, user, settings)
             
             self.start_user_timer(guild.id, user.id)
             await self._log_event(guild, f"▶️ **Started:** {user.mention} (`{user.id}`) typed the phrase and started their timer.")
@@ -607,6 +643,17 @@ class Ephemeral(commands.Cog):
         else:
             await ctx.send("Invalid type! Use `firsttime` or `notfirsttime`.")
 
+    @ephemeralset.command(name="welcomeembed")
+    async def ephemeralset_welcomeembed(self, ctx: commands.Context, channel: discord.TextChannel, title: str, *, description: str):
+        """Sets the welcome embed posted on timer start.
+        
+        Usage: [p]ephemeralset welcomeembed <channel> <title> <description>
+        """
+        await self.config.guild(ctx.guild).welcome_embed_channel_id.set(channel.id)
+        await self.config.guild(ctx.guild).welcome_embed_title.set(title)
+        await self.config.guild(ctx.guild).welcome_embed_description.set(description)
+        await ctx.send(f"Welcome Embed configured for {channel.mention}.")
+
     @ephemeralset.command(name="timerchannel")
     async def ephemeralset_timerchannel(self, ctx: commands.Context, channel: discord.TextChannel):
         """Sets the ephemeral timer channel."""
@@ -644,9 +691,11 @@ class Ephemeral(commands.Cog):
                f"Not Started Role: {get_role_str(settings['ephemeral_not_started_role_id'])}\n"
                f"Read Rules Role: {get_role_str(settings['ephemeral_read_rules_role_id'])}\n"
                f"Start(1st): {get_chan_str(settings['start_message_first_channel_id'])}\n"
-               f"Msg: `{settings['start_message_first_content']}`\n"
+               f"Msg: {settings['start_message_first_content']}\n"
                f"Start(Ret): {get_chan_str(settings['start_message_returning_channel_id'])}\n"
-               f"Msg: `{settings['start_message_returning_content']}`")
+               f"Msg: {settings['start_message_returning_content']}\n"
+               f"Welcome Embed Ch: {get_chan_str(settings['welcome_embed_channel_id'])}\n"
+               f"Welcome Title: `{settings['welcome_embed_title']}`")
         embed.add_field(name="Activation", value=act, inline=False)
         
         thresh = (f"Expire: {timedelta_to_human(timedelta(seconds=settings['ephemeral_expire_threshold']))}\n"
