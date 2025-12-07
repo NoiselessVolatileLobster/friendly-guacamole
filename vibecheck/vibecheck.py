@@ -15,6 +15,7 @@ __all__ = ["UNIQUE_ID", "VibeCheck"]
 
 UNIQUE_ID = 0x9C02DCC7
 MemberInfo = namedtuple("MemberInfo", "id name vibes")
+MemberRatioInfo = namedtuple("MemberRatioInfo", "id name ratio")
 
 
 class VibeCheck(getattr(commands, "Cog", object)):
@@ -206,6 +207,39 @@ class VibeCheck(getattr(commands, "Cog", object)):
     async def vibecheckset(self, ctx: commands.Context):
         """Configuration settings for VibeCheck."""
         pass
+
+    @vibecheckset.command(name="ratioboard")
+    async def ratio_board(self, ctx: commands.Context):
+        """
+        Displays a table of user vibe ratios (Good Sent - Bad Sent), sorted from highest to lowest.
+        """
+        data = await self._get_all_members_ratios(ctx.bot)
+        
+        # Sort by ratio descending
+        data_sorted = sorted(data, key=lambda x: x.ratio, reverse=True)
+        
+        if not data_sorted:
+            return await ctx.send("No vibe activity recorded yet.")
+        
+        # Table Formatting
+        id_width = 20 
+        name_width = 25
+        
+        # Create Header
+        header = f"{'User ID'.ljust(id_width)} | {'User Name'.ljust(name_width)} | Current Vibe Ratio\n"
+        header += "-" * (id_width + name_width + 20) + "\n"
+        
+        msg = header
+        
+        for m in data_sorted:
+            # Truncate name if too long to keep table structure
+            name_display = (m.name[:name_width-3] + '...') if len(m.name) > name_width else m.name
+            
+            row = f"{str(m.id).ljust(id_width)} | {name_display.ljust(name_width)} | {m.ratio}\n"
+            msg += row
+            
+        for page in pagify(msg, shorten_by=12):
+            await ctx.send(box(page, lang="prolog"))
 
     @vibecheckset.command(name="ratio")
     async def vibe_ratio(self, ctx: commands.Context, user: discord.Member):
@@ -855,4 +889,26 @@ class VibeCheck(getattr(commands, "Cog", object)):
             if user is None:
                 continue
             ret.append(MemberInfo(id=user_id, name=str(user), vibes=vibes))
+        return ret
+    
+    async def _get_all_members_ratios(self, bot):
+        """Get a list of members with calculated ratios."""
+        ret = []
+        for user_id, conf in (await self.conf.all_users()).items():
+            # Filter users with no activity if needed, or include everyone
+            good = conf.get("good_vibes_sent", 0)
+            bad = conf.get("bad_vibes_sent", 0)
+            
+            # If a user has never sent vibes, should they be on the board? 
+            # Usually only active users are shown.
+            if good == 0 and bad == 0:
+                continue
+                
+            ratio = good - bad
+            
+            user = bot.get_user(user_id)
+            if user is None:
+                continue
+                
+            ret.append(MemberRatioInfo(id=user_id, name=str(user), ratio=ratio))
         return ret
