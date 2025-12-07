@@ -48,8 +48,6 @@ class ChannelNavigatorView(discord.ui.View):
         voice_btn.callback = self.voice_callback
         self.add_item(voice_btn)
 
-        # Removed Server Guide Button (as requested)
-
     def make_callback_public(self, cat_id, label):
         """Factory to create specific callbacks for loop variables."""
         async def callback(interaction: discord.Interaction):
@@ -153,16 +151,17 @@ class About(commands.Cog):
             await ctx.send("I couldn't determine when that member joined this server.")
             return None
 
-        # --- 1. Level Retrieval ---
+        # --- 1. Level Retrieval (Integrated with LevelUp Cog) ---
         user_level = 0 # Default level
         level_str = ""
         levelup_cog = self.bot.get_cog("LevelUp")
         if levelup_cog:
             try:
-                # Based on user info, get_level is async
+                # Using the API method from LevelUp cog
                 user_level = await levelup_cog.get_level(member)
                 level_str = f"**Level {user_level}** • "
             except Exception:
+                # Fail silently if user has no profile or other error
                 pass 
 
         # --- 2. Time Calculation (Line 1) ---
@@ -412,6 +411,8 @@ class About(commands.Cog):
             if not category:
                 continue
             
+            # Count text-based channels (Text, News, Forum) excluding Voice/Stage
+            # This logic ensures we count "readable" channels for the Public/Secret stats
             c_count = 0
             for c in category.channels:
                 if isinstance(c, (discord.TextChannel, discord.ForumChannel)):
