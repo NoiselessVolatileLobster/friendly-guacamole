@@ -550,14 +550,27 @@ class VibeCheck(getattr(commands, "Cog", object)):
         log.debug("Resetting %s's vibes", str(user))
         await self.conf.user(user).vibes.set(0)
         await ctx.send("{}'s vibes has been reset to 0.".format(user.name))
+        
+    @vibecheckset.command(name="resetratio")
+    @checks.is_owner()
+    async def reset_ratio(self, ctx: commands.Context, user: discord.Member):
+        """Resets a user's vibe ratio stats (good/bad sent & history)."""
+        log.debug("Resetting %s's vibe ratio stats", str(user))
+        
+        # Reset specific fields, keep main score and cooldown timestamps
+        await self.conf.user(user).good_vibes_sent.set(0)
+        await self.conf.user(user).bad_vibes_sent.set(0)
+        await self.conf.user(user).interactions.set({})
+        
+        await ctx.send("{}'s vibe ratio statistics have been reset.".format(user.name))
 
     @vibecheckset.command(name="resetall")
     @checks.is_owner()
     async def reset_all(self, ctx: commands.Context):
-        """Resets the global vibes score for every user the bot knows."""
+        """Resets vibes score AND ratio stats for ALL users."""
         
         confirmation_msg = await ctx.send(
-            "⚠️ **WARNING:** This will reset the vibes score for **EVERY USER** globally. "
+            "⚠️ **WARNING:** This will reset vibes scores AND ratio stats for **EVERY USER** globally. "
             "React with a checkmark (✅) within 15 seconds to confirm."
         )
         
@@ -571,19 +584,23 @@ class VibeCheck(getattr(commands, "Cog", object)):
             await confirmation_msg.edit(content="Reset All Vibes command timed out. No scores were changed.")
             return
         
-        await confirmation_msg.edit(content="Resetting all user vibes scores... this may take a moment.")
+        await confirmation_msg.edit(content="Resetting all user scores and ratios... this may take a moment.")
 
         all_user_data = await self.conf.all_users()
         reset_count = 0
         
+        # We iterate over everyone to ensure full cleanup
         for user_id, user_conf in all_user_data.items():
-            if user_conf.get("vibes") != 0:
-                user_obj = self.bot.get_user(user_id) 
-                if user_obj:
-                    await self.conf.user(user_obj).vibes.set(0)
-                    reset_count += 1
+            user_obj = self.bot.get_user(user_id) 
+            if user_obj:
+                # Set specific fields to default
+                await self.conf.user(user_obj).vibes.set(0)
+                await self.conf.user(user_obj).good_vibes_sent.set(0)
+                await self.conf.user(user_obj).bad_vibes_sent.set(0)
+                await self.conf.user(user_obj).interactions.set({})
+                reset_count += 1
                 
-        await ctx.send(f"✅ **Success!** Reset the vibes score for **{reset_count}** users globally.")
+        await ctx.send(f"✅ **Success!** Reset data for **{reset_count}** users globally.")
         
     @vibecheckset.command(name="prune")
     @checks.is_owner()
