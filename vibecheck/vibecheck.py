@@ -45,6 +45,10 @@ class VibeCheck(getattr(commands, "Cog", object)):
             good_vibes_cooldown=3600,  # Default 60 minutes (in seconds)
             bad_vibes_cooldown=3600,   # Default 60 minutes (in seconds)
             
+            # Ratio Thresholds
+            ratio_soft_threshold=None, # Threshold 1 (Reminder)
+            ratio_hard_threshold=None, # Threshold 2 (Block + Warn)
+            
             # WarnSystem Config
             warn_threshold=-100,       # Level 1
             warn_reason="VibeCheck: Low vibe score",
@@ -109,6 +113,36 @@ class VibeCheck(getattr(commands, "Cog", object)):
     @commands.command(name="badvibes")
     async def bad_vibes(self, ctx: commands.Context, user: discord.Member, amount: int):
         """Give someone bad vibes"""
+
+        # --- RATIO THRESHOLD CHECK ---
+        # We perform this check BEFORE cooldowns or executing the command
+        user_data = await self.conf.user(ctx.author).all()
+        current_ratio = user_data.get("good_vibes_sent", 0) - user_data.get("bad_vibes_sent", 0)
+        
+        guild_settings = await self.conf.guild(ctx.guild).all()
+        soft_threshold = guild_settings.get("ratio_soft_threshold")
+        hard_threshold = guild_settings.get("ratio_hard_threshold")
+
+        # 1. Hard Threshold (Block & Warn)
+        if hard_threshold is not None and current_ratio <= hard_threshold:
+            # Trigger WarnSystem Level 1
+            await self._trigger_warnsystem(
+                ctx.guild, ctx.author, ctx.guild.me, 1, 
+                f"Your viberatio is {current_ratio} and you're unable to send bad vibes"
+            )
+            # Block Command
+            return await ctx.send(
+                "You are not allowed to send bad vibes at this time", 
+                ephemeral=True
+            )
+
+        # 2. Soft Threshold (Reminder)
+        if soft_threshold is not None and current_ratio <= soft_threshold:
+            await ctx.send(
+                f"Your vibe ratio is {current_ratio}. Please remember to use [p]goodvibes too!", 
+                ephemeral=True
+            )
+        # -----------------------------
 
         # Check cooldown manually
         await self._check_cooldown(ctx, "bad")
@@ -222,6 +256,29 @@ class VibeCheck(getattr(commands, "Cog", object)):
         embed.add_field(name="Most Bad Vibes To", value=f"{most_bad_user} ({most_bad_count})", inline=True)
 
         await ctx.send(embed=embed)
+
+    @vibecheckset.command(name="ratiothreshold")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def set_ratio_thresholds(self, ctx: commands.Context, soft: int, hard: int):
+        """
+        Sets the soft and hard thresholds for vibe ratios (Good Sent - Bad Sent).
+        
+        Soft Threshold (Arg 1): If ratio drops below this, user gets an ephemeral reminder when sending bad vibes.
+        Hard Threshold (Arg 2): If ratio drops below this, user is BLOCKED from sending bad vibes and warned (Level 1).
+        
+        Example: [p]vibecheckset ratiothreshold 0 -10
+        (Warns at 0, Blocks at -10)
+        
+        Set specific values to None or use a clear command to disable (not implemented in this simplified command, use high negative numbers to effectively disable).
+        """
+        await self.conf.guild(ctx.guild).ratio_soft_threshold.set(soft)
+        await self.conf.guild(ctx.guild).ratio_hard_threshold.set(hard)
+        
+        await ctx.send(
+            f"✅ **Ratio Thresholds Updated**\n"
+            f"**Soft Threshold:** {soft} (Reminds user)\n"
+            f"**Hard Threshold:** {hard} (Blocks user + WarnSystem Lvl 1)"
+        )
 
     @vibecheckset.command(name="role")
     @checks.admin_or_permissions(manage_roles=True)
@@ -428,6 +485,12 @@ class VibeCheck(getattr(commands, "Cog", object)):
         
         good_cd_str = f"{good_cd // 60} mins" if good_cd > 0 else "None"
         bad_cd_str = f"{bad_cd // 60} mins" if bad_cd > 0 else "None"
+        
+        # Ratio Thresholds
+        soft_rt = settings.get('ratio_soft_threshold')
+        hard_rt = settings.get('ratio_hard_threshold')
+        soft_rt_str = str(soft_rt) if soft_rt is not None else "Disabled"
+        hard_rt_str = str(hard_rt) if hard_rt is not None else "Disabled"
 
         embed = discord.Embed(title=f"VibeCheck Settings for {ctx.guild.name}", color=discord.Color.blue())
         embed.add_field(name="Role Threshold", value=str(threshold), inline=True)
@@ -436,6 +499,9 @@ class VibeCheck(getattr(commands, "Cog", object)):
         
         embed.add_field(name="Good Vibes Cooldown", value=good_cd_str, inline=True)
         embed.add_field(name="Bad Vibes Cooldown", value=bad_cd_str, inline=True)
+        
+        embed.add_field(name="Ratio Soft Threshold", value=soft_rt_str, inline=True)
+        embed.add_field(name="Ratio Hard Threshold", value=hard_rt_str, inline=True)
         
         embed.add_field(name="WarnSystem Lvl 1", value=warn_thresh_str, inline=False)
         embed.add_field(name="WarnSystem Lvl 3", value=kick_thresh_str, inline=False)
