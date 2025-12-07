@@ -48,6 +48,9 @@ class ChannelNavigatorView(discord.ui.View):
         voice_btn.callback = self.voice_callback
         self.add_item(voice_btn)
 
+        # 4. Add Server Guide Link Button (If Onboarding feature is present)
+        # Removed as requested in previous turn
+
     def make_callback_public(self, cat_id, label):
         """Factory to create specific callbacks for loop variables."""
         async def callback(interaction: discord.Interaction):
@@ -119,15 +122,12 @@ class About(commands.Cog):
         self.config = Config.get_conf(self, identifier=9876543210, force_registration=True)
         
         default_guild = {
-            "role_targets": {}, 
-            "role_buddies": {},
             "location_roles": {},
             "dm_status_roles": {},
             "award_roles": [],
             "helper_roles": [],
             "egg_status_roles": {},
             "house_roles": {},
-            "role_target_overrides": {},
             "channel_categories": {},
             "first_day_channels": [],
             "first_day_title": "First Day Channels",
@@ -140,7 +140,8 @@ class About(commands.Cog):
                 "no_intro_role": None,
                 "general_only_role": None,
                 "general_only_level": 0
-            }
+            },
+            "optin_roles": {} # NEW: { "base_role_id": { "target_id": int, "days": int, "level": int } }
         }
         self.config.register_guild(**default_guild)
 
@@ -151,17 +152,16 @@ class About(commands.Cog):
             await ctx.send("I couldn't determine when that member joined this server.")
             return None
 
-        # --- 1. Level Retrieval (Integrated with LevelUp Cog) ---
+        # --- 1. Level Retrieval ---
         user_level = 0 # Default level
         level_str = ""
         levelup_cog = self.bot.get_cog("LevelUp")
         if levelup_cog:
             try:
-                # Using the API method from LevelUp cog
+                # Based on user info, get_level is async
                 user_level = await levelup_cog.get_level(member)
                 level_str = f"**Level {user_level}** • "
             except Exception:
-                # Fail silently if user has no profile or other error
                 pass 
 
         # --- 2. Time Calculation (Line 1) ---
@@ -289,17 +289,15 @@ class About(commands.Cog):
         if helper_parts:
             helper_output = f"\n**Teams:** {', '.join(helper_parts)}"
 
-        # --- 8. New Member Section (NEW) ---
+        # --- 8. New Member Section ---
         new_member_config = await self.config.guild(ctx.guild).new_member_config()
         nm_output = ""
         
-        # Unpack config
         eph_rid = new_member_config.get("ephemeral_role")
         intro_rid = new_member_config.get("posted_intro_role")
         nointro_rid = new_member_config.get("no_intro_role")
         gen_level = new_member_config.get("general_only_level", 0)
 
-        # Helpers
         def has_role(r_id):
             if r_id is None: return False
             return member.get_role(int(r_id)) is not None
@@ -308,68 +306,54 @@ class About(commands.Cog):
         has_posted_intro = has_role(intro_rid)
         has_no_intro = has_role(nointro_rid)
 
-        # Logic
         if is_ephemeral:
             nm_output = "\n\n**New Member**\n💨Ephemeral Mode. Cannot see previous messages or reply to users"
         else:
-            # Not Ephemeral
             if user_level < gen_level:
-                # Below required level
                 if has_no_intro:
                     nm_output = "\n\n**New Member**\n🗣️ Chat more and post an intro to unlock the rest of the server"
                 elif has_posted_intro:
                     nm_output = "\n\n**New Member**\n🗣️ Chat more to unlock the rest of the server"
             else:
-                # Met required level
                 if has_no_intro:
                     nm_output = "\n\n**New Member**\n🗣️ Post an intro to unlock the rest of the server"
                 elif has_posted_intro:
-                    # Met level AND has posted intro -> Do not display section
                     nm_output = ""
 
-        # --- Role Progress Calculation ---
-        role_targets = await self.config.guild(ctx.guild).role_targets()
-        role_buddies = await self.config.guild(ctx.guild).role_buddies()
-        role_target_overrides = await self.config.guild(ctx.guild).role_target_overrides()
-        
+        # --- 9. Role Progress Calculation (REWORKED) ---
+        optin_roles = await self.config.guild(ctx.guild).optin_roles()
         progress_lines = []
 
-        for base_id_str, target_days in role_targets.items():
-            base_role = ctx.guild.get_role(int(base_id_str))
+        for base_role_id, data in optin_roles.items():
+            base_role = ctx.guild.get_role(int(base_role_id))
             if not base_role: continue
 
-            # Check for Target Override
-            target_override_id = role_target_overrides.get(base_id_str)
-            if target_override_id:
-                target_override_role = ctx.guild.get_role(int(target_override_id))
-                if target_override_role and target_override_role in member.roles:
-                    progress_lines.append(f"{target_override_role.mention} Unlocked!")
-                    continue 
-
-            # Standard Base Role Logic
-            has_base_role = base_role in member.roles
+            target_role_id = data.get("target_id")
+            required_days = data.get("days", 0)
+            required_level = data.get("level", 0)
             
-            buddy_role_ids = role_buddies.get(base_id_str, [])
-            has_buddy_role = False
-            for b_id_str in buddy_role_ids:
-                buddy_role_obj = ctx.guild.get_role(int(b_id_str))
-                if buddy_role_obj and buddy_role_obj in member.roles:
-                    has_buddy_role = True
-                    break 
+            target_role = ctx.guild.get_role(int(target_role_id))
+            if not target_role: continue
 
-            mention = base_role.mention 
-            
-            if not has_base_role:
-                continue 
+            # 1. Check if user already has the requested (target) role
+            if target_role in member.roles:
+                progress_lines.append(f"{target_role.mention} Unlocked!")
+                continue # Done with this entry
 
-            if days_in_server < target_days:
-                remaining = target_days - days_in_server
-                progress_lines.append(f"{mention}: **{remaining}** days remaining to unlock")
-            else:
-                if has_buddy_role:
-                    progress_lines.append(f"{mention}: Unlocked ✅")
+            # 2. If not, check if user has the request (base) role
+            if base_role in member.roles:
+                # Calculate Status
+                days_remaining = required_days - days_in_server
+                level_met = user_level >= required_level
+                days_met = days_remaining <= 0
+
+                if not days_met:
+                    progress_lines.append(f"{base_role.mention}: **{days_remaining}** days remaining")
+                elif not level_met:
+                    progress_lines.append(f"{base_role.mention}: Reach Level **{required_level}**")
                 else:
-                    progress_lines.append(f"{mention}: Level up to unlock!")
+                    # Both met
+                    progress_lines.append(f"{base_role.mention}: Eligible! ✅")
 
         # Format Role Progress
         role_progress_output = ""
@@ -411,8 +395,6 @@ class About(commands.Cog):
             if not category:
                 continue
             
-            # Count text-based channels (Text, News, Forum) excluding Voice/Stage
-            # This logic ensures we count "readable" channels for the Public/Secret stats
             c_count = 0
             for c in category.channels:
                 if isinstance(c, (discord.TextChannel, discord.ForumChannel)):
@@ -695,10 +677,7 @@ class About(commands.Cog):
 
     @aboutset_channel.command(name="add")
     async def channel_add(self, ctx, category: discord.CategoryChannel, type: Literal["public", "secret"], *, label: str):
-        """
-        Add a category to the channel navigator.
-        Type must be 'public' or 'secret'. Label is the button text.
-        """
+        """Add a category to the channel navigator."""
         async with self.config.guild(ctx.guild).channel_categories() as cats:
             cats[str(category.id)] = {
                 "type": type.lower(),
@@ -1005,103 +984,62 @@ class About(commands.Cog):
         lines = [f"{emoji} {ctx.guild.get_role(int(rid)).name if ctx.guild.get_role(int(rid)) else 'Deleted'}" for rid, emoji in egg_roles.items()]
         await ctx.send(embed=discord.Embed(title="Egg Status Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
-    # --- Role Progress Management ---
-    @aboutset.group(name="roles")
-    async def aboutset_roles(self, ctx):
-        """Manage role targets."""
-        pass
+    # --- NEW: Opt-in Role Management ---
+    @aboutset.command(name="optin")
+    async def aboutset_optin(self, ctx, base_role: discord.Role, target_role: discord.Role, days: int, level: int):
+        """
+        Set up an opt-in role path.
+        
+        Arguments:
+        - base_role: The role the user requests (the 'request' role).
+        - target_role: The role granted when requirements are met (the 'requested' role).
+        - days: Number of days the user must have been in the server.
+        - level: Level required (from LevelUp cog).
+        """
+        if days < 0 or level < 0:
+             return await ctx.send("Days and Level must be non-negative.")
 
-    @aboutset_roles.command(name="add")
-    async def roles_add(self, ctx, role: discord.Role, days: int):
-        """Add role target."""
-        async with self.config.guild(ctx.guild).role_targets() as targets:
-            targets[str(role.id)] = days
-        await ctx.send(f"Configured **{role.name}** with target of **{days}** days.")
+        async with self.config.guild(ctx.guild).optin_roles() as optins:
+            optins[str(base_role.id)] = {
+                "target_id": str(target_role.id),
+                "days": days,
+                "level": level
+            }
+        
+        await ctx.send(
+            f"Configured Opt-in Path:\n"
+            f"User has **{base_role.name}** -> Waits **{days}** days & Reaches Level **{level}** -> Gets **{target_role.name}**"
+        )
 
-    @aboutset_roles.command(name="link")
-    async def roles_link(self, ctx, base_role: discord.Role, buddy_role: discord.Role):
-        """Link buddy role."""
-        base_id = str(base_role.id)
-        targets = await self.config.guild(ctx.guild).role_targets()
-        if base_id not in targets:
-            return await ctx.send("Base role not configured yet.")
-        async with self.config.guild(ctx.guild).role_buddies() as buddies:
-            if base_id not in buddies:
-                buddies[base_id] = []
-            buddies[base_id].append(str(buddy_role.id))
-        await ctx.send(f"Linked **{buddy_role.name}** to **{base_role.name}**.")
-
-    @aboutset_roles.command(name="unlink")
-    async def roles_unlink(self, ctx, base_role: discord.Role, buddy_role: discord.Role):
-        """Unlink buddy role."""
-        base_id = str(base_role.id)
-        buddy_id = str(buddy_role.id)
-        async with self.config.guild(ctx.guild).role_buddies() as buddies:
-            if base_id in buddies and buddy_id in buddies[base_id]:
-                buddies[base_id].remove(buddy_id)
-                await ctx.send(f"Unlinked **{buddy_role.name}** from **{base_role.name}**.")
+    @aboutset.command(name="optin_remove")
+    async def aboutset_optin_remove(self, ctx, base_role: discord.Role):
+        """Remove an opt-in role configuration."""
+        async with self.config.guild(ctx.guild).optin_roles() as optins:
+            if str(base_role.id) in optins:
+                del optins[str(base_role.id)]
+                await ctx.send(f"Removed opt-in configuration for **{base_role.name}**.")
             else:
-                await ctx.send("Link not found.")
+                await ctx.send("That base role is not configured.")
 
-    @aboutset_roles.command(name="linktarget")
-    async def roles_linktarget(self, ctx, base_role: discord.Role, target_role: discord.Role):
-        """Link target override."""
-        base_id = str(base_role.id)
-        targets = await self.config.guild(ctx.guild).role_targets()
-        if base_id not in targets:
-            return await ctx.send("Base role not configured.")
-        async with self.config.guild(ctx.guild).role_target_overrides() as overrides:
-            overrides[base_id] = str(target_role.id)
-        await ctx.send(f"Linked target **{target_role.name}** to **{base_role.name}**.")
-
-    @aboutset_roles.command(name="unlinktarget")
-    async def roles_unlinktarget(self, ctx, base_role: discord.Role):
-        """Unlink target override."""
-        base_id = str(base_role.id)
-        async with self.config.guild(ctx.guild).role_target_overrides() as overrides:
-            if base_id in overrides:
-                del overrides[base_id]
-                await ctx.send(f"Removed target override for **{base_role.name}**.")
-            else:
-                await ctx.send("Target link not found.")
-
-    @aboutset_roles.command(name="remove")
-    async def roles_remove(self, ctx, role: discord.Role):
-        """Remove role config."""
-        role_id = str(role.id)
-        async with self.config.guild(ctx.guild).role_targets() as targets:
-            if role_id in targets:
-                del targets[role_id]
-            else:
-                return await ctx.send("Role not configured.")
-        async with self.config.guild(ctx.guild).role_buddies() as buddies:
-            if role_id in buddies:
-                del buddies[role_id]
-        async with self.config.guild(ctx.guild).role_target_overrides() as overrides:
-            if role_id in overrides:
-                del overrides[role_id]
-        await ctx.send(f"Removed config for **{role.name}**.")
-
-    @aboutset_roles.command(name="list")
-    async def roles_list(self, ctx):
-        """List role configs."""
-        targets = await self.config.guild(ctx.guild).role_targets()
-        buddies = await self.config.guild(ctx.guild).role_buddies()
-        overrides = await self.config.guild(ctx.guild).role_target_overrides()
-        if not targets:
-            return await ctx.send("No roles configured.")
+    @aboutset.command(name="optin_list")
+    async def aboutset_optin_list(self, ctx):
+        """List configured opt-in role paths."""
+        optins = await self.config.guild(ctx.guild).optin_roles()
+        if not optins:
+            return await ctx.send("No opt-in roles configured.")
+        
         lines = []
-        for rid, days in targets.items():
-            role = ctx.guild.get_role(int(rid))
-            rname = role.mention if role else "Deleted"
-            btext = ""
-            if rid in buddies:
-                bnames = [ctx.guild.get_role(int(bid)).mention if ctx.guild.get_role(int(bid)) else "Unknown" for bid in buddies[rid]]
-                btext = f" ➡️ Buddies: {', '.join(bnames)}"
-            ttext = ""
-            if rid in overrides:
-                trole = ctx.guild.get_role(int(overrides[rid]))
-                tname = trole.mention if trole else "Unknown"
-                ttext = f" 🎯 Target: {tname}"
-            lines.append(f"{rname}: **{days}** days{btext}{ttext}")
-        await ctx.send(embed=discord.Embed(title="Role Configs", description="\n".join(lines), color=await ctx.embed_color()))
+        for base_id, data in optins.items():
+            base_role = ctx.guild.get_role(int(base_id))
+            base_name = base_role.mention if base_role else f"Deleted-Role-{base_id}"
+            
+            target_id = int(data.get("target_id", 0))
+            target_role = ctx.guild.get_role(target_id)
+            target_name = target_role.mention if target_role else f"Deleted-Role-{target_id}"
+            
+            days = data.get("days", 0)
+            level = data.get("level", 0)
+            
+            lines.append(f"{base_name} -> {target_name} (Days: {days}, Level: {level})")
+            
+        await ctx.send(embed=discord.Embed(title="Opt-in Role Configurations", description="\n".join(lines), color=await ctx.embed_color()))
