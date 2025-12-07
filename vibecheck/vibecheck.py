@@ -242,7 +242,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
             await ctx.send(box(page, lang="prolog"))
 
     @vibecheckset.command(name="ratio")
-    async def vibe_ratio(self, ctx: commands.Context, user: discord.Member):
+    async def vibe_ratio(self, ctx: commands.Context, user: discord.User):
         """
         Check a user's vibe ratio statistics.
         
@@ -545,7 +545,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
 
     @vibecheckset.command(name="resetuser")
     @checks.is_owner()
-    async def reset_user(self, ctx: commands.Context, user: discord.Member):
+    async def reset_user(self, ctx: commands.Context, user: discord.User):
         """Resets a user's global vibes."""
         log.debug("Resetting %s's vibes", str(user))
         await self.conf.user(user).vibes.set(0)
@@ -553,7 +553,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
         
     @vibecheckset.command(name="resetratio")
     @checks.is_owner()
-    async def reset_ratio(self, ctx: commands.Context, user: discord.Member):
+    async def reset_ratio(self, ctx: commands.Context, user: discord.User):
         """Resets a user's vibe ratio stats (good/bad sent & history)."""
         log.debug("Resetting %s's vibe ratio stats", str(user))
         
@@ -796,7 +796,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
             color=discord.Color.green() if amount > 0 else discord.Color.red()
         )
         embed.add_field(name="Action", value=f"{action} ({abs(amount)})", inline=True)
-        embed.add_field(name="Giver", value=f"{giver.name} (`{giver.id}`)", inline=True)
+        embed.add_field(name="Giver", value=f"{giver.mention} (`{giver.id}`)", inline=True)
         embed.add_field(name="Receiver", value=f"{receiver.mention} (`{receiver.id}`)", inline=True)
         embed.add_field(name="Old Score", value=old_vibes, inline=True)
         embed.add_field(name="New Score", value=new_vibes, inline=True)
@@ -892,6 +892,8 @@ class VibeCheck(getattr(commands, "Cog", object)):
                 f"Slow down! You are on cooldown. Try again in **{time_unit}**.",
                 ephemeral=True
             )
+        elif isinstance(error, commands.MemberNotFound):
+            await ctx.send(f"Member not found: {str(error)}", ephemeral=True)
         else:
             raise error 
                 
