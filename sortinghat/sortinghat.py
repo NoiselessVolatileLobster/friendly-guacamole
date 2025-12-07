@@ -72,8 +72,6 @@ class HouseView(discord.ui.View):
         # Disable buttons when the view times out
         for child in self.children:
             child.disabled = True
-        # Note: We can't edit the message here easily without holding a ref to it, 
-        # but the interaction will just fail gracefully.
         pass
 
 class SortingHat(commands.Cog):
@@ -83,7 +81,8 @@ class SortingHat(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=98123749812, force_registration=True)
         default_guild = {
-            "house_role_ids": []
+            "house_role_ids": [],
+            "required_level": 0
         }
         self.config.register_guild(**default_guild)
         self.log = logging.getLogger("red.sortinghat")
@@ -136,24 +135,50 @@ class SortingHat(commands.Cog):
             return None
 
     @commands.Cog.listener()
-    async def on_member_join(self, member: discord.Member):
-        """Automatically sorts new members."""
+    async def on_levelup(self, guild: discord.Guild, member: discord.Member, level: int):
+        """
+        Listens for the 'levelup' event dispatched by Vertyco's LevelUp cog.
+        Sorts the user if they reach the required level.
+        """
         if member.bot:
             return
             
-        guild = member.guild
-        houses = await self._get_house_roles(guild)
+        required_level = await self.config.guild(guild).required_level()
         
-        if not houses:
+        # If no level is configured (0), we assume this feature is disabled
+        if not required_level:
             return
 
-        await self._sort_member(member, houses)
+        if level >= required_level:
+            houses = await self._get_house_roles(guild)
+            if not houses:
+                return
+            
+            # _sort_member handles the check if they are already in a house
+            await self._sort_member(member, houses)
 
     @commands.group()
     @commands.guild_only()
     async def sortinghatset(self, ctx):
         """Configuration for the Sorting Hat."""
         pass
+
+    @sortinghatset.command(name="level")
+    @checks.admin_or_permissions(manage_roles=True)
+    async def sh_level(self, ctx, level: int):
+        """
+        Set the LevelUp level required to be sorted into a house.
+        Set to 0 to disable auto-sorting.
+        """
+        if level < 0:
+            await ctx.send("Level cannot be negative.")
+            return
+            
+        await self.config.guild(ctx.guild).required_level.set(level)
+        if level == 0:
+            await ctx.send("Auto-sorting by level has been disabled.")
+        else:
+            await ctx.send(f"Users will now be sorted when they reach level {level}.")
 
     @sortinghatset.group(name="houserole")
     @checks.admin_or_permissions(manage_roles=True)
@@ -186,25 +211,59 @@ class SortingHat(commands.Cog):
     async def sh_sortunsorted(self, ctx):
         """
         Checks all members and sorts those who don't have a house yet.
-        This respects the 'balanced' logic (filling smallest houses first).
+        
+        If a 'level' is configured via `[p]sortinghatset level`, this command
+        will respect it and only sort users who meet that level requirement.
         """
         houses = await self._get_house_roles(ctx.guild)
         if not houses:
             await ctx.send("No house roles are configured. Please add some first.")
             return
 
+        required_level = await self.config.guild(ctx.guild).required_level()
+        levelup_cog = self.bot.get_cog("LevelUp")
+
+        # If a level is required, we MUST have the LevelUp cog loaded.
+        if required_level > 0 and not levelup_cog:
+            await ctx.send(
+                "A required level is set, but the 'LevelUp' cog is not loaded. "
+                "I cannot verify user levels, so I will not sort anyone. "
+                "Please load LevelUp or set the required level to 0."
+            )
+            return
+
         await ctx.send("Sorting unsorted members... this may take a moment.")
         
         sorted_count = 0
+        skipped_count = 0
+        
         async with ctx.typing():
             for member in ctx.guild.members:
                 if member.bot:
                     continue
+                
+                # Check level requirement if active
+                if required_level > 0:
+                    try:
+                        # Standard Vertyco LevelUp API pattern
+                        user_data = await levelup_cog.db.get_member_data(ctx.guild.id, member.id)
+                        if user_data.level < required_level:
+                            skipped_count += 1
+                            continue
+                    except Exception as e:
+                        # Fail safe: if we can't get data, don't sort them
+                        self.log.error(f"Failed to fetch level data for {member.id}: {e}")
+                        continue
+
                 result = await self._sort_member(member, houses)
                 if result:
                     sorted_count += 1
 
-        await ctx.send(f"Sorting complete. Assigned house roles to {sorted_count} members.")
+        msg = f"Sorting complete. Assigned house roles to {sorted_count} members."
+        if required_level > 0:
+            msg += f" (Skipped {skipped_count} members who were below level {required_level})"
+            
+        await ctx.send(msg)
 
     @commands.command()
     @commands.guild_only()
