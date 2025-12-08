@@ -576,6 +576,39 @@ class SecretSanta(commands.Cog):
             "Use `[p]secretsanta listmatches` to view the results and DM confirmations."
         )
 
+    @ss.command(name="sendactionuser")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def ss_send_action_user(self, ctx: commands.Context, user: discord.User):
+        """
+        Sends a dedicated DM with ONLY the Anonymous Gifting Action buttons
+        to a single specified user (who must be a Santa).
+        
+        <user>: The user to send the buttons to (mention or ID).
+        """
+        user_id_str = str(user.id)
+        matches = await self.config.matches()
+        
+        if user_id_str not in matches:
+            return await ctx.send(f"❌ User **{user.name}** is either not signed up or has not been matched as a Secret Santa (giver).")
+            
+        await ctx.send(f"🔄 Attempting to send anonymous action buttons to **{user.name}**...")
+        
+        try:
+            action_view = SantaActionView(self, user.id)
+            await user.send(
+                "--- **Anonymous Gifting Actions Update** ---\n\n"
+                "The Secret Santa bot has been updated with new anonymous communication features. "
+                "Use the buttons below to send anonymous status updates or requests to your recipient. "
+                "These actions will be logged by the server administration.",
+                view=action_view
+            )
+            await ctx.send(f"✅ Successfully sent anonymous action buttons to **{user.name}**.")
+        except discord.Forbidden:
+            await ctx.send(f"❌ Failed to send DM to **{user.name}**. They likely have DMs disabled.")
+        except Exception as e:
+            await ctx.send(f"❌ An unknown error occurred while trying to send the DM to **{user.name}**: {e}")
+
+
     @ss.command(name="sendactions")
     @commands.admin_or_permissions(manage_guild=True)
     async def ss_send_actions(self, ctx: commands.Context):
