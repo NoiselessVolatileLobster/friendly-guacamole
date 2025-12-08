@@ -5,20 +5,32 @@ from typing import List, Optional
 from redbot.core import commands, Config, checks
 
 class HouseButton(discord.ui.Button):
-    def __init__(self, role: discord.Role):
+    def __init__(self, cog, role: discord.Role):
         super().__init__(
             style=discord.ButtonStyle.primary,
             label=role.name,
             custom_id=f"sortinghat_house_{role.id}"
         )
         self.role = role
+        self.cog = cog
 
     async def callback(self, interaction: discord.Interaction):
+        # Fetch leader configuration
+        leaders = await self.cog.config.guild(interaction.guild).house_leaders()
+        leader_id = leaders.get(str(self.role.id))
+        
         # Create an embed with details about the selected house
         embed = discord.Embed(
             title=f"House: {self.role.name}",
             color=self.role.color
         )
+        
+        # Display Leader if assigned and valid
+        if leader_id:
+            leader_member = interaction.guild.get_member(leader_id)
+            if leader_member:
+                embed.add_field(name="House Leader", value=leader_member.mention, inline=False)
+
         embed.add_field(name="Total Members", value=str(len(self.role.members)), inline=False)
         
         if not self.role.members:
@@ -62,11 +74,12 @@ class HouseButton(discord.ui.Button):
         await interaction.response.edit_message(embed=embed)
 
 class HouseView(discord.ui.View):
-    def __init__(self, houses: List[discord.Role]):
+    def __init__(self, cog, houses: List[discord.Role]):
         super().__init__(timeout=60)
         self.houses = houses
+        self.cog = cog
         for house in houses:
-            self.add_item(HouseButton(house))
+            self.add_item(HouseButton(cog, house))
 
     async def on_timeout(self):
         # Disable buttons when the view times out
@@ -82,7 +95,8 @@ class SortingHat(commands.Cog):
         self.config = Config.get_conf(self, identifier=98123749812, force_registration=True)
         default_guild = {
             "house_role_ids": [],
-            "required_level": 0
+            "required_level": 0,
+            "house_leaders": {}
         }
         self.config.register_guild(**default_guild)
         self.log = logging.getLogger("red.sortinghat")
@@ -170,20 +184,26 @@ class SortingHat(commands.Cog):
         data = await self.config.guild(ctx.guild).all()
         role_ids = data["house_role_ids"]
         req_level = data["required_level"]
+        leaders = data["house_leaders"]
 
         embed = discord.Embed(
             title="Sorting Hat Settings",
             color=await ctx.embed_color()
         )
 
-        # Format Roles
+        # Format Roles and Leaders
         if not role_ids:
             roles_str = "No house roles configured."
         else:
             lines = []
             for rid in role_ids:
                 r = ctx.guild.get_role(rid)
-                lines.append(r.mention if r else f"[Deleted Role {rid}]")
+                if r:
+                    leader_id = leaders.get(str(rid))
+                    leader_txt = f" (Leader: <@{leader_id}>)" if leader_id else ""
+                    lines.append(f"{r.mention}{leader_txt}")
+                else:
+                    lines.append(f"[Deleted Role {rid}]")
             roles_str = "\n".join(lines)
         
         embed.add_field(name="House Roles", value=roles_str, inline=False)
@@ -193,6 +213,26 @@ class SortingHat(commands.Cog):
         embed.add_field(name="Required Level", value=level_str, inline=False)
 
         await ctx.send(embed=embed)
+
+    @sortinghatset.command(name="leader")
+    @checks.admin_or_permissions(manage_roles=True)
+    async def sh_leader(self, ctx, house_role: discord.Role, leader: discord.Member):
+        """
+        Set the leader for a specific house.
+        
+        Usage: [p]sortinghatset leader @HouseRole @User
+        """
+        # Verify the role is actually a house
+        async with self.config.guild(ctx.guild).house_role_ids() as role_ids:
+            if house_role.id not in role_ids:
+                await ctx.send(f"{house_role.name} is not a configured house.")
+                return
+        
+        # Save the leader
+        async with self.config.guild(ctx.guild).house_leaders() as leaders:
+            leaders[str(house_role.id)] = leader.id
+            
+        await ctx.send(f"Successfully set {leader.mention} as the leader of {house_role.name}.")
 
     @sortinghatset.command(name="level")
     @checks.admin_or_permissions(manage_roles=True)
@@ -316,5 +356,5 @@ class SortingHat(commands.Cog):
         embed.add_field(name="Houses", value=str(len(houses)), inline=True)
         embed.add_field(name="Sorted Members", value=str(total_sorted), inline=True)
 
-        view = HouseView(houses)
+        view = HouseView(self, houses)
         message = await ctx.send(embed=embed, view=view)
