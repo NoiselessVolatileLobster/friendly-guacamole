@@ -10,8 +10,16 @@ from typing import Union, List, Tuple, Dict, Optional
 try:
     from pydantic import BaseModel, Field
 except ImportError:
-    BaseModel = object
-    Field = lambda *args, **kwargs: None
+    # Fallback if pydantic is not available (though highly recommended)
+    class BaseModel:
+        def model_dump(self):
+            return self.__dict__
+        def __init__(self, **data):
+            for key, value in data.items():
+                setattr(self, key, value)
+                
+    def Field(default, **kwargs):
+        return default
 
 # --- Configuration Schema (Settings) ---
 
@@ -67,6 +75,7 @@ class OuijaPoke(commands.Cog):
     async def _get_settings(self, guild: discord.Guild) -> OuijaSettings:
         """Retrieves and parses the guild settings."""
         settings_data = await self.config.guild(guild).ouija_settings()
+        # Handle cases where existing config might not match new schema immediately
         return OuijaSettings(**settings_data)
 
     async def _set_settings(self, guild: discord.Guild, settings: OuijaSettings):
@@ -1120,6 +1129,17 @@ class OuijaPoke(commands.Cog):
             await self.config.guild(ctx.guild).last_seen.set(data)
         await ctx.send(f"Set **{len(role.members)}** members to **{days_ago} days ago**.")
         await self._check_and_award_inactive_roles(ctx.guild)
+
+    @ouijaset.command(name="markactive")
+    async def ouijaset_markactive(self, ctx: commands.Context, member: discord.Member):
+        """
+        Manually marks a user as active right now.
+        
+        This resets their inactivity timer and removes any inactivity roles they may have.
+        """
+        await self._update_last_seen(ctx.guild, member.id)
+        await self._check_and_award_inactive_roles(ctx.guild)
+        await ctx.send(f"✅ **{member.display_name}** has been marked as active. Their timer is reset.")
 
     @ouijaset.command(name="resetactivity")
     @checks.is_owner()
