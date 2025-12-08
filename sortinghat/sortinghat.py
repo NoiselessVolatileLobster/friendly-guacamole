@@ -96,7 +96,9 @@ class SortingHat(commands.Cog):
         default_guild = {
             "house_role_ids": [],
             "required_level": 0,
-            "house_leaders": {}
+            "house_leaders": {},
+            "welcome_channel": None,
+            "welcome_message": None
         }
         self.config.register_guild(**default_guild)
         self.log = logging.getLogger("red.sortinghat")
@@ -140,6 +142,23 @@ class SortingHat(commands.Cog):
         # 6. Assign the role
         try:
             await member.add_roles(chosen_house, reason="Sorting Hat: Balancing houses")
+            
+            # 7. Send Welcome Message if configured
+            guild = member.guild
+            config = await self.config.guild(guild).all()
+            welcome_channel_id = config.get("welcome_channel")
+            welcome_message = config.get("welcome_message")
+
+            if welcome_channel_id and welcome_message:
+                channel = guild.get_channel(welcome_channel_id)
+                if channel and channel.permissions_for(guild.me).send_messages:
+                    # Format message
+                    final_message = welcome_message.replace("{mention}", member.mention).replace("{house}", chosen_house.mention)
+                    try:
+                        await channel.send(final_message)
+                    except Exception as e:
+                        self.log.error(f"Failed to send welcome message in {guild.name}: {e}")
+
             return chosen_house
         except discord.Forbidden:
             self.log.warning(f"Could not assign role {chosen_house.name} to {member.name} in {member.guild.name}. Check hierarchy.")
@@ -185,6 +204,8 @@ class SortingHat(commands.Cog):
         role_ids = data["house_role_ids"]
         req_level = data["required_level"]
         leaders = data["house_leaders"]
+        welcome_channel_id = data.get("welcome_channel")
+        welcome_msg = data.get("welcome_message")
 
         embed = discord.Embed(
             title="Sorting Hat Settings",
@@ -211,6 +232,14 @@ class SortingHat(commands.Cog):
         # Format Level
         level_str = f"Level {req_level}" if req_level > 0 else "Disabled (0)"
         embed.add_field(name="Required Level", value=level_str, inline=False)
+        
+        # Format Welcome Message
+        if welcome_channel_id and welcome_msg:
+            chan = ctx.guild.get_channel(welcome_channel_id)
+            chan_name = chan.mention if chan else f"[Deleted Channel {welcome_channel_id}]"
+            embed.add_field(name="Welcome Message", value=f"Channel: {chan_name}\nMessage: {welcome_msg}", inline=False)
+        else:
+            embed.add_field(name="Welcome Message", value="Not configured.", inline=False)
 
         await ctx.send(embed=embed)
 
@@ -233,6 +262,23 @@ class SortingHat(commands.Cog):
             leaders[str(house_role.id)] = leader.id
             
         await ctx.send(f"Successfully set {leader.mention} as the leader of {house_role.name}.")
+
+    @sortinghatset.command(name="welcomemessage")
+    @checks.admin_or_permissions(manage_roles=True)
+    async def sh_welcomemessage(self, ctx, channel: discord.TextChannel, *, message: str):
+        """
+        Set a welcome message to be sent when a user is sorted.
+        
+        Supported placeholders:
+        {mention} - Mentions the user
+        {house} - Mentions the house role
+        
+        Example:
+        [p]sortinghatset welcomemessage #general Welcome {mention} to the {house} house!
+        """
+        await self.config.guild(ctx.guild).welcome_channel.set(channel.id)
+        await self.config.guild(ctx.guild).welcome_message.set(message)
+        await ctx.send(f"Welcome message set for {channel.mention}.")
 
     @sortinghatset.command(name="level")
     @checks.admin_or_permissions(manage_roles=True)
