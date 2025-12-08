@@ -687,6 +687,47 @@ class SecretSanta(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ An unknown error occurred while trying to send the DM to **{user.name}**: {e}")
 
+    @ss.command(name="sendrecipientactions")
+    @commands.admin_or_permissions(manage_guild=True)
+    async def ss_send_recipient_actions(self, ctx: commands.Context, recipient: discord.User):
+        """
+        Sends a dedicated DM with the 'Wishlist Fixed' button to a specific recipient.
+        
+        This allows the recipient to anonymously notify their Santa that they have updated their wishlist.
+        <recipient>: The user receiving the gift (recipient).
+        """
+        recipient_id_str = str(recipient.id)
+        matches = await self.config.matches()
+        
+        if not matches:
+             return await ctx.send("❌ No matches found. You must run `[p]secretsanta match` first.")
+
+        # Find the Santa for this recipient
+        santa_id_str = None
+        for s_id, r_id in matches.items():
+            if r_id == recipient_id_str:
+                santa_id_str = s_id
+                break
+        
+        if not santa_id_str:
+            return await ctx.send(f"❌ User **{recipient.name}** does not appear to be a recipient in the current match list.")
+
+        await ctx.send(f"🔄 Attempting to send recipient action buttons to **{recipient.name}**...")
+
+        try:
+            # Create the view for the recipient to reply to the santa
+            action_view = RecipientActionView(self, santa_id=int(santa_id_str), recipient_id=recipient.id)
+            await recipient.send(
+                "--- **Anonymous Recipient Actions** ---\n\n"
+                "An administrator has triggered this message to provide you with communication options.\n"
+                "If your Santa previously reported an issue with your wishlist, you can use the button below to anonymously notify them that it has been fixed.",
+                view=action_view
+            )
+            await ctx.send(f"✅ Successfully sent recipient action buttons to **{recipient.name}**.")
+        except discord.Forbidden:
+            await ctx.send(f"❌ Failed to send DM to **{recipient.name}**. They likely have DMs disabled.")
+        except Exception as e:
+            await ctx.send(f"❌ An unknown error occurred while trying to send the DM to **{recipient.name}**: {e}")
 
     @ss.command(name="sendactions")
     @commands.admin_or_permissions(manage_guild=True)
