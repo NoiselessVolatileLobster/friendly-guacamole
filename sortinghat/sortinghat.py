@@ -163,6 +163,37 @@ class SortingHat(commands.Cog):
         """Configuration for the Sorting Hat."""
         pass
 
+    @sortinghatset.command(name="view")
+    @checks.admin_or_permissions(manage_roles=True)
+    async def sh_view(self, ctx):
+        """View the current Sorting Hat configuration."""
+        data = await self.config.guild(ctx.guild).all()
+        role_ids = data["house_role_ids"]
+        req_level = data["required_level"]
+
+        embed = discord.Embed(
+            title="Sorting Hat Settings",
+            color=await ctx.embed_color()
+        )
+
+        # Format Roles
+        if not role_ids:
+            roles_str = "No house roles configured."
+        else:
+            lines = []
+            for rid in role_ids:
+                r = ctx.guild.get_role(rid)
+                lines.append(r.mention if r else f"[Deleted Role {rid}]")
+            roles_str = "\n".join(lines)
+        
+        embed.add_field(name="House Roles", value=roles_str, inline=False)
+        
+        # Format Level
+        level_str = f"Level {req_level}" if req_level > 0 else "Disabled (0)"
+        embed.add_field(name="Required Level", value=level_str, inline=False)
+
+        await ctx.send(embed=embed)
+
     @sortinghatset.command(name="level")
     @checks.admin_or_permissions(manage_roles=True)
     async def sh_level(self, ctx, level: int):
