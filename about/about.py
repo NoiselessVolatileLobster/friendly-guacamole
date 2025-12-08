@@ -48,9 +48,6 @@ class ChannelNavigatorView(discord.ui.View):
         voice_btn.callback = self.voice_callback
         self.add_item(voice_btn)
 
-        # 4. Add Server Guide Link Button (If Onboarding feature is present)
-        # Removed as requested in previous turn
-
     def make_callback_public(self, cat_id, label):
         """Factory to create specific callbacks for loop variables."""
         async def callback(interaction: discord.Interaction):
@@ -141,7 +138,8 @@ class About(commands.Cog):
                 "general_only_role": None,
                 "general_only_level": 0
             },
-            "optin_roles": {} # NEW: { "base_role_id": { "target_id": int, "days": int, "level": int } }
+            "optin_roles": {}, # { "base_role_id": { "target_id": int, "days": int, "level": int } }
+            "reward_roles": {} # NEW: { "reward_role_id": { "days": int, "level": int } }
         }
         self.config.register_guild(**default_guild)
 
@@ -320,10 +318,12 @@ class About(commands.Cog):
                 elif has_posted_intro:
                     nm_output = ""
 
-        # --- 9. Role Progress Calculation (REWORKED) ---
+        # --- 9. Role Progress Calculation ---
         optin_roles = await self.config.guild(ctx.guild).optin_roles()
+        reward_roles = await self.config.guild(ctx.guild).reward_roles() # NEW
         progress_lines = []
 
+        # A. Opt-in Roles (Base -> Target)
         for base_role_id, data in optin_roles.items():
             base_role = ctx.guild.get_role(int(base_role_id))
             if not base_role: continue
@@ -338,11 +338,10 @@ class About(commands.Cog):
             # 1. Check if user already has the requested (target) role
             if target_role in member.roles:
                 progress_lines.append(f"{target_role.mention} Unlocked!")
-                continue # Done with this entry
+                continue
 
             # 2. If not, check if user has the request (base) role
             if base_role in member.roles:
-                # Calculate Status
                 days_remaining = required_days - days_in_server
                 level_met = user_level >= required_level
                 days_met = days_remaining <= 0
@@ -352,8 +351,29 @@ class About(commands.Cog):
                 elif not level_met:
                     progress_lines.append(f"{base_role.mention}: Reach Level **{required_level}**")
                 else:
-                    # Both met
                     progress_lines.append(f"{base_role.mention}: Eligible! ✅")
+
+        # B. Reward Roles (Direct Time/Level Check)
+        for reward_role_id, data in reward_roles.items():
+            reward_role = ctx.guild.get_role(int(reward_role_id))
+            if not reward_role: continue
+            
+            required_days = data.get("days", 0)
+            required_level = data.get("level", 0)
+            
+            if reward_role in member.roles:
+                progress_lines.append(f"{reward_role.mention} Unlocked!")
+            else:
+                days_remaining = required_days - days_in_server
+                level_met = user_level >= required_level
+                days_met = days_remaining <= 0
+
+                if not days_met:
+                    progress_lines.append(f"{reward_role.mention}: **{days_remaining}** days remaining")
+                elif not level_met:
+                    progress_lines.append(f"{reward_role.mention}: Reach Level **{required_level}**")
+                else:
+                    progress_lines.append(f"{reward_role.mention}: Eligible! ✅")
 
         # Format Role Progress
         role_progress_output = ""
@@ -677,7 +697,10 @@ class About(commands.Cog):
 
     @aboutset_channel.command(name="add")
     async def channel_add(self, ctx, category: discord.CategoryChannel, type: Literal["public", "secret"], *, label: str):
-        """Add a category to the channel navigator."""
+        """
+        Add a category to the channel navigator.
+        Type must be 'public' or 'secret'. Label is the button text.
+        """
         async with self.config.guild(ctx.guild).channel_categories() as cats:
             cats[str(category.id)] = {
                 "type": type.lower(),
@@ -984,18 +1007,10 @@ class About(commands.Cog):
         lines = [f"{emoji} {ctx.guild.get_role(int(rid)).name if ctx.guild.get_role(int(rid)) else 'Deleted'}" for rid, emoji in egg_roles.items()]
         await ctx.send(embed=discord.Embed(title="Egg Status Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
-    # --- NEW: Opt-in Role Management ---
+    # --- Opt-in Role Management ---
     @aboutset.command(name="optin")
     async def aboutset_optin(self, ctx, base_role: discord.Role, target_role: discord.Role, days: int, level: int):
-        """
-        Set up an opt-in role path.
-        
-        Arguments:
-        - base_role: The role the user requests (the 'request' role).
-        - target_role: The role granted when requirements are met (the 'requested' role).
-        - days: Number of days the user must have been in the server.
-        - level: Level required (from LevelUp cog).
-        """
+        """Set up an opt-in role path."""
         if days < 0 or level < 0:
              return await ctx.send("Days and Level must be non-negative.")
 
@@ -1043,3 +1058,57 @@ class About(commands.Cog):
             lines.append(f"{base_name} -> {target_name} (Days: {days}, Level: {level})")
             
         await ctx.send(embed=discord.Embed(title="Opt-in Role Configurations", description="\n".join(lines), color=await ctx.embed_color()))
+
+    # --- NEW: Reward Role Management ---
+    @aboutset.command(name="reward")
+    async def aboutset_reward(self, ctx, reward_role: discord.Role, days: int, level: int):
+        """
+        Set up a reward role (automatically checked for everyone).
+        
+        Arguments:
+        - reward_role: The role given when requirements are met.
+        - days: Days in server required.
+        - level: Level required.
+        """
+        if days < 0 or level < 0:
+             return await ctx.send("Days and Level must be non-negative.")
+
+        async with self.config.guild(ctx.guild).reward_roles() as rewards:
+            rewards[str(reward_role.id)] = {
+                "days": days,
+                "level": level
+            }
+        
+        await ctx.send(
+            f"Configured Reward Role:\n"
+            f"User waits **{days}** days & Reaches Level **{level}** -> Gets **{reward_role.name}**"
+        )
+
+    @aboutset.command(name="reward_remove")
+    async def aboutset_reward_remove(self, ctx, reward_role: discord.Role):
+        """Remove a reward role configuration."""
+        async with self.config.guild(ctx.guild).reward_roles() as rewards:
+            if str(reward_role.id) in rewards:
+                del rewards[str(reward_role.id)]
+                await ctx.send(f"Removed reward configuration for **{reward_role.name}**.")
+            else:
+                await ctx.send("That reward role is not configured.")
+
+    @aboutset.command(name="reward_list")
+    async def aboutset_reward_list(self, ctx):
+        """List configured reward roles."""
+        rewards = await self.config.guild(ctx.guild).reward_roles()
+        if not rewards:
+            return await ctx.send("No reward roles configured.")
+        
+        lines = []
+        for role_id, data in rewards.items():
+            r_role = ctx.guild.get_role(int(role_id))
+            r_name = r_role.mention if r_role else f"Deleted-Role-{role_id}"
+            
+            days = data.get("days", 0)
+            level = data.get("level", 0)
+            
+            lines.append(f"{r_name} (Days: {days}, Level: {level})")
+            
+        await ctx.send(embed=discord.Embed(title="Reward Role Configurations", description="\n".join(lines), color=await ctx.embed_color()))
