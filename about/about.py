@@ -139,7 +139,7 @@ class About(commands.Cog):
                 "general_only_level": 0
             },
             "optin_roles": {}, # { "base_role_id": { "target_id": int, "days": int, "level": int } }
-            "reward_roles": {} # NEW: { "reward_role_id": { "days": int, "level": int } }
+            "reward_roles": {} # { "reward_role_id": { "days": int, "level": int } }
         }
         self.config.register_guild(**default_guild)
 
@@ -320,7 +320,7 @@ class About(commands.Cog):
 
         # --- 9. Role Progress Calculation ---
         optin_roles = await self.config.guild(ctx.guild).optin_roles()
-        reward_roles = await self.config.guild(ctx.guild).reward_roles() # NEW
+        reward_roles = await self.config.guild(ctx.guild).reward_roles() 
         progress_lines = []
 
         # A. Opt-in Roles (Base -> Target)
@@ -346,7 +346,9 @@ class About(commands.Cog):
                 level_met = user_level >= required_level
                 days_met = days_remaining <= 0
 
-                if not days_met:
+                if not days_met and not level_met:
+                    progress_lines.append(f"{base_role.mention}: Reach Level **{required_level}** and **{days_remaining}** days remaining")
+                elif not days_met:
                     progress_lines.append(f"{base_role.mention}: **{days_remaining}** days remaining")
                 elif not level_met:
                     progress_lines.append(f"{base_role.mention}: Reach Level **{required_level}**")
@@ -368,7 +370,9 @@ class About(commands.Cog):
                 level_met = user_level >= required_level
                 days_met = days_remaining <= 0
 
-                if not days_met:
+                if not days_met and not level_met:
+                    progress_lines.append(f"{reward_role.mention}: Reach Level **{required_level}** and **{days_remaining}** days remaining")
+                elif not days_met:
                     progress_lines.append(f"{reward_role.mention}: **{days_remaining}** days remaining")
                 elif not level_met:
                     progress_lines.append(f"{reward_role.mention}: Reach Level **{required_level}**")
