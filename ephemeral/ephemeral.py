@@ -58,7 +58,7 @@ class Ephemeral(commands.Cog):
             start_message_returning_content="Welcome back {mention}!",
             # --- END START MESSAGE CONFIGURATION ---
             
-            # --- WELCOME EMBED CONFIGURATION (NEW) ---
+            # --- WELCOME EMBED CONFIGURATION ---
             welcome_embed_channel_id=None,
             welcome_embed_title="Welcome to the Server!",
             welcome_embed_description="Welcome {mention}! Please read the rules.",
@@ -106,6 +106,13 @@ class Ephemeral(commands.Cog):
                 "action": "warn",
                 "reason": "Ephemeral Mode Warning: Reached second greeting threshold."
             },
+            # New config for "Not Started" warning
+            warn_timernotstarted={
+                "enabled": False,
+                "action": "warn",
+                "time": 0, # seconds
+                "reason": "Automatic action: User joined and did not continue onboarding process"
+            },
             # --- END WARNING SYSTEM CONFIGURATION ---
 
             log_channel_id=None,
@@ -118,6 +125,7 @@ class Ephemeral(commands.Cog):
             second_greeting_sent=False,
         )
         self.timers = {}
+        self.join_timers = {} # Track users who haven't started yet
         
         self.bg_task = self.bot.loop.create_task(self._init_timers(), name="ephemeral_init")
         
@@ -125,8 +133,9 @@ class Ephemeral(commands.Cog):
         if self.bg_task:
             self.bg_task.cancel()
         for task in self.timers.values():
-            if not task.done():
-                task.cancel()
+            task.cancel()
+        for task in self.join_timers.values():
+            task.cancel()
         
     async def _init_timers(self):
         await self.bot.wait_until_ready()
@@ -134,11 +143,28 @@ class Ephemeral(commands.Cog):
             guild = self.bot.get_guild(guild_id)
             if not guild:
                 continue
-
+            
+            # 1. Initialize Active Ephemeral Timers (From Config)
             for member_id, data in (await self.config.all_members(guild)).items():
                 if data["is_ephemeral"] and data["start_time"]:
                     self.start_user_timer(guild_id, member_id)
 
+            # 2. Initialize "Not Started" Timers (From Roles)
+            # Scan current members to see if anyone has the "Not Started" role but hasn't started the timer
+            settings = await self.config.guild(guild).all()
+            not_started_role_id = settings.get("ephemeral_not_started_role_id")
+            
+            if not_started_role_id:
+                not_started_role = guild.get_role(not_started_role_id)
+                if not_started_role:
+                    for member in guild.members:
+                        if not_started_role in member.roles:
+                            # Verify they aren't already ephemeral (double check)
+                            m_data = await self.config.member(member).all()
+                            if not m_data["is_ephemeral"]:
+                                self.start_join_timer(guild.id, member.id)
+
+    # --- Active Ephemeral Timer Management ---
     def start_user_timer(self, guild_id: int, user_id: int):
         task_key = (guild_id, user_id)
         if task_key in self.timers:
@@ -154,6 +180,23 @@ class Ephemeral(commands.Cog):
     
     def stop_user_timer(self, guild_id: int, user_id: int):
         task = self.timers.pop((guild_id, user_id), None)
+        if task and not task.done():
+            task.cancel()
+
+    # --- Join (Not Started) Timer Management ---
+    def start_join_timer(self, guild_id: int, user_id: int):
+        task_key = (guild_id, user_id)
+        if task_key in self.join_timers:
+            self.join_timers[task_key].cancel()
+
+        task = self.bot.loop.create_task(
+            self.check_join_status(guild_id, user_id),
+            name=f"ephemeral_join_timer_{guild_id}_{user_id}"
+        )
+        self.join_timers[task_key] = task
+
+    def stop_join_timer(self, guild_id: int, user_id: int):
+        task = self.join_timers.pop((guild_id, user_id), None)
         if task and not task.done():
             task.cancel()
 
@@ -306,8 +349,6 @@ class Ephemeral(commands.Cog):
 
         title = settings.get("welcome_embed_title", "Welcome!").replace("{username}", user.name).replace("{mention}", user.display_name)
         description = settings.get("welcome_embed_description", "").replace("{mention}", user.mention).replace("{username}", user.name)
-        
-        # Hardcoded fields as requested
         footer_text = f"User ID: {user.id}"
         
         embed = discord.Embed(title=title, description=description, color=discord.Color.blue())
@@ -339,6 +380,7 @@ class Ephemeral(commands.Cog):
                 print(f"Ephemeral ERROR: Forbidden to remove not started role for {user.id} on success.")
 
         self.stop_user_timer(guild.id, user.id)
+        self.stop_join_timer(guild.id, user.id) # Ensure join timer is stopped too
         await self.config.member(user).clear()
         
         await self._send_success_embed(guild, user, settings)
@@ -348,7 +390,6 @@ class Ephemeral(commands.Cog):
             log_msg = f"⭐ **Manual Success:** {user.mention} (`{user.id}`) was manually removed from Ephemeral mode."
 
         await self._log_event(guild, log_msg)
-                
 
     async def _handle_activation(self, message: discord.Message, settings: dict, guild: discord.Guild, user: discord.Member):
         """Handles the activation phrase being typed."""
@@ -371,6 +412,8 @@ class Ephemeral(commands.Cog):
             pass
             
         try:
+            # 1. Stop Join Timer (They successfully started)
+            self.stop_join_timer(guild.id, user.id)
             self.stop_user_timer(guild.id, user.id)
             
             await user.remove_roles(not_started_role, reason="Started Ephemeral mode via phrase (Role removed).")
@@ -387,7 +430,6 @@ class Ephemeral(commands.Cog):
                 "is_ephemeral": True,
             })
             
-            # --- Send Text Start Messages (Conditional) ---
             start_channel_id = settings.get("start_message_first_channel_id")
             start_message_content = settings.get("start_message_first_content")
             
@@ -402,8 +444,6 @@ class Ephemeral(commands.Cog):
                     print(f"Ephemeral ERROR: Could not fetch join count: {e}")
             
             await self._send_custom_message(guild, user, start_channel_id, start_message_content)
-
-            # --- Send Welcome Embed (New) ---
             await self._send_welcome_embed(guild, user, settings)
             
             self.start_user_timer(guild.id, user.id)
@@ -504,6 +544,53 @@ class Ephemeral(commands.Cog):
                 await self.config.member(user).first_greeting_sent.set(True)
                 await self._log_event(guild, f"🕐 **First Greeting:** Sent to {user.mention} (`{user.id}`).")
 
+    async def check_join_status(self, guild_id: int, user_id: int):
+        """Background task to check if a user has stayed in 'Not Started' state too long."""
+        await asyncio.sleep(60) # Initial wait
+
+        while True:
+            await asyncio.sleep(60) # Check every minute
+            
+            guild = self.bot.get_guild(guild_id)
+            user = guild.get_member(user_id)
+            
+            if not guild or not user:
+                self.stop_join_timer(guild_id, user_id)
+                return
+            
+            settings = await self.config.guild(guild).all()
+            not_started_role_id = settings.get("ephemeral_not_started_role_id")
+            not_started_config = settings.get("warn_timernotstarted", {})
+            
+            # If feature disabled or role not set, exit
+            if not not_started_role_id or not not_started_config.get("enabled"):
+                self.stop_join_timer(guild_id, user_id)
+                return
+                
+            not_started_role = guild.get_role(not_started_role_id)
+            
+            # If user no longer has the role (or role deleted), stop timer
+            if not not_started_role or not_started_role not in user.roles:
+                self.stop_join_timer(guild_id, user_id)
+                return
+            
+            # Check elapsed time since join
+            # Fallback to now if joined_at is missing (shouldn't happen for active members)
+            join_time = user.joined_at or datetime.utcnow()
+            # Convert to naive UTC if needed
+            if join_time.tzinfo:
+                join_time = join_time.replace(tzinfo=None)
+            
+            time_passed = datetime.utcnow() - join_time
+            threshold_seconds = not_started_config.get("time", 0)
+            
+            if time_passed.total_seconds() >= threshold_seconds:
+                # Trigger action
+                print(f"Ephemeral DEBUG: Timer Not Started EXPIRED for {user.id}")
+                await self._perform_automated_action(guild, user, "warn_timernotstarted")
+                self.stop_join_timer(guild_id, user_id)
+                return
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not message.guild:
@@ -554,9 +641,13 @@ class Ephemeral(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        """Sends a ghost ping to the Ephemeral Timer channel when a user joins."""
+        """Handle new member join: Ghost ping and start Not Started timer."""
         guild = member.guild
         settings = await self.config.guild(guild).all()
+        
+        # Start the join timer check
+        self.start_join_timer(guild.id, member.id)
+        
         timer_channel_id = settings.get("ephemeral_timer_channel_id")
         if not timer_channel_id: return
         channel = guild.get_channel(timer_channel_id)
@@ -645,10 +736,7 @@ class Ephemeral(commands.Cog):
 
     @ephemeralset.command(name="welcomeembed")
     async def ephemeralset_welcomeembed(self, ctx: commands.Context, channel: discord.TextChannel, title: str, *, description: str):
-        """Sets the welcome embed posted on timer start.
-        
-        Usage: [p]ephemeralset welcomeembed <channel> <title> <description>
-        """
+        """Sets the welcome embed posted on timer start."""
         await self.config.guild(ctx.guild).welcome_embed_channel_id.set(channel.id)
         await self.config.guild(ctx.guild).welcome_embed_title.set(title)
         await self.config.guild(ctx.guild).welcome_embed_description.set(description)
@@ -691,9 +779,9 @@ class Ephemeral(commands.Cog):
                f"Not Started Role: {get_role_str(settings['ephemeral_not_started_role_id'])}\n"
                f"Read Rules Role: {get_role_str(settings['ephemeral_read_rules_role_id'])}\n"
                f"Start(1st): {get_chan_str(settings['start_message_first_channel_id'])}\n"
-               f"Msg: {settings['start_message_first_content']}\n"
+               f"Msg: `{settings['start_message_first_content']}`\n"
                f"Start(Ret): {get_chan_str(settings['start_message_returning_channel_id'])}\n"
-               f"Msg: {settings['start_message_returning_content']}\n"
+               f"Msg: `{settings['start_message_returning_content']}`\n"
                f"Welcome Embed Ch: {get_chan_str(settings['welcome_embed_channel_id'])}\n"
                f"Welcome Title: `{settings['welcome_embed_title']}`")
         embed.add_field(name="Activation", value=act, inline=False)
@@ -710,7 +798,8 @@ class Ephemeral(commands.Cog):
         
         warns = (f"NoMsg: {fmt_warn(settings['warn_nomessages'])}\n"
                  f"Expire: {fmt_warn(settings['warn_expire'])}\n"
-                 f"2ndGreet: {fmt_warn(settings['warn_second_greeting'])}")
+                 f"2ndGreet: {fmt_warn(settings['warn_second_greeting'])}\n"
+                 f"NotStarted: {fmt_warn(settings.get('warn_timernotstarted', {'enabled':False, 'action':'N/A', 'reason':'N/A'}))} (Time: {timedelta_to_human(timedelta(seconds=settings.get('warn_timernotstarted', {}).get('time', 0)))})")
         embed.add_field(name="Warnings", value=warns, inline=False)
 
         await ctx.send(embed=embed)
@@ -826,3 +915,21 @@ class Ephemeral(commands.Cog):
         """Configure warning for 'Second Greeting' trigger."""
         await self.config.guild(ctx.guild).warn_second_greeting.set({"enabled": enabled, "action": action.lower(), "reason": reason})
         await ctx.send("Updated 'Second Greeting' warning config.")
+        
+    @ephemeralset_warnings.command(name="timernotstarted")
+    async def warnings_timernotstarted(self, ctx: commands.Context, action: str, time: commands.TimedeltaConverter(default_unit="hours"), *, reason: str):
+        """Configure warning for users who join but do not start the timer.
+        
+        Example: [p]ephemeralset warnings timernotstarted kick 6h "Did not start onboarding"
+        """
+        if action.lower() not in ["warn", "kick", "ban"]:
+            return await ctx.send("Action must be one of: warn, kick, ban")
+            
+        config = {
+            "enabled": True,
+            "action": action.lower(),
+            "time": time.total_seconds(),
+            "reason": reason
+        }
+        await self.config.guild(ctx.guild).warn_timernotstarted.set(config)
+        await ctx.send(f"Updated 'Timer Not Started' warning config: {config}")
