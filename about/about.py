@@ -3,6 +3,8 @@ from redbot.core import commands, Config
 from datetime import datetime, timezone
 import json
 from typing import Literal
+import asyncio
+from discord.ext import tasks
 
 class ChannelNavigatorView(discord.ui.View):
     """View for interactive channel navigation."""
@@ -119,12 +121,15 @@ class About(commands.Cog):
         self.config = Config.get_conf(self, identifier=9876543210, force_registration=True)
         
         default_guild = {
+            "role_targets": {}, 
+            "role_buddies": {},
             "location_roles": {},
             "dm_status_roles": {},
             "award_roles": [],
             "helper_roles": [],
             "egg_status_roles": {},
             "house_roles": {},
+            "role_target_overrides": {},
             "channel_categories": {},
             "first_day_channels": [],
             "first_day_title": "First Day Channels",
@@ -138,10 +143,16 @@ class About(commands.Cog):
                 "general_only_role": None,
                 "general_only_level": 0
             },
-            "optin_roles": {}, # { "base_role_id": { "target_id": int, "days": int, "level": int } }
-            "reward_roles": {} # { "reward_role_id": { "days": int, "level": int } }
+            "optin_roles": {}, 
+            "reward_roles": {} 
         }
         self.config.register_guild(**default_guild)
+        
+        # Start the reward check loop
+        self.check_rewards.start()
+
+    def cog_unload(self):
+        self.check_rewards.cancel()
 
     async def _process_member_status(self, ctx, member: discord.Member):
         """Helper function to generate the member status embed."""
@@ -151,28 +162,26 @@ class About(commands.Cog):
             return None
 
         # --- 1. Level Retrieval ---
-        user_level = 0 # Default level
+        user_level = 0 
         level_str = ""
         levelup_cog = self.bot.get_cog("LevelUp")
         if levelup_cog:
             try:
-                # Based on user info, get_level is async
                 user_level = await levelup_cog.get_level(member)
                 level_str = f"**Level {user_level}** • "
             except Exception:
                 pass 
 
-        # --- 2. Time Calculation (Line 1) ---
+        # --- 2. Time Calculation ---
         now = datetime.now(timezone.utc)
         joined_at = member.joined_at
         delta = now - joined_at
         days_in_server = delta.days
         date_str = joined_at.strftime("%B %d, %Y")
         
-        # Line 1: Level + Joined on...
         base_description = f"{level_str}Joined on {date_str} ({days_in_server} days ago)"
 
-        # --- 3. Egg Status | House (Line 2) ---
+        # --- 3. Egg Status | House ---
         egg_roles_config = await self.config.guild(ctx.guild).egg_status_roles()
         egg_parts = []
         for role_id_str, emoji in egg_roles_config.items():
@@ -199,7 +208,7 @@ class About(commands.Cog):
         if line_2_components:
             line_2_output = f"\n{' | '.join(line_2_components)}"
 
-        # --- 4. Location | DM Status (Line 3) ---
+        # --- 4. Location | DM Status ---
         location_roles_config = await self.config.guild(ctx.guild).location_roles()
         location_parts = []
         for role_id_str, emoji in location_roles_config.items():
@@ -226,7 +235,7 @@ class About(commands.Cog):
         if line_3_components:
             line_3_output = f"\n{' | '.join(line_3_components)}"
 
-        # --- 5. Activity Status (Line 4) ---
+        # --- 5. Activity Status ---
         activity_output = ""
         ouija_cog = self.bot.get_cog("OuijaPoke")
         
@@ -259,9 +268,9 @@ class About(commands.Cog):
                     activity_output = f"\n{emoji}{status_text}{last_seen_text}"
                 
             except Exception as e:
-                print(f"Warning: Could not get OuijaPoke activity for {member.name}. Error: {e}")
+                pass # Fail silently
         
-        # --- 6. Awards (Line 5) ---
+        # --- 6. Awards ---
         award_roles_config = await self.config.guild(ctx.guild).award_roles()
         award_parts = []
 
@@ -274,7 +283,7 @@ class About(commands.Cog):
         if award_parts:
             award_output = f"\n**Awards:** {', '.join(award_parts)}"
 
-        # --- 7. Teams (Line 6) ---
+        # --- 7. Teams ---
         helper_roles_config = await self.config.guild(ctx.guild).helper_roles()
         helper_parts = []
 
@@ -323,7 +332,7 @@ class About(commands.Cog):
         reward_roles = await self.config.guild(ctx.guild).reward_roles() 
         progress_lines = []
 
-        # A. Opt-in Roles (Base -> Target)
+        # A. Opt-in Roles
         for base_role_id, data in optin_roles.items():
             base_role = ctx.guild.get_role(int(base_role_id))
             if not base_role: continue
@@ -335,12 +344,10 @@ class About(commands.Cog):
             target_role = ctx.guild.get_role(int(target_role_id))
             if not target_role: continue
 
-            # 1. Check if user already has the requested (target) role
             if target_role in member.roles:
                 progress_lines.append(f"{target_role.mention} Unlocked!")
                 continue
 
-            # 2. If not, check if user has the request (base) role
             if base_role in member.roles:
                 days_remaining = required_days - days_in_server
                 level_met = user_level >= required_level
@@ -377,22 +384,27 @@ class About(commands.Cog):
                 elif not level_met:
                     progress_lines.append(f"{reward_role.mention}: Reach Level **{required_level}**")
                 else:
-                    progress_lines.append(f"{reward_role.mention}: Eligible! ✅")
+                    # User is eligible but doesn't have the role. Grant it now.
+                    try:
+                        await member.add_roles(reward_role, reason="About Cog: Auto-Reward")
+                        progress_lines.append(f"{reward_role.mention} Unlocked! (Auto-granted)")
+                    except discord.Forbidden:
+                        progress_lines.append(f"{reward_role.mention}: Eligible! ✅ (Bot missing permissions)")
+                    except Exception:
+                        progress_lines.append(f"{reward_role.mention}: Eligible! ✅")
 
-        # Format Role Progress
         role_progress_output = ""
         if progress_lines:
             role_progress_output = "\n\n**Role Progress**\n" + "\n".join(progress_lines)
 
-        # --- Build Final Description ---
         final_description = (
             base_description + 
-            line_2_output +  # Egg | House
-            line_3_output +  # Location | DM Status
-            activity_output + # Activity Status
-            award_output +   # Awards
-            helper_output +  # Teams
-            nm_output +      # New Member
+            line_2_output + 
+            line_3_output + 
+            activity_output + 
+            award_output + 
+            helper_output + 
+            nm_output + 
             role_progress_output
         )
 
@@ -405,11 +417,67 @@ class About(commands.Cog):
 
         return embed
 
+    # --- Background Loop for Rewards ---
+    @tasks.loop(minutes=60)
+    async def check_rewards(self):
+        """Periodically checks and grants reward roles to eligible members."""
+        await self.bot.wait_until_ready()
+        
+        for guild in self.bot.guilds:
+            reward_roles_config = await self.config.guild(guild).reward_roles()
+            if not reward_roles_config:
+                continue
+
+            levelup_cog = self.bot.get_cog("LevelUp")
+            if not levelup_cog:
+                continue
+
+            # Cache reward roles for this guild
+            active_rewards = []
+            for rid, data in reward_roles_config.items():
+                r = guild.get_role(int(rid))
+                if r:
+                    active_rewards.append((r, data['days'], data['level']))
+
+            if not active_rewards:
+                continue
+
+            # Check members
+            for member in guild.members:
+                if member.bot: continue
+
+                try:
+                    # Determine member stats
+                    level = await levelup_cog.get_level(member)
+                    
+                    if member.joined_at:
+                        now = datetime.now(timezone.utc)
+                        diff = now - member.joined_at
+                        days_in = diff.days
+                    else:
+                        days_in = 0
+
+                    for role, req_days, req_level in active_rewards:
+                        if role in member.roles:
+                            continue
+
+                        if days_in >= req_days and level >= req_level:
+                            try:
+                                await member.add_roles(role, reason="About Cog: Auto-Reward Loop")
+                                # Throttle to avoid rate limits
+                                await asyncio.sleep(2)
+                            except (discord.Forbidden, discord.HTTPException):
+                                pass 
+                except Exception:
+                    continue
+
+    @check_rewards.before_loop
+    async def before_check_rewards(self):
+        await self.bot.wait_until_ready()
+
     async def _display_server_info(self, ctx):
         """Displays detailed server information embed."""
         guild = ctx.guild
-        
-        # 1. Channel Counts from Config
         categories_config = await self.config.guild(guild).channel_categories()
         public_count = 0
         secret_count = 0
@@ -429,10 +497,7 @@ class About(commands.Cog):
             elif data['type'] == 'secret':
                 secret_count += c_count
 
-        # Global Voice Count
         voice_count = len(guild.voice_channels) + len(guild.stage_channels)
-
-        # 2. Data Preparation
         desc_text = guild.description if guild.description else ""
         
         created_ts = int(guild.created_at.timestamp())
@@ -443,7 +508,6 @@ class About(commands.Cog):
         emoji_count = len(guild.emojis)
         boost_count = guild.premium_subscription_count
 
-        # 3. Build Description
         description = (
             f"{desc_text}\n\n"
             f"**Founded:** {created_str}\n"
@@ -457,17 +521,14 @@ class About(commands.Cog):
             f"**Boosts:** {boost_count}"
         )
 
-        # 4. Add Member Locations from WhereAreWe Cog
         wherearewe_cog = self.bot.get_cog("WhereAreWe")
         locations_output = ""
         if wherearewe_cog and hasattr(wherearewe_cog, "get_tracked_role_member_counts"):
             try:
-                # Note: get_tracked_role_member_counts is async, so we await it
                 location_data = await wherearewe_cog.get_tracked_role_member_counts(guild)
                 
                 if location_data:
                     location_lines = []
-                    total_tracked = 0
                     for item in location_data:
                         role_name = item['role_name']
                         member_count = item['member_count']
@@ -475,7 +536,6 @@ class About(commands.Cog):
                         
                         if member_count > 0:
                             location_lines.append(f"{emoji} **{role_name}**: {member_count}")
-                            total_tracked += member_count
                     
                     if location_lines:
                         locations_output = "\n\n**Member Locations:**\n" + "\n".join(location_lines)
@@ -507,7 +567,6 @@ class About(commands.Cog):
 
         view = ChannelNavigatorView(ctx, categories_config)
         
-        # Default embed (Landing page)
         embed = discord.Embed(
             title="Channel Navigator", 
             description="Select a category below to view channels.", 
@@ -537,7 +596,6 @@ class About(commands.Cog):
         
         channel_list_str = "\n".join(lines) if lines else ""
         
-        # Combine description and channels
         final_desc = f"{description_text}\n\n{channel_list_str}"
 
         embed = discord.Embed(
@@ -554,16 +612,10 @@ class About(commands.Cog):
         
         await ctx.send(embed=embed)
 
-    # ------------------------------------------------------------------
-    # USER COMMANDS
-    # ------------------------------------------------------------------
-
     @commands.command()
     @commands.guild_only()
     async def about(self, ctx, *, argument: str = None):
-        """
-        Check information about me, a user, the server, or channels.
-        """
+        """Check information about me, a user, the server, or channels."""
         
         if argument is None:
             p = ctx.clean_prefix
@@ -605,10 +657,6 @@ class About(commands.Cog):
             p = ctx.clean_prefix
             await ctx.send(f"Could not find that user or recognize the command argument. Options are: `me`, `server`, `channel`, or a member. Try `{p}about` for help.")
 
-    # ------------------------------------------------------------------
-    # ADMIN COMMANDS
-    # ------------------------------------------------------------------
-
     @commands.group()
     @commands.guild_only()
     @commands.admin_or_permissions(administrator=True)
@@ -629,7 +677,6 @@ class About(commands.Cog):
         except Exception as e:
             await ctx.send(f"Error: `{e}`")
 
-    # NEW: New Member Configuration Group
     @aboutset.group(name="newmember")
     async def aboutset_newmember(self, ctx):
         """Manage 'New Member' section settings."""
@@ -693,7 +740,6 @@ class About(commands.Cog):
             conf["general_only_level"] = 0
         await ctx.send("General Only role/level config cleared.")
 
-    # --- Channel/Category Management ---
     @aboutset.group(name="channel")
     async def aboutset_channel(self, ctx):
         """Manage channel categories for the navigator."""
@@ -701,10 +747,7 @@ class About(commands.Cog):
 
     @aboutset_channel.command(name="add")
     async def channel_add(self, ctx, category: discord.CategoryChannel, type: Literal["public", "secret"], *, label: str):
-        """
-        Add a category to the channel navigator.
-        Type must be 'public' or 'secret'. Label is the button text.
-        """
+        """Add a category to the channel navigator."""
         async with self.config.guild(ctx.guild).channel_categories() as cats:
             cats[str(category.id)] = {
                 "type": type.lower(),
@@ -737,7 +780,6 @@ class About(commands.Cog):
         
         await ctx.send(embed=discord.Embed(title="Tracked Channel Categories", description=msg, color=discord.Color.blue()))
 
-    # --- First Day Channel Management ---
     @aboutset.group(name="firstday")
     async def aboutset_firstday(self, ctx):
         """Manage First Day channels and embed."""
@@ -799,7 +841,7 @@ class About(commands.Cog):
 
     @aboutset_firstday.command(name="thumbnail")
     async def firstday_thumbnail(self, ctx, url: str):
-        """Set the thumbnail URL for the First Day embed. Use 'none' or 'clear' to remove."""
+        """Set the thumbnail URL for the First Day embed."""
         if url.lower() in ["none", "clear"]:
             url = ""
         await self.config.guild(ctx.guild).first_day_thumbnail.set(url)
@@ -807,13 +849,12 @@ class About(commands.Cog):
 
     @aboutset_firstday.command(name="image")
     async def firstday_image(self, ctx, url: str):
-        """Set the image URL for the First Day embed. Use 'none' or 'clear' to remove."""
+        """Set the image URL for the First Day embed."""
         if url.lower() in ["none", "clear"]:
             url = ""
         await self.config.guild(ctx.guild).first_day_image.set(url)
         await ctx.send("First Day embed image updated.")
 
-    # --- Location Role Management ---
     @aboutset.group(name="locations")
     async def aboutset_locations(self, ctx):
         """Manage location roles."""
@@ -845,7 +886,6 @@ class About(commands.Cog):
         lines = [f"{emoji} {ctx.guild.get_role(int(rid)).name if ctx.guild.get_role(int(rid)) else 'Deleted'}" for rid, emoji in locations.items()]
         await ctx.send(embed=discord.Embed(title="Location Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
-    # --- DM Status Management ---
     @aboutset.group(name="dmstatus")
     async def aboutset_dmstatus(self, ctx):
         """Manage DM Status roles."""
@@ -877,7 +917,6 @@ class About(commands.Cog):
         lines = [f"{emoji} {ctx.guild.get_role(int(rid)).name if ctx.guild.get_role(int(rid)) else 'Deleted'}" for rid, emoji in statuses.items()]
         await ctx.send(embed=discord.Embed(title="DM Status Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
-    # --- Award Role Management ---
     @aboutset.group(name="award")
     async def aboutset_award(self, ctx):
         """Manage Award roles."""
@@ -912,7 +951,6 @@ class About(commands.Cog):
         lines = [ctx.guild.get_role(rid).name if ctx.guild.get_role(rid) else 'Deleted' for rid in awards]
         await ctx.send(embed=discord.Embed(title="Award Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
-    # --- Helper Role Management ---
     @aboutset.group(name="helper")
     async def aboutset_helper(self, ctx):
         """Manage Helper roles."""
@@ -947,7 +985,6 @@ class About(commands.Cog):
         lines = [ctx.guild.get_role(rid).name if ctx.guild.get_role(rid) else 'Deleted' for rid in helpers]
         await ctx.send(embed=discord.Embed(title="Helper Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
-    # --- House Role Management ---
     @aboutset.group(name="houseroles")
     async def aboutset_houseroles(self, ctx):
         """Manage House roles."""
@@ -979,7 +1016,6 @@ class About(commands.Cog):
         lines = [f"{emoji} {ctx.guild.get_role(int(rid)).name if ctx.guild.get_role(int(rid)) else 'Deleted'}" for rid, emoji in house_roles.items()]
         await ctx.send(embed=discord.Embed(title="House Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
-    # --- Egg Status Role Management ---
     @aboutset.group(name="eggroles")
     async def aboutset_eggroles(self, ctx):
         """Manage Egg Status roles."""
@@ -1011,7 +1047,6 @@ class About(commands.Cog):
         lines = [f"{emoji} {ctx.guild.get_role(int(rid)).name if ctx.guild.get_role(int(rid)) else 'Deleted'}" for rid, emoji in egg_roles.items()]
         await ctx.send(embed=discord.Embed(title="Egg Status Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
-    # --- Opt-in Role Management ---
     @aboutset.command(name="optin")
     async def aboutset_optin(self, ctx, base_role: discord.Role, target_role: discord.Role, days: int, level: int):
         """Set up an opt-in role path."""
@@ -1063,17 +1098,9 @@ class About(commands.Cog):
             
         await ctx.send(embed=discord.Embed(title="Opt-in Role Configurations", description="\n".join(lines), color=await ctx.embed_color()))
 
-    # --- NEW: Reward Role Management ---
     @aboutset.command(name="reward")
     async def aboutset_reward(self, ctx, reward_role: discord.Role, days: int, level: int):
-        """
-        Set up a reward role (automatically checked for everyone).
-        
-        Arguments:
-        - reward_role: The role given when requirements are met.
-        - days: Days in server required.
-        - level: Level required.
-        """
+        """Set up a reward role."""
         if days < 0 or level < 0:
              return await ctx.send("Days and Level must be non-negative.")
 
