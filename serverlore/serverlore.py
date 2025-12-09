@@ -86,6 +86,7 @@ class LoreView(discord.ui.View):
             return await interaction.response.send_message("You do not have permission to delete lore.", ephemeral=True)
 
         deletion_success = False
+        item_to_delete = None
 
         # Logic to remove from config
         async with self.cog.config.guild(self.ctx.guild).lore() as lore_data:
@@ -102,6 +103,29 @@ class LoreView(discord.ui.View):
                     deletion_success = True
 
         if deletion_success:
+            # Logging logic
+            log_channel_id = await self.cog.config.guild(self.ctx.guild).log_channel()
+            if log_channel_id:
+                log_channel = self.ctx.guild.get_channel(log_channel_id)
+                if log_channel and log_channel.permissions_for(self.ctx.guild.me).send_messages:
+                    target_member = self.ctx.guild.get_member(self.target_id)
+                    target_text = f"{target_member} (`{self.target_id}`)" if target_member else f"User ID `{self.target_id}`"
+                    
+                    orig_author_id = item_to_delete.get("author", "Unknown")
+                    orig_content = item_to_delete.get("content", "No content.")
+                    
+                    log_text = (
+                        f"**Lore Deleted**\n"
+                        f"**Target:** {target_text}\n"
+                        f"**Deleted By:** {interaction.user} (`{interaction.user.id}`)\n"
+                        f"**Original Author:** <@{orig_author_id}> (`{orig_author_id}`)\n"
+                        f"**Content:** {orig_content}"
+                    )
+                    try:
+                        await log_channel.send(log_text)
+                    except discord.HTTPException as e:
+                        log.error(f"Failed to send lore deletion log: {e}")
+
             # Update local list
             self.entries.pop(self.index)
             self.total = len(self.entries)
