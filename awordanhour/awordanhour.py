@@ -1,6 +1,5 @@
 import discord
 from redbot.core import commands, Config, checks
-from typing import Optional
 
 class AWordAnHour(commands.Cog):
     """
@@ -28,6 +27,19 @@ class AWordAnHour(commands.Cog):
     async def set_channel(self, ctx, channel: discord.TextChannel):
         """Set the channel where the game will be played."""
         await self.config.guild(ctx.guild).channel_id.set(channel.id)
+        
+        # Create the Welcome Embed
+        embed = discord.Embed(
+            title="A Word An Hour",
+            description="Welcome to A Word An Hour! You can type *one* word every hour to write a collaborative story. \n At any point, you can react with the stop emoji 🛑to finish a sentence and start a new one!",
+            color=discord.Color.blue()
+        )
+        embed.set_footer(text="The Third Place")
+        
+        if ctx.guild.icon:
+            embed.set_thumbnail(url=ctx.guild.icon.url)
+            
+        await channel.send(embed=embed)
         await ctx.send(f"AWordAnHour channel set to {channel.mention}.")
 
     @awah.command(name="reset")
@@ -51,17 +63,21 @@ class AWordAnHour(commands.Cog):
         words = await self.config.guild(guild).current_sentence()
         
         if not words:
-            await channel.send("The sentence was empty, so we are just starting fresh!")
+            await channel.send("The sentence was empty, so we are just starting fresh!", delete_after=5)
             return
 
         text = " ".join(words)
         
+        # Create the Finished Sentence Embed
         embed = discord.Embed(
-            title="📖 Story Entry Completed",
+            title="A Word An Hour",
             description=text,
-            color=discord.Color.gold()
+            color=discord.Color.green()
         )
-        embed.set_footer(text="A new sentence has started! Type a word to begin.")
+        embed.set_footer(text="The Third Place")
+        
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
         
         await channel.send(embed=embed)
         await self.config.guild(guild).current_sentence.set([])
@@ -85,11 +101,10 @@ class AWordAnHour(commands.Cog):
             return
 
         # Check word count (split by whitespace)
-        # If the length of the list is greater than 1, it's more than one word.
         if len(content.split()) > 1:
             try:
                 await message.delete()
-                alert = await message.channel.send(f"{message.author.mention}, one word at a time please!", delete_after=3)
+                await message.channel.send(f"{message.author.mention}, one word at a time please!", delete_after=3)
             except discord.Forbidden:
                 pass # Bot lacks delete permissions
             return
