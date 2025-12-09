@@ -14,6 +14,13 @@ from redbot.core.utils.chat_formatting import pagify, box
 
 class Gortle(commands.Cog):
     """A communal 6-letter Wordle-style game for Discord."""
+    
+    # Configuration for Emoji colors
+    # You can change these strings if your emoji names differ
+    EMOJI_UNUSED = "pastelred"   # Letters that have not been guessed
+    EMOJI_CORRECT = "pastelgreen" # Guessed and in right position
+    EMOJI_PRESENT = "pastelyellow" # Guessed and in wrong position
+    EMOJI_ABSENT = "pastelblack"  # Guessed and NOT in the word (inferred)
 
     def __init__(self, bot):
         self.bot = bot
@@ -35,7 +42,7 @@ class Gortle(commands.Cog):
             "game_state": {
                 "solved_indices": [],
                 "found_letters": [],
-                "guessed_letters": [],
+                "guessed_letters": [], # Letters guessed at least once
                 "guesses_made": 0
             },
             "win_amount": 100,
@@ -81,7 +88,6 @@ class Gortle(commands.Cog):
                 raw_guesses = json.load(f)
                 
             # Combine and deduplicate to ensure solutions are valid guesses
-            # Using set for O(1) lookups later
             combined = set(raw_guesses + self.solutions)
             self.guesses = list(combined)
             
@@ -93,6 +99,55 @@ class Gortle(commands.Cog):
             print(f"[Gortle] Error parsing JSON: {e}")
             self.solutions = ["failed"]
             self.guesses = ["failed"]
+
+    def _get_emoji_str(self, char: str, color: str) -> str:
+        """Helper to format the emoji string."""
+        return f":{color}{char.upper()}:"
+
+    def _get_keyboard_visual(self, state, solution) -> str:
+        """Generates the QWERTY keyboard visual based on game state."""
+        rows = ["QWERTYUIOP", "ASDFGHJKL", "ZXCVBNM"]
+        visual_rows = []
+
+        guessed_letters = set(state['guessed_letters'])
+        # Solved indices allows us to know which letters are definitively Green
+        # However, to color the keyboard Green, we need to know if a letter is solved *anywhere*
+        
+        # Determine global status for each letter in the alphabet
+        # Status priority: Green > Yellow > Black > Red (Default)
+        
+        # Pre-calculate status for efficiency
+        letter_status = {}
+        
+        for char in "ABCDEFGHIJKLMNOPQRSTUVWXYZ".lower():
+            if char not in guessed_letters:
+                letter_status[char] = self.EMOJI_UNUSED
+            else:
+                if char not in solution:
+                    letter_status[char] = self.EMOJI_ABSENT
+                else:
+                    # It is in the solution and has been guessed.
+                    # Is it solved (Green) or just found (Yellow)?
+                    # Check if this char exists in any solved position
+                    is_solved = False
+                    for idx in state['solved_indices']:
+                        if solution[idx] == char:
+                            is_solved = True
+                            break
+                    
+                    if is_solved:
+                        letter_status[char] = self.EMOJI_CORRECT
+                    else:
+                        letter_status[char] = self.EMOJI_PRESENT
+
+        for row in rows:
+            line = ""
+            for char in row.lower():
+                color = letter_status.get(char, self.EMOJI_UNUSED)
+                line += self._get_emoji_str(char, color) + " "
+            visual_rows.append(line.strip())
+            
+        return "\n".join(visual_rows)
 
     async def game_loop(self):
         """Checks schedule for new games and weekly roles."""
@@ -147,7 +202,6 @@ class Gortle(commands.Cog):
 
             # Pick new word
             used = await self.config.used_words()
-            # Reference self.solutions instead of imported constant
             available = [w for w in self.solutions if w not in used]
             
             if not available:
@@ -182,7 +236,11 @@ class Gortle(commands.Cog):
             role_id = await self.config.guild(target_channel.guild).mention_role()
             mention = f"<@&{role_id}>" if role_id else ""
             
+            # Show empty keyboard for new game
+            keyboard_view = self._get_keyboard_visual(new_state, new_word)
+            
             embed = discord.Embed(title=f"New Gortle Started! (#{game_num})", description="Guess the 6-letter word by mentioning me!", color=discord.Color.green())
+            embed.add_field(name="Keyboard", value=keyboard_view, inline=False)
             await target_channel.send(content=mention, embed=embed)
 
     async def check_weekly_role(self, now):
@@ -236,7 +294,7 @@ class Gortle(commands.Cog):
         if top_scorer and top_score > 0:
             try:
                 await top_scorer.add_roles(role, reason="Gortle weekly winner")
-                await target_channel.send(f"🏆 **{top_scorer.mention}** is the Gortle Champion of the week with {top_score} points!")
+                await target_channel.send(f"醇 **{top_scorer.mention}** is the Gortle Champion of the week with {top_score} points!")
             except discord.Forbidden:
                 await target_channel.send("I tried to give the weekly role but lack permissions.")
         
@@ -293,16 +351,19 @@ class Gortle(commands.Cog):
         state = await self.config.game_state()
         solved_indices = set(state['solved_indices'])
         
-        emojis = [""] * 6
+        # Prepare list for the row visual (the specific guess)
+        guess_visual = [""] * 6
         points = 0
         
         sol_chars = list(solution)
         guess_chars = list(guess)
         sol_remaining = list(solution) 
         
+        # 1. Pass for GREENS (Correct Position)
         for i, char in enumerate(guess_chars):
             if char == sol_chars[i]:
-                emojis[i] = "🔵"
+                # Correct!
+                guess_visual[i] = self._get_emoji_str(char, self.EMOJI_CORRECT)
                 sol_remaining[i] = None 
                 
                 if i not in solved_indices:
@@ -312,11 +373,14 @@ class Gortle(commands.Cog):
                 else:
                     points += 0 
 
+        # 2. Pass for YELLOWS (Wrong Position) and ABSENT (Wrong Word)
         for i, char in enumerate(guess_chars):
-            if emojis[i] != "": continue
+            if guess_visual[i] != "": 
+                continue # Skip already marked greens
 
             if char in sol_remaining:
-                emojis[i] = "🟠"
+                # Present but wrong spot
+                guess_visual[i] = self._get_emoji_str(char, self.EMOJI_PRESENT)
                 sol_remaining[sol_remaining.index(char)] = None 
                 
                 total_in_sol = solution.count(char)
@@ -326,8 +390,10 @@ class Gortle(commands.Cog):
                     points += 1
                     state['found_letters'].append(char)
             else:
-                emojis[i] = "⚫"
+                # Absent
+                guess_visual[i] = self._get_emoji_str(char, self.EMOJI_ABSENT)
 
+        # Update guessed letters history
         current_guessed = set(state['guessed_letters'])
         for c in guess:
             current_guessed.add(c)
@@ -347,16 +413,16 @@ class Gortle(commands.Cog):
             )
 
         game_num = await self.config.game_number()
-        alphabet = "abcdefghijklmnopqrstuvwxyz"
-        guessed_alpha = "".join([c if c in state['guessed_letters'] else " " for c in alphabet]).replace(" ", "")
-        pending_alpha = "".join([c if c not in state['guessed_letters'] else " " for c in alphabet]).replace(" ", "")
+        
+        # Generate the Keyboard View
+        keyboard_view = self._get_keyboard_visual(state, solution)
 
         embed = discord.Embed(title=f"Gortle #{game_num}", color=discord.Color.blue())
-        embed.add_field(name="Your Guess", value=f"`{guess.upper()}`\n{''.join(emojis)}", inline=False)
+        # Display the guess using the new emoji row
+        embed.add_field(name="Your Guess", value=' '.join(guess_visual), inline=False)
         embed.add_field(name="Points Gained", value=str(points), inline=True)
-        if guessed_alpha:
-            embed.add_field(name="Guessed letters", value=guessed_alpha, inline=True)
-        embed.add_field(name="Pending letters", value=pending_alpha, inline=False)
+        # Add the keyboard visual
+        embed.add_field(name="Keyboard", value=keyboard_view, inline=False)
         
         await message.channel.send(embed=embed)
 
