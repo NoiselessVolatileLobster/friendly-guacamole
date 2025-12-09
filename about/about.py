@@ -142,7 +142,7 @@ class About(commands.Cog):
             },
             "optin_roles": {}, 
             "reward_roles": {},
-            "advanced_rewards": {} # { "role1_id": { "level": int, "days_initial": int, "role2_id": int, "duration": int } }
+            "advanced_rewards": {} # { "request_role_id": { "level": int, "role1_id": int, "days_min": int, "role2_id": int, "duration": int } }
         }
         self.config.register_guild(**default_guild)
         # Register member config to track when role1 was granted
@@ -385,20 +385,21 @@ class About(commands.Cog):
                 elif not level_met:
                     progress_lines.append(f"{reward_role.mention}: Reach Level **{required_level}**")
                 else:
-                    # Grant Logic in Loop, here just display
                     progress_lines.append(f"{reward_role.mention}: Eligible! ✅")
 
         # C. Advanced Rewards
         member_timestamps = await self.config.member(member).role_start_times()
-        for r1_id_str, data in advanced_rewards.items():
-            r1_id = int(r1_id_str)
-            r1 = ctx.guild.get_role(r1_id)
+        for req_role_id_str, data in advanced_rewards.items():
+            req_role_id = int(req_role_id_str)
+            req_role = ctx.guild.get_role(req_role_id)
+            r1 = ctx.guild.get_role(int(data['role1_id']))
             r2 = ctx.guild.get_role(int(data['role2_id']))
-            if not r1 or not r2: continue
+            
+            if not req_role or not r1 or not r2: continue
 
             req_level = data['level']
-            req_days_initial = data['days_initial']
-            duration = data['duration']
+            days_min = data['days_min'] # Y
+            duration = data['duration'] # Z
 
             if r2 in member.roles:
                 progress_lines.append(f"{r2.mention} Unlocked!")
@@ -414,11 +415,11 @@ class About(commands.Cog):
                     else:
                         progress_lines.append(f"{r2.mention}: Eligible for upgrade! ✅")
                 else:
-                    # Has role but no timestamp (manually added?)
+                    # Has role but no timestamp
                     progress_lines.append(f"{r1.mention}: **{duration}** days until {r2.mention} (Timer started)")
-            else:
-                # User has neither, working towards Role 1
-                days_remaining = req_days_initial - days_in_server
+            elif req_role in member.roles:
+                # User has request role, working towards Role 1
+                days_remaining = days_min - days_in_server
                 level_met = user_level >= req_level
                 days_met = days_remaining <= 0
 
@@ -482,11 +483,12 @@ class About(commands.Cog):
             # Cache advanced rewards
             active_advanced = []
             if advanced_config:
-                for rid1, data in advanced_config.items():
-                    r1 = guild.get_role(int(rid1))
+                for req_id, data in advanced_config.items():
+                    req_role = guild.get_role(int(req_id))
+                    r1 = guild.get_role(int(data['role1_id']))
                     r2 = guild.get_role(int(data['role2_id']))
-                    if r1 and r2:
-                        active_advanced.append((r1, r2, data['level'], data['days_initial'], data['duration']))
+                    if req_role and r1 and r2:
+                        active_advanced.append((req_role, r1, r2, data['level'], data['days_min'], data['duration']))
 
             if not active_rewards and not active_advanced:
                 continue
@@ -526,53 +528,54 @@ class About(commands.Cog):
                                 pass
 
                     # 2. Advanced Rewards
-                    # Logic: 
-                    # - Grant R1 if eligible and save timestamp.
-                    # - If has R1, check timestamp vs duration -> Grant R2, Remove R1.
-                    for r1, r2, req_lvl, d_init, duration in active_advanced:
+                    # Config Structure: req_role -> (level, role1, days_min) -> (role2, duration)
+                    for req_role, r1, r2, req_lvl, d_min, duration in active_advanced:
                         
                         if r2 in member.roles:
-                            continue # Already has final role
+                            continue # Finished path
 
                         if r1 in member.roles:
-                            # User has Role 1, check duration
+                            # User has Role 1 (Intermediate). Check duration.
                             member_timestamps = await self.config.member(member).role_start_times()
                             start_ts = member_timestamps.get(str(r1.id))
-                            
                             current_ts = now.timestamp()
                             
                             if start_ts is None:
-                                # Role held but not tracked. Start tracking now.
+                                # Has role but no timestamp. Start timer.
                                 async with self.config.member(member).role_start_times() as times:
                                     times[str(r1.id)] = current_ts
                             else:
-                                # Check time passed
+                                # Check elapsed time
                                 start_dt = datetime.fromtimestamp(start_ts, timezone.utc)
                                 days_held = (now - start_dt).days
                                 
                                 if days_held >= duration:
-                                    # Upgrade!
+                                    # Upgrade: Remove R1, Add R2
                                     try:
                                         await member.remove_roles(r1, reason="About Cog: Adv Upgrade Remove")
                                         await asyncio.sleep(1)
                                         await member.add_roles(r2, reason="About Cog: Adv Upgrade Add")
                                         
-                                        # Clean up timestamp
+                                        # Cleanup timestamp
                                         async with self.config.member(member).role_start_times() as times:
                                             if str(r1.id) in times:
                                                 del times[str(r1.id)]
-                                                
+                                        
                                         await asyncio.sleep(2)
                                     except (discord.Forbidden, discord.HTTPException):
                                         pass
-                        else:
-                            # User does not have R1 or R2. Check eligibility for R1.
-                            if days_in >= d_init and level >= req_lvl:
+                        elif req_role in member.roles:
+                            # User has request role. Check eligibility for Role 1.
+                            if days_in >= d_min and level >= req_lvl:
                                 try:
                                     await member.add_roles(r1, reason="About Cog: Adv Initial Grant")
-                                    # Save timestamp
+                                    await asyncio.sleep(1)
+                                    await member.remove_roles(req_role, reason="About Cog: Adv Req Remove")
+                                    
+                                    # Save timestamp for R1 duration
                                     async with self.config.member(member).role_start_times() as times:
                                         times[str(r1.id)] = now.timestamp()
+                                        
                                     await asyncio.sleep(2)
                                 except (discord.Forbidden, discord.HTTPException):
                                     pass
@@ -1291,42 +1294,44 @@ class About(commands.Cog):
     
     # --- Advanced Reward Role Management ---
     @aboutset.command(name="advancedreward")
-    async def aboutset_advancedreward(self, ctx, level: int, role1: discord.Role, days1: int, role2: discord.Role, days2: int):
+    async def aboutset_advancedreward(self, ctx, request_role: discord.Role, level: int, role1: discord.Role, days_min: int, role2: discord.Role, duration: int):
         """
-        Set up an advanced reward role path (Level X @role1 Y @role2 Z).
+        Set up an advanced reward role path (RequestRole Level X @role1 Y @role2 Z).
         
         Arguments:
-        - level: Required level to start path.
-        - role1: First role given after days1.
-        - days1: Days in server required for role1.
-        - role2: Second role given after days2 (replaces role1).
-        - days2: Duration to hold role1 before swapping to role2.
+        - request_role: Role user must have to start.
+        - level: Required level.
+        - role1: First role given after days_min.
+        - days_min: Days in server required for role1.
+        - role2: Second role given after duration (replaces role1).
+        - duration: Days to hold role1 before swapping to role2.
         """
-        if days1 < 0 or days2 < 0 or level < 0:
+        if days_min < 0 or duration < 0 or level < 0:
              return await ctx.send("Days and Level must be non-negative.")
 
-        # Use role1.id as key. We assume one path starting per role.
+        # Key by request_role.id to track the path entry point
         async with self.config.guild(ctx.guild).advanced_rewards() as adv:
-            adv[str(role1.id)] = {
+            adv[str(request_role.id)] = {
                 "level": level,
-                "days_initial": days1,
+                "role1_id": str(role1.id),
+                "days_min": days_min,
                 "role2_id": str(role2.id),
-                "duration": days2
+                "duration": duration
             }
         
         await ctx.send(
             f"Configured Advanced Reward:\n"
-            f"Level **{level}** + **{days1}** days -> Get **{role1.name}**\n"
-            f"Hold **{role1.name}** for **{days2}** days -> Remove **{role1.name}**, Get **{role2.name}**"
+            f"Start: **{request_role.name}** + Level **{level}** + **{days_min}** days -> Get **{role1.name}**\n"
+            f"Hold **{role1.name}** for **{duration}** days -> Remove **{role1.name}**, Get **{role2.name}**"
         )
 
     @aboutset.command(name="advancedreward_remove")
-    async def aboutset_advancedreward_remove(self, ctx, role1: discord.Role):
-        """Remove an advanced reward configuration (specify the first role)."""
+    async def aboutset_advancedreward_remove(self, ctx, request_role: discord.Role):
+        """Remove an advanced reward configuration (specify the request role)."""
         async with self.config.guild(ctx.guild).advanced_rewards() as adv:
-            if str(role1.id) in adv:
-                del adv[str(role1.id)]
-                await ctx.send(f"Removed advanced reward configuration starting with **{role1.name}**.")
+            if str(request_role.id) in adv:
+                del adv[str(request_role.id)]
+                await ctx.send(f"Removed advanced reward configuration starting with **{request_role.name}**.")
             else:
                 await ctx.send("That role is not configured as the start of an advanced reward path.")
 
@@ -1338,14 +1343,18 @@ class About(commands.Cog):
             return await ctx.send("No advanced reward paths configured.")
         
         lines = []
-        for r1_id, data in adv.items():
-            r1 = ctx.guild.get_role(int(r1_id))
+        for req_id, data in adv.items():
+            req_role = ctx.guild.get_role(int(req_id))
+            req_name = req_role.mention if req_role else f"Deleted-Role-{req_id}"
+
+            r1_id = int(data['role1_id'])
+            r1 = ctx.guild.get_role(r1_id)
             r1_name = r1.mention if r1 else f"Deleted-Role-{r1_id}"
             
             r2_id = int(data['role2_id'])
             r2 = ctx.guild.get_role(r2_id)
             r2_name = r2.mention if r2 else f"Deleted-Role-{r2_id}"
             
-            lines.append(f"Lvl {data['level']} + {data['days_initial']}d -> {r1_name} -> Hold {data['duration']}d -> {r2_name}")
+            lines.append(f"{req_name} + Lvl {data['level']} + {data['days_min']}d -> {r1_name} -> Hold {data['duration']}d -> {r2_name}")
             
         await ctx.send(embed=discord.Embed(title="Advanced Reward Configurations", description="\n".join(lines), color=await ctx.embed_color()))
