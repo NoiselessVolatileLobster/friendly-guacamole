@@ -153,7 +153,7 @@ class ServerLore(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=9876543210, force_registration=True)
         # Structure: { "USER_ID_STRING": [ {entry_dict}, {entry_dict} ] }
-        self.config.register_guild(lore={})
+        self.config.register_guild(lore={}, log_channel=None)
 
     @commands.command()
     @commands.guild_only()
@@ -176,6 +176,25 @@ class ServerLore(commands.Cog):
             if str_id not in lore_data:
                 lore_data[str_id] = []
             lore_data[str_id].append(entry)
+
+        # Logging logic
+        log_channel_id = await self.config.guild(ctx.guild).log_channel()
+        if log_channel_id:
+            log_channel = ctx.guild.get_channel(log_channel_id)
+            # Ensure the channel exists and we can speak in it
+            if log_channel and log_channel.permissions_for(ctx.guild.me).send_messages:
+                log_text = (
+                    f"**New Lore Created**\n"
+                    f"**Target:** {user} (`{user.id}`)\n"
+                    f"**Author:** {ctx.author} (`{ctx.author.id}`)\n"
+                    f"**Lore:** {message}\n"
+                    f"**Link:** <{bot_msg.jump_url}>"
+                )
+                try:
+                    await log_channel.send(log_text)
+                except discord.HTTPException as e:
+                    log.error(f"Failed to send lore log in {log_channel.name}: {e}")
+
 
     @commands.command()
     @commands.guild_only()
@@ -219,6 +238,20 @@ class ServerLore(commands.Cog):
         await ctx.send(embed=view.get_embed(), view=view)
 
     # --- Administrator Commands ---
+    
+    @commands.command()
+    @checks.admin_or_permissions(administrator=True)
+    async def lorelogs(self, ctx, channel: discord.TextChannel = None):
+        """
+        Set the channel where new lore will be logged. 
+        Run without a channel to disable logging.
+        """
+        if channel:
+            await self.config.guild(ctx.guild).log_channel.set(channel.id)
+            await ctx.send(f"✅ Lore logs will now be sent to {channel.mention}.")
+        else:
+            await self.config.guild(ctx.guild).log_channel.set(None)
+            await ctx.send("✅ Lore logging has been disabled.")
 
     @commands.command()
     @checks.admin_or_permissions(administrator=True)
