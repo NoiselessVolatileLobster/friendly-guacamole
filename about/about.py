@@ -121,15 +121,12 @@ class About(commands.Cog):
         self.config = Config.get_conf(self, identifier=9876543210, force_registration=True)
         
         default_guild = {
-            "role_targets": {}, 
-            "role_buddies": {},
             "location_roles": {},
             "dm_status_roles": {},
             "award_roles": [],
             "helper_roles": [],
             "egg_status_roles": {},
             "house_roles": {},
-            "role_target_overrides": {},
             "channel_categories": {},
             "first_day_channels": [],
             "first_day_title": "First Day Channels",
@@ -144,7 +141,8 @@ class About(commands.Cog):
                 "general_only_level": 0
             },
             "optin_roles": {}, 
-            "reward_roles": {} 
+            "reward_roles": {},
+            "advanced_rewards": {} # NEW: { "role1_id": { "level": int, "days1": int, "role2_id": int, "days2": int } }
         }
         self.config.register_guild(**default_guild)
         
@@ -268,7 +266,7 @@ class About(commands.Cog):
                     activity_output = f"\n{emoji}{status_text}{last_seen_text}"
                 
             except Exception as e:
-                pass # Fail silently
+                pass 
         
         # --- 6. Awards ---
         award_roles_config = await self.config.guild(ctx.guild).award_roles()
@@ -329,7 +327,8 @@ class About(commands.Cog):
 
         # --- 9. Role Progress Calculation ---
         optin_roles = await self.config.guild(ctx.guild).optin_roles()
-        reward_roles = await self.config.guild(ctx.guild).reward_roles() 
+        reward_roles = await self.config.guild(ctx.guild).reward_roles()
+        advanced_rewards = await self.config.guild(ctx.guild).advanced_rewards()
         progress_lines = []
 
         # A. Opt-in Roles
@@ -362,7 +361,7 @@ class About(commands.Cog):
                 else:
                     progress_lines.append(f"{base_role.mention}: Eligible! ✅")
 
-        # B. Reward Roles (Direct Time/Level Check)
+        # B. Reward Roles
         for reward_role_id, data in reward_roles.items():
             reward_role = ctx.guild.get_role(int(reward_role_id))
             if not reward_role: continue
@@ -384,14 +383,42 @@ class About(commands.Cog):
                 elif not level_met:
                     progress_lines.append(f"{reward_role.mention}: Reach Level **{required_level}**")
                 else:
-                    # User is eligible but doesn't have the role. Grant it now.
-                    try:
-                        await member.add_roles(reward_role, reason="About Cog: Auto-Reward")
-                        progress_lines.append(f"{reward_role.mention} Unlocked! (Auto-granted)")
-                    except discord.Forbidden:
-                        progress_lines.append(f"{reward_role.mention}: Eligible! ✅ (Bot missing permissions)")
-                    except Exception:
-                        progress_lines.append(f"{reward_role.mention}: Eligible! ✅")
+                    # Grant Logic in Loop, here just display
+                    progress_lines.append(f"{reward_role.mention}: Eligible! ✅")
+
+        # C. Advanced Rewards (New)
+        for r1_id, data in advanced_rewards.items():
+            r1 = ctx.guild.get_role(int(r1_id))
+            r2 = ctx.guild.get_role(int(data['role2_id']))
+            if not r1 or not r2: continue
+
+            req_level = data['level']
+            req_days1 = data['days1']
+            req_days2 = data['days2']
+
+            if r2 in member.roles:
+                progress_lines.append(f"{r2.mention} Unlocked (Advanced)!")
+            elif r1 in member.roles:
+                # User has role 1, working towards role 2
+                days_remaining = req_days2 - days_in_server
+                if days_remaining > 0:
+                     progress_lines.append(f"{r1.mention}: **{days_remaining}** days until {r2.mention}")
+                else:
+                     progress_lines.append(f"{r2.mention}: Eligible! ✅")
+            else:
+                # User has neither, working towards role 1
+                days_remaining = req_days1 - days_in_server
+                level_met = user_level >= req_level
+                days_met = days_remaining <= 0
+
+                if not days_met and not level_met:
+                    progress_lines.append(f"{r1.mention}: Reach Level **{req_level}** and **{days_remaining}** days remaining")
+                elif not days_met:
+                    progress_lines.append(f"{r1.mention}: **{days_remaining}** days remaining")
+                elif not level_met:
+                    progress_lines.append(f"{r1.mention}: Reach Level **{req_level}**")
+                else:
+                    progress_lines.append(f"{r1.mention}: Eligible! ✅")
 
         role_progress_output = ""
         if progress_lines:
@@ -424,22 +451,32 @@ class About(commands.Cog):
         await self.bot.wait_until_ready()
         
         for guild in self.bot.guilds:
-            reward_roles_config = await self.config.guild(guild).reward_roles()
-            if not reward_roles_config:
-                continue
-
+            
             levelup_cog = self.bot.get_cog("LevelUp")
             if not levelup_cog:
                 continue
 
-            # Cache reward roles for this guild
-            active_rewards = []
-            for rid, data in reward_roles_config.items():
-                r = guild.get_role(int(rid))
-                if r:
-                    active_rewards.append((r, data['days'], data['level']))
+            # Load Configs
+            reward_roles_config = await self.config.guild(guild).reward_roles()
+            advanced_config = await self.config.guild(guild).advanced_rewards()
 
-            if not active_rewards:
+            # Cache rewards
+            active_rewards = []
+            if reward_roles_config:
+                for rid, data in reward_roles_config.items():
+                    r = guild.get_role(int(rid))
+                    if r:
+                        active_rewards.append((r, data['days'], data['level'], data.get('message'), data.get('channel_id')))
+            
+            active_advanced = []
+            if advanced_config:
+                for rid1, data in advanced_config.items():
+                    r1 = guild.get_role(int(rid1))
+                    r2 = guild.get_role(int(data['role2_id']))
+                    if r1 and r2:
+                        active_advanced.append((r1, r2, data['level'], data['days1'], data['days2']))
+
+            if not active_rewards and not active_advanced:
                 continue
 
             # Check members
@@ -447,7 +484,6 @@ class About(commands.Cog):
                 if member.bot: continue
 
                 try:
-                    # Determine member stats
                     level = await levelup_cog.get_level(member)
                     
                     if member.joined_at:
@@ -457,17 +493,55 @@ class About(commands.Cog):
                     else:
                         days_in = 0
 
-                    for role, req_days, req_level in active_rewards:
+                    # 1. Standard Rewards
+                    for role, req_days, req_level, msg, ch_id in active_rewards:
                         if role in member.roles:
                             continue
 
                         if days_in >= req_days and level >= req_level:
                             try:
-                                await member.add_roles(role, reason="About Cog: Auto-Reward Loop")
-                                # Throttle to avoid rate limits
+                                await member.add_roles(role, reason="About Cog: Auto-Reward")
+                                if msg and ch_id:
+                                    alert_channel = guild.get_channel(ch_id)
+                                    if alert_channel:
+                                        try:
+                                            final_message = msg.replace("{mention}", member.mention)
+                                            await alert_channel.send(final_message)
+                                        except discord.Forbidden:
+                                            pass
                                 await asyncio.sleep(2)
                             except (discord.Forbidden, discord.HTTPException):
-                                pass 
+                                pass
+
+                    # 2. Advanced Rewards
+                    for r1, r2, req_lvl, d1, d2 in active_advanced:
+                        # Logic:
+                        # If has R2, done.
+                        # If has R1: Check for Upgrade to R2
+                        # If has Neither: Check for Grant R1
+
+                        if r2 in member.roles:
+                            continue
+
+                        if r1 in member.roles:
+                            # Check Upgrade
+                            if days_in >= d2:
+                                try:
+                                    await member.remove_roles(r1, reason="About Cog: Adv Upgrade Remove")
+                                    await asyncio.sleep(1)
+                                    await member.add_roles(r2, reason="About Cog: Adv Upgrade Add")
+                                    await asyncio.sleep(2)
+                                except (discord.Forbidden, discord.HTTPException):
+                                    pass
+                        else:
+                            # Check Initial Grant
+                            if days_in >= d1 and level >= req_lvl:
+                                try:
+                                    await member.add_roles(r1, reason="About Cog: Adv Initial")
+                                    await asyncio.sleep(2)
+                                except (discord.Forbidden, discord.HTTPException):
+                                    pass
+
                 except Exception:
                     continue
 
@@ -612,6 +686,10 @@ class About(commands.Cog):
         
         await ctx.send(embed=embed)
 
+    # ------------------------------------------------------------------
+    # USER COMMANDS
+    # ------------------------------------------------------------------
+
     @commands.command()
     @commands.guild_only()
     async def about(self, ctx, *, argument: str = None):
@@ -657,6 +735,10 @@ class About(commands.Cog):
             p = ctx.clean_prefix
             await ctx.send(f"Could not find that user or recognize the command argument. Options are: `me`, `server`, `channel`, or a member. Try `{p}about` for help.")
 
+    # ------------------------------------------------------------------
+    # ADMIN COMMANDS
+    # ------------------------------------------------------------------
+
     @commands.group()
     @commands.guild_only()
     @commands.admin_or_permissions(administrator=True)
@@ -677,6 +759,7 @@ class About(commands.Cog):
         except Exception as e:
             await ctx.send(f"Error: `{e}`")
 
+    # NEW: New Member Configuration Group
     @aboutset.group(name="newmember")
     async def aboutset_newmember(self, ctx):
         """Manage 'New Member' section settings."""
@@ -740,6 +823,7 @@ class About(commands.Cog):
             conf["general_only_level"] = 0
         await ctx.send("General Only role/level config cleared.")
 
+    # --- Channel/Category Management ---
     @aboutset.group(name="channel")
     async def aboutset_channel(self, ctx):
         """Manage channel categories for the navigator."""
@@ -780,6 +864,7 @@ class About(commands.Cog):
         
         await ctx.send(embed=discord.Embed(title="Tracked Channel Categories", description=msg, color=discord.Color.blue()))
 
+    # --- First Day Channel Management ---
     @aboutset.group(name="firstday")
     async def aboutset_firstday(self, ctx):
         """Manage First Day channels and embed."""
@@ -855,6 +940,7 @@ class About(commands.Cog):
         await self.config.guild(ctx.guild).first_day_image.set(url)
         await ctx.send("First Day embed image updated.")
 
+    # --- Location Role Management ---
     @aboutset.group(name="locations")
     async def aboutset_locations(self, ctx):
         """Manage location roles."""
@@ -886,6 +972,7 @@ class About(commands.Cog):
         lines = [f"{emoji} {ctx.guild.get_role(int(rid)).name if ctx.guild.get_role(int(rid)) else 'Deleted'}" for rid, emoji in locations.items()]
         await ctx.send(embed=discord.Embed(title="Location Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
+    # --- DM Status Management ---
     @aboutset.group(name="dmstatus")
     async def aboutset_dmstatus(self, ctx):
         """Manage DM Status roles."""
@@ -917,6 +1004,7 @@ class About(commands.Cog):
         lines = [f"{emoji} {ctx.guild.get_role(int(rid)).name if ctx.guild.get_role(int(rid)) else 'Deleted'}" for rid, emoji in statuses.items()]
         await ctx.send(embed=discord.Embed(title="DM Status Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
+    # --- Award Role Management ---
     @aboutset.group(name="award")
     async def aboutset_award(self, ctx):
         """Manage Award roles."""
@@ -951,6 +1039,7 @@ class About(commands.Cog):
         lines = [ctx.guild.get_role(rid).name if ctx.guild.get_role(rid) else 'Deleted' for rid in awards]
         await ctx.send(embed=discord.Embed(title="Award Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
+    # --- Helper Role Management ---
     @aboutset.group(name="helper")
     async def aboutset_helper(self, ctx):
         """Manage Helper roles."""
@@ -985,6 +1074,7 @@ class About(commands.Cog):
         lines = [ctx.guild.get_role(rid).name if ctx.guild.get_role(rid) else 'Deleted' for rid in helpers]
         await ctx.send(embed=discord.Embed(title="Helper Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
+    # --- House Role Management ---
     @aboutset.group(name="houseroles")
     async def aboutset_houseroles(self, ctx):
         """Manage House roles."""
@@ -1016,6 +1106,7 @@ class About(commands.Cog):
         lines = [f"{emoji} {ctx.guild.get_role(int(rid)).name if ctx.guild.get_role(int(rid)) else 'Deleted'}" for rid, emoji in house_roles.items()]
         await ctx.send(embed=discord.Embed(title="House Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
+    # --- Egg Status Role Management ---
     @aboutset.group(name="eggroles")
     async def aboutset_eggroles(self, ctx):
         """Manage Egg Status roles."""
@@ -1047,6 +1138,7 @@ class About(commands.Cog):
         lines = [f"{emoji} {ctx.guild.get_role(int(rid)).name if ctx.guild.get_role(int(rid)) else 'Deleted'}" for rid, emoji in egg_roles.items()]
         await ctx.send(embed=discord.Embed(title="Egg Status Roles", description="\n".join(lines), color=await ctx.embed_color()))
 
+    # --- Opt-in Role Management ---
     @aboutset.command(name="optin")
     async def aboutset_optin(self, ctx, base_role: discord.Role, target_role: discord.Role, days: int, level: int):
         """Set up an opt-in role path."""
@@ -1098,6 +1190,7 @@ class About(commands.Cog):
             
         await ctx.send(embed=discord.Embed(title="Opt-in Role Configurations", description="\n".join(lines), color=await ctx.embed_color()))
 
+    # --- Reward Role Management ---
     @aboutset.command(name="reward")
     async def aboutset_reward(self, ctx, reward_role: discord.Role, days: int, level: int):
         """Set up a reward role."""
@@ -1114,6 +1207,22 @@ class About(commands.Cog):
             f"Configured Reward Role:\n"
             f"User waits **{days}** days & Reaches Level **{level}** -> Gets **{reward_role.name}**"
         )
+
+    @aboutset.command(name="rewardmessage")
+    async def aboutset_rewardmessage(self, ctx, reward_role: discord.Role, channel: discord.TextChannel, *, message: str):
+        """
+        Configure an alert message for a reward role.
+        Use {mention} in the message to mention the user.
+        """
+        async with self.config.guild(ctx.guild).reward_roles() as rewards:
+            rid = str(reward_role.id)
+            if rid not in rewards:
+                return await ctx.send("That reward role is not configured yet. Use `[p]aboutset reward` first.")
+            
+            rewards[rid]["message"] = message
+            rewards[rid]["channel_id"] = channel.id
+            
+        await ctx.send(f"Updated reward message for **{reward_role.name}** in {channel.mention}.")
 
     @aboutset.command(name="reward_remove")
     async def aboutset_reward_remove(self, ctx, reward_role: discord.Role):
@@ -1139,7 +1248,69 @@ class About(commands.Cog):
             
             days = data.get("days", 0)
             level = data.get("level", 0)
+            msg_configured = "Yes" if data.get("message") else "No"
             
-            lines.append(f"{r_name} (Days: {days}, Level: {level})")
+            lines.append(f"{r_name} (Days: {days}, Level: {level}, Msg: {msg_configured})")
             
         await ctx.send(embed=discord.Embed(title="Reward Role Configurations", description="\n".join(lines), color=await ctx.embed_color()))
+    
+    # --- Advanced Reward Role Management ---
+    @aboutset.command(name="advancedreward")
+    async def aboutset_advancedreward(self, ctx, level: int, role1: discord.Role, days1: int, role2: discord.Role, days2: int):
+        """
+        Set up an advanced reward role path (Level X @role1 Y @role2 Z).
+        
+        Arguments:
+        - level: Required level to start path.
+        - role1: First role given after days1.
+        - days1: Days in server required for role1.
+        - role2: Second role given after days2 (replaces role1).
+        - days2: Days in server required for role2.
+        """
+        if days1 < 0 or days2 < 0 or level < 0:
+             return await ctx.send("Days and Level must be non-negative.")
+
+        # Use role1.id as key. We assume one path starting per role.
+        async with self.config.guild(ctx.guild).advanced_rewards() as adv:
+            adv[str(role1.id)] = {
+                "level": level,
+                "days1": days1,
+                "role2_id": str(role2.id),
+                "days2": days2
+            }
+        
+        await ctx.send(
+            f"Configured Advanced Reward:\n"
+            f"Level **{level}** + **{days1}** days -> Get **{role1.name}**\n"
+            f"**{days2}** days total -> Remove **{role1.name}**, Get **{role2.name}**"
+        )
+
+    @aboutset.command(name="advancedreward_remove")
+    async def aboutset_advancedreward_remove(self, ctx, role1: discord.Role):
+        """Remove an advanced reward configuration (specify the first role)."""
+        async with self.config.guild(ctx.guild).advanced_rewards() as adv:
+            if str(role1.id) in adv:
+                del adv[str(role1.id)]
+                await ctx.send(f"Removed advanced reward configuration starting with **{role1.name}**.")
+            else:
+                await ctx.send("That role is not configured as the start of an advanced reward path.")
+
+    @aboutset.command(name="advancedreward_list")
+    async def aboutset_advancedreward_list(self, ctx):
+        """List configured advanced reward paths."""
+        adv = await self.config.guild(ctx.guild).advanced_rewards()
+        if not adv:
+            return await ctx.send("No advanced reward paths configured.")
+        
+        lines = []
+        for r1_id, data in adv.items():
+            r1 = ctx.guild.get_role(int(r1_id))
+            r1_name = r1.mention if r1 else f"Deleted-Role-{r1_id}"
+            
+            r2_id = int(data['role2_id'])
+            r2 = ctx.guild.get_role(r2_id)
+            r2_name = r2.mention if r2 else f"Deleted-Role-{r2_id}"
+            
+            lines.append(f"Lvl {data['level']} + {data['days1']}d -> {r1_name} -> {data['days2']}d -> {r2_name}")
+            
+        await ctx.send(embed=discord.Embed(title="Advanced Reward Configurations", description="\n".join(lines), color=await ctx.embed_color()))
