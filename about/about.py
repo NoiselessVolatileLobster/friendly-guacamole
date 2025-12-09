@@ -1,6 +1,6 @@
 import discord
 from redbot.core import commands, Config
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
 from typing import Literal
 import asyncio
@@ -142,9 +142,11 @@ class About(commands.Cog):
             },
             "optin_roles": {}, 
             "reward_roles": {},
-            "advanced_rewards": {} # NEW: { "role1_id": { "level": int, "days1": int, "role2_id": int, "days2": int } }
+            "advanced_rewards": {} # { "role1_id": { "level": int, "days_initial": int, "role2_id": int, "duration": int } }
         }
         self.config.register_guild(**default_guild)
+        # Register member config to track when role1 was granted
+        self.config.register_member(role_start_times={}) 
         
         # Start the reward check loop
         self.check_rewards.start()
@@ -386,28 +388,37 @@ class About(commands.Cog):
                     # Grant Logic in Loop, here just display
                     progress_lines.append(f"{reward_role.mention}: Eligible! ✅")
 
-        # C. Advanced Rewards (New)
-        for r1_id, data in advanced_rewards.items():
-            r1 = ctx.guild.get_role(int(r1_id))
+        # C. Advanced Rewards
+        member_timestamps = await self.config.member(member).role_start_times()
+        for r1_id_str, data in advanced_rewards.items():
+            r1_id = int(r1_id_str)
+            r1 = ctx.guild.get_role(r1_id)
             r2 = ctx.guild.get_role(int(data['role2_id']))
             if not r1 or not r2: continue
 
             req_level = data['level']
-            req_days1 = data['days1']
-            req_days2 = data['days2']
+            req_days_initial = data['days_initial']
+            duration = data['duration']
 
             if r2 in member.roles:
-                progress_lines.append(f"{r2.mention} Unlocked (Advanced)!")
+                progress_lines.append(f"{r2.mention} Unlocked!")
             elif r1 in member.roles:
-                # User has role 1, working towards role 2
-                days_remaining = req_days2 - days_in_server
-                if days_remaining > 0:
-                     progress_lines.append(f"{r1.mention}: **{days_remaining}** days until {r2.mention}")
+                # User has Role 1. Check timestamp.
+                start_ts = member_timestamps.get(str(r1.id))
+                if start_ts:
+                    start_dt = datetime.fromtimestamp(start_ts, timezone.utc)
+                    days_held = (now - start_dt).days
+                    days_left = duration - days_held
+                    if days_left > 0:
+                        progress_lines.append(f"{r1.mention}: **{days_left}** days until {r2.mention}")
+                    else:
+                        progress_lines.append(f"{r2.mention}: Eligible for upgrade! ✅")
                 else:
-                     progress_lines.append(f"{r2.mention}: Eligible! ✅")
+                    # Has role but no timestamp (manually added?)
+                    progress_lines.append(f"{r1.mention}: **{duration}** days until {r2.mention} (Timer started)")
             else:
-                # User has neither, working towards role 1
-                days_remaining = req_days1 - days_in_server
+                # User has neither, working towards Role 1
+                days_remaining = req_days_initial - days_in_server
                 level_met = user_level >= req_level
                 days_met = days_remaining <= 0
 
@@ -460,7 +471,7 @@ class About(commands.Cog):
             reward_roles_config = await self.config.guild(guild).reward_roles()
             advanced_config = await self.config.guild(guild).advanced_rewards()
 
-            # Cache rewards
+            # Cache basic rewards
             active_rewards = []
             if reward_roles_config:
                 for rid, data in reward_roles_config.items():
@@ -468,13 +479,14 @@ class About(commands.Cog):
                     if r:
                         active_rewards.append((r, data['days'], data['level'], data.get('message'), data.get('channel_id')))
             
+            # Cache advanced rewards
             active_advanced = []
             if advanced_config:
                 for rid1, data in advanced_config.items():
                     r1 = guild.get_role(int(rid1))
                     r2 = guild.get_role(int(data['role2_id']))
                     if r1 and r2:
-                        active_advanced.append((r1, r2, data['level'], data['days1'], data['days2']))
+                        active_advanced.append((r1, r2, data['level'], data['days_initial'], data['duration']))
 
             if not active_rewards and not active_advanced:
                 continue
@@ -514,30 +526,53 @@ class About(commands.Cog):
                                 pass
 
                     # 2. Advanced Rewards
-                    for r1, r2, req_lvl, d1, d2 in active_advanced:
-                        # Logic:
-                        # If has R2, done.
-                        # If has R1: Check for Upgrade to R2
-                        # If has Neither: Check for Grant R1
-
+                    # Logic: 
+                    # - Grant R1 if eligible and save timestamp.
+                    # - If has R1, check timestamp vs duration -> Grant R2, Remove R1.
+                    for r1, r2, req_lvl, d_init, duration in active_advanced:
+                        
                         if r2 in member.roles:
-                            continue
+                            continue # Already has final role
 
                         if r1 in member.roles:
-                            # Check Upgrade
-                            if days_in >= d2:
-                                try:
-                                    await member.remove_roles(r1, reason="About Cog: Adv Upgrade Remove")
-                                    await asyncio.sleep(1)
-                                    await member.add_roles(r2, reason="About Cog: Adv Upgrade Add")
-                                    await asyncio.sleep(2)
-                                except (discord.Forbidden, discord.HTTPException):
-                                    pass
+                            # User has Role 1, check duration
+                            member_timestamps = await self.config.member(member).role_start_times()
+                            start_ts = member_timestamps.get(str(r1.id))
+                            
+                            current_ts = now.timestamp()
+                            
+                            if start_ts is None:
+                                # Role held but not tracked. Start tracking now.
+                                async with self.config.member(member).role_start_times() as times:
+                                    times[str(r1.id)] = current_ts
+                            else:
+                                # Check time passed
+                                start_dt = datetime.fromtimestamp(start_ts, timezone.utc)
+                                days_held = (now - start_dt).days
+                                
+                                if days_held >= duration:
+                                    # Upgrade!
+                                    try:
+                                        await member.remove_roles(r1, reason="About Cog: Adv Upgrade Remove")
+                                        await asyncio.sleep(1)
+                                        await member.add_roles(r2, reason="About Cog: Adv Upgrade Add")
+                                        
+                                        # Clean up timestamp
+                                        async with self.config.member(member).role_start_times() as times:
+                                            if str(r1.id) in times:
+                                                del times[str(r1.id)]
+                                                
+                                        await asyncio.sleep(2)
+                                    except (discord.Forbidden, discord.HTTPException):
+                                        pass
                         else:
-                            # Check Initial Grant
-                            if days_in >= d1 and level >= req_lvl:
+                            # User does not have R1 or R2. Check eligibility for R1.
+                            if days_in >= d_init and level >= req_lvl:
                                 try:
-                                    await member.add_roles(r1, reason="About Cog: Adv Initial")
+                                    await member.add_roles(r1, reason="About Cog: Adv Initial Grant")
+                                    # Save timestamp
+                                    async with self.config.member(member).role_start_times() as times:
+                                        times[str(r1.id)] = now.timestamp()
                                     await asyncio.sleep(2)
                                 except (discord.Forbidden, discord.HTTPException):
                                     pass
@@ -1265,7 +1300,7 @@ class About(commands.Cog):
         - role1: First role given after days1.
         - days1: Days in server required for role1.
         - role2: Second role given after days2 (replaces role1).
-        - days2: Days in server required for role2.
+        - days2: Duration to hold role1 before swapping to role2.
         """
         if days1 < 0 or days2 < 0 or level < 0:
              return await ctx.send("Days and Level must be non-negative.")
@@ -1274,15 +1309,15 @@ class About(commands.Cog):
         async with self.config.guild(ctx.guild).advanced_rewards() as adv:
             adv[str(role1.id)] = {
                 "level": level,
-                "days1": days1,
+                "days_initial": days1,
                 "role2_id": str(role2.id),
-                "days2": days2
+                "duration": days2
             }
         
         await ctx.send(
             f"Configured Advanced Reward:\n"
             f"Level **{level}** + **{days1}** days -> Get **{role1.name}**\n"
-            f"**{days2}** days total -> Remove **{role1.name}**, Get **{role2.name}**"
+            f"Hold **{role1.name}** for **{days2}** days -> Remove **{role1.name}**, Get **{role2.name}**"
         )
 
     @aboutset.command(name="advancedreward_remove")
@@ -1311,6 +1346,6 @@ class About(commands.Cog):
             r2 = ctx.guild.get_role(r2_id)
             r2_name = r2.mention if r2 else f"Deleted-Role-{r2_id}"
             
-            lines.append(f"Lvl {data['level']} + {data['days1']}d -> {r1_name} -> {data['days2']}d -> {r2_name}")
+            lines.append(f"Lvl {data['level']} + {data['days_initial']}d -> {r1_name} -> Hold {data['duration']}d -> {r2_name}")
             
         await ctx.send(embed=discord.Embed(title="Advanced Reward Configurations", description="\n".join(lines), color=await ctx.embed_color()))
