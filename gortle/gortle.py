@@ -102,7 +102,7 @@ class Gortle(commands.Cog):
 
     def _get_emoji_str(self, char: str, color: str) -> str:
         """Helper to format the emoji string."""
-        return f":{color}{char.upper()}:"
+        return f":{color}{char.lower()}:"
 
     def _get_keyboard_visual(self, state, solution) -> str:
         """Generates the QWERTY keyboard visual based on game state."""
