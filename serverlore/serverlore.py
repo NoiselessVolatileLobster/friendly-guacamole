@@ -100,6 +100,11 @@ class LoreView(discord.ui.View):
                 # Check if this exact entry exists in the config list
                 if item_to_delete in lore_data[str_id]:
                     lore_data[str_id].remove(item_to_delete)
+                    
+                    # Clean up empty keys so they don't appear in seealllore
+                    if not lore_data[str_id]:
+                        del lore_data[str_id]
+
                     log.info(f"Lore deleted by {self.ctx.author} for user {self.target_id}: {item_to_delete}")
                     deletion_success = True
 
@@ -159,7 +164,8 @@ class AllLoreView(discord.ui.View):
         super().__init__(timeout=180)
         self.ctx = ctx
         self.lore_data = lore_data
-        self.user_ids = list(lore_data.keys())
+        # Filter out users with empty lore lists (handles legacy empty entries)
+        self.user_ids = [uid for uid, entries in lore_data.items() if entries]
         self.selected_user_id = None
         self.page = 0
         self.per_page = 10
