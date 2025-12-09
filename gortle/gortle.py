@@ -17,10 +17,10 @@ class Gortle(commands.Cog):
     
     # Configuration for Emoji colors
     # You can change these strings if your emoji names differ
-    EMOJI_UNUSED = "pastelred"   # Letters that have not been guessed
+    EMOJI_UNUSED = "pastelorange"   # Letters that have not been guessed
     EMOJI_CORRECT = "pastelgreen" # Guessed and in right position
     EMOJI_PRESENT = "pastelyellow" # Guessed and in wrong position
-    EMOJI_ABSENT = "pastelblack"  # Guessed and NOT in the word (inferred)
+    EMOJI_ABSENT = "pastelred"  # Guessed and NOT in the word (inferred)
 
     def __init__(self, bot):
         self.bot = bot
