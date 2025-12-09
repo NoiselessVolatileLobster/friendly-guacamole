@@ -1,6 +1,6 @@
 import discord
 from redbot.core import Config, commands
-from redbot.core.commands import Context
+from redbot.core.commands import Context, TimedeltaConverter
 from redbot.core import checks
 from redbot.core.utils.chat_formatting import humanize_list
 from datetime import datetime, timezone
@@ -17,6 +17,9 @@ DEFAULT_GUILD = {
     "first_join_message": "Welcome, {user}! We are thrilled to have you here for the first time. Check out {role} to get started.",
     # Toggle for enabling/disabling welcome messages
     "welcome_enabled": True,
+    # Brand New Account settings
+    "brand_new_threshold": 0, # Seconds. 0 means disabled.
+    "brand_new_role_id": None,
 }
 DEFAULT_MEMBER = {
     "rejoin_count": 0,
@@ -38,17 +41,6 @@ class JoinTracker(commands.Cog):
     async def get_join_count(self, guild: discord.Guild, user_id: int) -> int:
         """
         Public API to retrieve the number of times a user has joined a guild.
-        
-        Usage from another cog:
-            cog = bot.get_cog("JoinTracker")
-            count = await cog.get_join_count(guild, user_id)
-
-        Args:
-            guild (discord.Guild): The guild to query.
-            user_id (int): The discord ID of the user.
-
-        Returns:
-            int: The number of times the user has joined. Returns 0 if no record exists.
         """
         member_config = self.config.member_from_ids(guild.id, user_id)
         data = await member_config.all()
@@ -76,6 +68,27 @@ class JoinTracker(commands.Cog):
         guild = member.guild
         member_data = await self.config.member(member).all()
         guild_settings = await self.config.guild(guild).all() # Fetch all guild settings
+        
+        # --- Brand New Account Logic ---
+        bn_threshold = guild_settings.get("brand_new_threshold", 0)
+        bn_role_id = guild_settings.get("brand_new_role_id")
+
+        if bn_threshold > 0 and bn_role_id:
+            # Calculate account age
+            account_age = datetime.now(timezone.utc) - member.created_at
+            
+            # Check if account is younger than the threshold
+            if account_age.total_seconds() < bn_threshold:
+                role = guild.get_role(bn_role_id)
+                if role:
+                    try:
+                        await member.add_roles(role, reason="JoinTracker: Brand new account detected.")
+                    except discord.Forbidden:
+                        print(f"JoinTracker Error: Could not assign 'Brand New' role in {guild.name}. Missing permissions.")
+                    except discord.HTTPException:
+                        print(f"JoinTracker Error: Failed to assign 'Brand New' role in {guild.name}.")
+
+        # --- Join Tracking Logic ---
         
         # Determine if this is a first-time join
         is_first_join = member_data["last_join_date"] is None and member_data["rejoin_count"] == 0
@@ -184,6 +197,36 @@ class JoinTracker(commands.Cog):
         """Manage the member join tracking settings."""
         pass
 
+    @jointracker.command(name="brandnew")
+    async def jointracker_brandnew(self, ctx: Context, duration: TimedeltaConverter, role: discord.Role):
+        """
+        Sets the threshold for assigning a role to brand new accounts.
+
+        <duration>: The age threshold (e.g. "12h", "30m", "2d"). Accounts younger than this get the role.
+        <role>: The role to assign.
+        """
+        # TimedeltaConverter returns a timedelta object. We convert to total seconds for storage.
+        seconds = int(duration.total_seconds())
+        
+        if seconds <= 0:
+            return await ctx.send("The threshold must be greater than 0.")
+            
+        await self.config.guild(ctx.guild).brand_new_threshold.set(seconds)
+        await self.config.guild(ctx.guild).brand_new_role_id.set(role.id)
+        
+        await ctx.send(
+            f"Successfully configured! Accounts created less than **{duration}** ago will automatically be assigned the **{role.name}** role upon joining."
+        )
+
+    @jointracker.command(name="brandnewdisable")
+    async def jointracker_brandnew_disable(self, ctx: Context):
+        """
+        Disables the Brand New Account role assignment feature.
+        """
+        await self.config.guild(ctx.guild).brand_new_threshold.set(0)
+        await self.config.guild(ctx.guild).brand_new_role_id.set(None)
+        await ctx.send("The Brand New Account feature has been disabled.")
+
     @jointracker.command(name="messagetoggle")
     async def jointracker_toggle(self, ctx: Context):
         """
@@ -211,9 +254,15 @@ class JoinTracker(commands.Cog):
         welcome_msg = guild_settings["welcome_message"]
         first_join_msg = guild_settings["first_join_message"]
         enabled = guild_settings["welcome_enabled"]
+        
+        # Brand New Settings
+        bn_threshold = guild_settings.get("brand_new_threshold", 0)
+        bn_role_id = guild_settings.get("brand_new_role_id")
 
         channel = ctx.guild.get_channel(channel_id) if channel_id else None
         role = ctx.guild.get_role(role_id) if role_id else None
+        
+        bn_role = ctx.guild.get_role(bn_role_id) if bn_role_id else None
 
         embed = discord.Embed(title=f"JoinTracker Settings for {ctx.guild.name}", color=await ctx.embed_color())
         
@@ -233,6 +282,18 @@ class JoinTracker(commands.Cog):
             value=role.mention if role else "Not Set", 
             inline=True
         )
+        
+        # Brand New Field
+        if bn_threshold > 0 and bn_role:
+            # Convert seconds back to rough readable string for display
+            hours = bn_threshold / 3600
+            embed.add_field(
+                name="Brand New Account",
+                value=f"Threshold: **{hours:.1f} hours**\nRole: {bn_role.mention}",
+                inline=False
+            )
+        else:
+            embed.add_field(name="Brand New Account", value="Disabled", inline=False)
         
         embed.add_field(name="\u200b", value="\u200b", inline=False) # Spacer
 
@@ -330,8 +391,6 @@ class JoinTracker(commands.Cog):
             return await ctx.send("The rejoin count must be zero or a positive number.")
 
         # Use member_from_ids to explicitly scope to the guild ID and member ID.
-        # This handles both Member (in-server) and User (out-of-server) objects correctly
-        # without triggering AttributeError (missing guild) or TypeError (arg count).
         config_member = self.config.member_from_ids(ctx.guild.id, target.id)
 
         # 1. Set the rejoin count
