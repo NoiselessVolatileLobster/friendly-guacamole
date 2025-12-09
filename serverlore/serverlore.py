@@ -159,13 +159,16 @@ class ServerLore(commands.Cog):
     @commands.guild_only()
     async def newlore(self, ctx, user: discord.Member, *, message: str):
         """Create a new lore entry for a user."""
+        # Send the confirmation message FIRST to capture its ID/Link
+        bot_msg = await ctx.send(f"✅ New lore added for **{user.display_name}**.")
+        
         entry = {
             "user": user.id,
             "author": ctx.author.id,
             "content": message,
             "date": time.time(),
             "type": "RegularNote",
-            "link": ctx.message.jump_url
+            "link": bot_msg.jump_url
         }
 
         async with self.config.guild(ctx.guild).lore() as lore_data:
@@ -173,8 +176,6 @@ class ServerLore(commands.Cog):
             if str_id not in lore_data:
                 lore_data[str_id] = []
             lore_data[str_id].append(entry)
-
-        await ctx.send(f"✅ New lore added for **{user.display_name}**.")
 
     @commands.command()
     @commands.guild_only()
