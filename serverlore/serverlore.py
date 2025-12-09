@@ -4,6 +4,7 @@ import time
 import io
 import logging
 from typing import Union, List, Dict, Optional
+import math
 
 from redbot.core import commands, Config, checks
 from redbot.core.utils.chat_formatting import pagify, box
@@ -153,6 +154,163 @@ class LoreView(discord.ui.View):
         self.update_buttons()
         await interaction.response.edit_message(embed=self.get_embed(), view=self)
 
+class AllLoreView(discord.ui.View):
+    def __init__(self, ctx, lore_data: Dict):
+        super().__init__(timeout=180)
+        self.ctx = ctx
+        self.lore_data = lore_data
+        self.user_ids = list(lore_data.keys())
+        self.selected_user_id = None
+        self.page = 0
+        self.per_page = 10
+        self.options_per_select = 25
+        
+        # User list pagination (for select menu)
+        self.user_list_page = 0
+        
+        # Initialize UI
+        self.update_ui()
+
+    def get_embed(self) -> discord.Embed:
+        if not self.selected_user_id:
+            embed = discord.Embed(title="Server Lore - All Entries", color=discord.Color.gold())
+            embed.description = "Please select a user from the dropdown menu to view their lore."
+            embed.set_footer(text=f"Total Users with Lore: {len(self.user_ids)}")
+            return embed
+        
+        entries = self.lore_data.get(self.selected_user_id, [])
+        total_entries = len(entries)
+        total_pages = math.ceil(total_entries / self.per_page)
+        
+        # Slice entries for current page
+        start = self.page * self.per_page
+        end = start + self.per_page
+        current_entries = entries[start:end]
+        
+        # Get username
+        try:
+            member = self.ctx.guild.get_member(int(self.selected_user_id))
+            username = member.display_name if member else f"User {self.selected_user_id}"
+        except:
+            username = f"User {self.selected_user_id}"
+
+        embed = discord.Embed(title=f"Lore for {username}", color=discord.Color.blue())
+        
+        desc_lines = []
+        for entry in current_entries:
+            content = entry.get("content", "No content")
+            link = entry.get("link")
+            
+            # Truncate content if too long for a single line summary
+            if len(content) > 50:
+                content = content[:47] + "..."
+            
+            line = f"• {content}"
+            if link:
+                line += f" ([Link]({link}))"
+            desc_lines.append(line)
+        
+        if not desc_lines:
+            embed.description = "No lore entries found."
+        else:
+            embed.description = "\n".join(desc_lines)
+            
+        if total_pages > 1:
+            embed.set_footer(text=f"Page {self.page + 1} of {total_pages}")
+            
+        return embed
+
+    def update_ui(self):
+        self.clear_items()
+        
+        # --- SELECT MENU ---
+        # Handle user list pagination for the dropdown
+        start_user = self.user_list_page * self.options_per_select
+        end_user = start_user + self.options_per_select
+        current_users = self.user_ids[start_user:end_user]
+        
+        options = []
+        for uid in current_users:
+            try:
+                member = self.ctx.guild.get_member(int(uid))
+                label = member.display_name if member else f"User {uid}"
+            except:
+                label = f"User {uid}"
+            
+            # Label limit is 100 chars
+            label = label[:100]
+            options.append(discord.SelectOption(
+                label=label, 
+                value=uid, 
+                default=(uid == self.selected_user_id)
+            ))
+        
+        if options:
+            select = discord.ui.Select(
+                placeholder=f"Select User (Page {self.user_list_page + 1})", 
+                options=options, 
+                min_values=1, 
+                max_values=1,
+                row=0
+            )
+            select.callback = self.on_select
+            self.add_item(select)
+            
+        # --- USER LIST PAGINATION BUTTONS ---
+        # If we have more users than fit in one select, add buttons to cycle user list
+        total_user_pages = math.ceil(len(self.user_ids) / self.options_per_select)
+        if total_user_pages > 1:
+            prev_users = discord.ui.Button(label="<< Prev Users", row=1, disabled=(self.user_list_page == 0), style=discord.ButtonStyle.secondary)
+            prev_users.callback = self.on_prev_users
+            self.add_item(prev_users)
+            
+            next_users = discord.ui.Button(label="Next Users >>", row=1, disabled=(self.user_list_page >= total_user_pages - 1), style=discord.ButtonStyle.secondary)
+            next_users.callback = self.on_next_users
+            self.add_item(next_users)
+
+        # --- LORE PAGINATION BUTTONS ---
+        # Only show if a user is selected and has enough lore
+        if self.selected_user_id:
+            entries = self.lore_data.get(self.selected_user_id, [])
+            total_pages = math.ceil(len(entries) / self.per_page)
+            
+            if total_pages > 1:
+                prev_lore = discord.ui.Button(label="◀ Lore", row=2, disabled=(self.page == 0), style=discord.ButtonStyle.primary)
+                prev_lore.callback = self.on_prev_lore
+                self.add_item(prev_lore)
+                
+                next_lore = discord.ui.Button(label="Lore ▶", row=2, disabled=(self.page >= total_pages - 1), style=discord.ButtonStyle.primary)
+                next_lore.callback = self.on_next_lore
+                self.add_item(next_lore)
+
+    async def on_select(self, interaction: discord.Interaction):
+        self.selected_user_id = interaction.data["values"][0]
+        self.page = 0 # Reset lore page
+        self.update_ui()
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+        
+    async def on_prev_users(self, interaction: discord.Interaction):
+        self.user_list_page -= 1
+        self.selected_user_id = None # Reset selection when changing user page list
+        self.update_ui()
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    async def on_next_users(self, interaction: discord.Interaction):
+        self.user_list_page += 1
+        self.selected_user_id = None # Reset selection when changing user page list
+        self.update_ui()
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    async def on_prev_lore(self, interaction: discord.Interaction):
+        self.page -= 1
+        self.update_ui()
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
+    async def on_next_lore(self, interaction: discord.Interaction):
+        self.page += 1
+        self.update_ui()
+        await interaction.response.edit_message(embed=self.get_embed(), view=self)
+
 class ConfirmationView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=60)
@@ -280,25 +438,13 @@ class ServerLore(commands.Cog):
     @commands.command()
     @checks.admin_or_permissions(administrator=True)
     async def seealllore(self, ctx):
-        """Display all known lore for the server."""
+        """Display all known lore for the server using an interactive menu."""
         lore_data = await self.config.guild(ctx.guild).lore()
         if not lore_data:
             return await ctx.send("No lore exists in this server.")
 
-        output = ""
-        count = 0
-        for uid, entries in lore_data.items():
-            count += len(entries)
-            output += f"**User ID: {uid}** ({len(entries)} entries)\n"
-
-        if not output:
-             return await ctx.send("No lore entries found.")
-             
-        header = f"Total Lore Entries: {count}\n\n"
-        pages = list(pagify(header + output))
-        
-        for page in pages:
-            await ctx.send(page)
+        view = AllLoreView(ctx, lore_data)
+        await ctx.send(embed=view.get_embed(), view=view)
 
     @commands.command()
     @checks.admin_or_permissions(administrator=True)
