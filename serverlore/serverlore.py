@@ -34,12 +34,7 @@ class LoreView(discord.ui.View):
         
         # Remove delete button if not mod
         if not self.is_mod:
-            # The delete button is the middle one (index 1 in this list of buttons added by decorators? 
-            # No, standard view uses item order.
-            # Items: Previous (0), Delete (1), Next (2)
             # We filter children by custom_id to be safe
-            
-            # Note: We must iterate a copy or list because we are modifying the view
             for item in self.children:
                 if getattr(item, "custom_id", "") == "delete_btn":
                     self.remove_item(item)
@@ -90,6 +85,8 @@ class LoreView(discord.ui.View):
         if not self.is_mod:
             return await interaction.response.send_message("You do not have permission to delete lore.", ephemeral=True)
 
+        deletion_success = False
+
         # Logic to remove from config
         async with self.cog.config.guild(self.ctx.guild).lore() as lore_data:
             str_id = str(self.target_id)
@@ -97,24 +94,34 @@ class LoreView(discord.ui.View):
                 # We fetch the specific item currently being viewed to ensure we delete the right one
                 # incase the list shifted (rare race condition, but safe approach)
                 item_to_delete = self.entries[self.index]
+                
+                # Check if this exact entry exists in the config list
                 if item_to_delete in lore_data[str_id]:
                     lore_data[str_id].remove(item_to_delete)
                     log.info(f"Lore deleted by {self.ctx.author} for user {self.target_id}: {item_to_delete}")
-                    await interaction.followup.send(f"Entry deleted by {self.ctx.author.mention}.", ephemeral=True)
-                
-                # Update local list
-                self.entries.pop(self.index)
-                self.total = len(self.entries)
+                    deletion_success = True
 
-        if self.total == 0:
-            await interaction.response.edit_message(content="No lore entries remaining.", embed=None, view=None)
-            self.stop()
+        if deletion_success:
+            # Update local list
+            self.entries.pop(self.index)
+            self.total = len(self.entries)
+
+            if self.total == 0:
+                # If no entries left, edit the message to say so and stop the view
+                await interaction.response.edit_message(content="No lore entries remaining.", embed=None, view=None)
+                self.stop()
+            else:
+                # Adjust index if we deleted the last item
+                if self.index >= self.total:
+                    self.index = self.total - 1
+                self.update_buttons()
+                # Update the message with the new list state
+                await interaction.response.edit_message(embed=self.get_embed(), view=self)
+            
+            # Send confirmation as a followup (must be done AFTER the response)
+            await interaction.followup.send(f"Entry deleted by {self.ctx.author.mention}.", ephemeral=True)
         else:
-            # Adjust index if we deleted the last item
-            if self.index >= self.total:
-                self.index = self.total - 1
-            self.update_buttons()
-            await interaction.response.edit_message(embed=self.get_embed(), view=self)
+            await interaction.response.send_message("Could not find that entry to delete. It may have already been removed.", ephemeral=True)
 
     @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary)
     async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
