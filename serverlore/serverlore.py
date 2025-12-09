@@ -7,6 +7,7 @@ from typing import Union, List, Dict, Optional
 
 from redbot.core import commands, Config, checks
 from redbot.core.utils.chat_formatting import pagify, box
+from redbot.core.utils.mod import is_mod_or_superior
 
 log = logging.getLogger("red.serverlore")
 
@@ -26,16 +27,22 @@ class LoreView(discord.ui.View):
     async def check_perms(self):
         # We check perms asynchronously before sending
         is_owner = await self.ctx.bot.is_owner(self.ctx.author)
-        is_admin = await self.ctx.bot.permissions.is_admin(self.ctx.author)
-        is_mod = await self.ctx.bot.permissions.is_mod(self.ctx.author)
-        self.is_mod = is_owner or is_admin or is_mod
+        # is_mod_or_superior checks for Mod role, Admin role, or Guild Owner
+        is_mod = await is_mod_or_superior(self.ctx.bot, self.ctx.author)
+        self.is_mod = is_owner or is_mod
         
         # Remove delete button if not mod
         if not self.is_mod:
-            # The delete button is the middle one (index 2)
-            # Previous, Counter, Delete, Next
-            # We filter children to remove the one with custom_id 'delete_btn'
-            self.remove_item(self.delete_entry)
+            # The delete button is the middle one (index 1 in this list of buttons added by decorators? 
+            # No, standard view uses item order.
+            # Items: Previous (0), Delete (1), Next (2)
+            # We filter children by custom_id to be safe
+            
+            # Note: We must iterate a copy or list because we are modifying the view
+            for item in self.children:
+                if getattr(item, "custom_id", "") == "delete_btn":
+                    self.remove_item(item)
+                    break
 
     def get_embed(self) -> discord.Embed:
         entry = self.entries[self.index]
@@ -59,8 +66,13 @@ class LoreView(discord.ui.View):
         return embed
 
     def update_buttons(self):
-        self.previous_page.disabled = self.index == 0
-        self.next_page.disabled = self.index == self.total - 1
+        # We need to find the specific buttons to enable/disable them
+        # Since we might have removed the delete button, we can't rely on fixed indices
+        for item in self.children:
+            if getattr(item, "label", "") == "◀":
+                item.disabled = self.index == 0
+            elif getattr(item, "label", "") == "▶":
+                item.disabled = self.index == self.total - 1
         
         if self.total == 0:
             self.stop()
@@ -177,7 +189,8 @@ class ServerLore(commands.Cog):
             is_member = ctx.guild.get_member(user_id) is not None
 
         # Check permissions regarding left users
-        is_mod = await self.bot.permissions.is_mod(ctx.author) or await self.bot.is_owner(ctx.author)
+        # is_mod_or_superior checks for Mod role, Admin role, or Guild Owner in Red's config
+        is_mod = await is_mod_or_superior(self.bot, ctx.author) or await self.bot.is_owner(ctx.author)
         
         if not is_member and not is_mod:
             return await ctx.send("That user is no longer in this server.")
@@ -260,10 +273,6 @@ class ServerLore(commands.Cog):
         
         # Save to config
         async with self.config.guild(ctx.guild).lore() as lore_data:
-            # We merge imported data with existing data, or overwrite? 
-            # Request implies just "import", usually implies merging or overwriting. 
-            # I will perform a merge (append entries) to be safe, unless key exists.
-            
             count = 0
             for uid, entries in data.items():
                 if not isinstance(entries, list):
