@@ -12,12 +12,13 @@ from redbot.core.utils.mod import is_mod_or_superior
 log = logging.getLogger("red.serverlore")
 
 class LoreView(discord.ui.View):
-    def __init__(self, ctx, entries: List[Dict], target_id: int, cog: "ServerLore"):
+    def __init__(self, ctx, entries: List[Dict], target_id: int, cog: "ServerLore", user_name: Optional[str] = None):
         super().__init__(timeout=120)
         self.ctx = ctx
         self.entries = entries
         self.target_id = target_id
         self.cog = cog
+        self.user_name = user_name
         self.index = 0
         self.total = len(entries)
         
@@ -53,7 +54,8 @@ class LoreView(discord.ui.View):
         timestamp = entry.get("date", 0)
         link = entry.get("link", None)
         
-        embed = discord.Embed(title=f"Lore for User ID: {self.target_id}", color=discord.Color.blue())
+        title_text = f"Lore for {self.user_name}" if self.user_name else f"Lore for User ID: {self.target_id}"
+        embed = discord.Embed(title=title_text, color=discord.Color.blue())
         embed.description = content
         
         embed.add_field(name="Author", value=f"<@{author_id}> ({author_id})")
@@ -201,7 +203,8 @@ class ServerLore(commands.Cog):
         if not user_lore:
             return await ctx.send(f"No lore found for ID {user_id}.")
 
-        view = LoreView(ctx, user_lore, user_id, self)
+        user_name = user_obj.display_name if user_obj else None
+        view = LoreView(ctx, user_lore, user_id, self, user_name=user_name)
         await view.check_perms()
         view.update_buttons()
         
