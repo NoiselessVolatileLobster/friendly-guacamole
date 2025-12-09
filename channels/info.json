@@ -1,10 +1,11 @@
 {
-    "author": "NoiselessVolatileLobster",
+    "author": ["NoiselessVolatileLobster"],
     "version": "1.0.0",
     "description": "Manage and display channel categories with interactive buttons.",
     "install_msg": "Thank you for installing Channels! Configure it using `[p]channelset`.",
     "short": "Interactive channel navigator.",
     "min_bot_version": "3.5.0",
     "hidden": false,
-    "end_user_data_statement": "This cog does not store end user data."
+    "end_user_data_statement": "This cog does not store end user data.",
+    "tags": ["utility", "serverinfo"]
 }

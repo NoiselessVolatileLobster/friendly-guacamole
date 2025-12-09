@@ -1,0 +1,11 @@
+{
+    "author": ["NoiselessVolatileLobster"],
+    "version": "1.0.0",
+    "description": "Set Ephemeral mode for new users",
+    "install_msg": "Thank you for installing Ephemeral! Configure it using `[p]ephemeralset`.",
+    "short": "Keep new users who lurk at bay",
+    "min_bot_version": "3.5.0",
+    "hidden": false,
+    "end_user_data_statement": "This cog stores basic end user data. (User ID and join time)",
+    "tags": ["utility", "moderation"]
+}

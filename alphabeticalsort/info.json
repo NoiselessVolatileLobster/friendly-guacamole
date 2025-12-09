@@ -1,8 +1,8 @@
 {
-    "author": "NoiselessVolatileLobster",
+    "author": ["NoiselessVolatileLobster"],
     "version": "0.0.1",
     "min_bot_version": "3.5.0",
     "description": "Sort channels alphabetically",
     "short": "Sort channels alphabetically",
-    "tags": ["utility", "userinfo"]
+    "tags": ["utility"]
 }

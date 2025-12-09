@@ -1,9 +1,9 @@
 {
-    "author": "NoiselessVolatileLobster",
+    "author": ["NoiselessVolatileLobster"],
     "version": "1.0.0",
     "description": "A robust birthday system with UI buttons, specific imports, and role management.",
     "install_msg": "Thanks for installing AdvancedBirthdays! Configure it using `[p]bset`.",
     "short": "Manage birthdays with buttons and timezone support.",
     "requirements": ["pytz"],
-    "tags": ["birthdays", "utility", "community"]
+    "tags": ["birthdays", "utility", "community", "userinfo"]
 }
