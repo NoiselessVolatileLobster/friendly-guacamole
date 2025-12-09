@@ -101,8 +101,19 @@ class Gortle(commands.Cog):
             self.guesses = ["failed"]
 
     def _get_emoji_str(self, char: str, color: str) -> str:
-        """Helper to format the emoji string."""
-        return f":{color}{char.lower()}:"
+        """Helper to format the emoji string.
+        Searches the bot's known emojis for a match.
+        """
+        emoji_name = f"{color}{char.lower()}"
+        # Search all emojis the bot can see
+        emoji = discord.utils.get(self.bot.emojis, name=emoji_name)
+        
+        if emoji:
+            # Return the full ID format <::id>
+            return str(emoji)
+        
+        # Fallback to text if not found (helps debug what is missing)
+        return f":{emoji_name}:"
 
     def _get_keyboard_visual(self, state, solution) -> str:
         """Generates the QWERTY keyboard visual based on game state."""
