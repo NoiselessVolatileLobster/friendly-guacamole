@@ -1,0 +1,8 @@
+{
+    "author": ["NoiselessVolatileLobster"],
+    "version": "1.0.0",
+    "description": "Bulk upload emojis via command attachments.",
+    "tags": ["emoji", "utility", "admin"],
+    "requirements": [],
+    "end_user_data_statement": "This cog does not persistently store any end user data."
+}
