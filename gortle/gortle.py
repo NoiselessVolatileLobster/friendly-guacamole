@@ -493,7 +493,11 @@ class Gortle(commands.Cog):
              description = f"*(Previous guesses hidden)*\n{description}"
 
         embed = discord.Embed(title=f"Gortle #{game_num}", description=description, color=discord.Color.blue())
-        embed.add_field(name="Points Gained", value=str(points), inline=True)
+        
+        # Get total round points for the embed
+        total_round_points = round_scores.get(str_uid, 0)
+        
+        embed.add_field(name="Points Gained", value=f"+{points} ({total_round_points} points this round)", inline=True)
         embed.add_field(name="Keyboard", value=keyboard_view, inline=False)
         
         thumb = await self.config.guild(message.guild).thumbnail_url()
