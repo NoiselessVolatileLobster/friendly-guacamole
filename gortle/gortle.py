@@ -55,7 +55,8 @@ class Gortle(commands.Cog):
         default_guild = {
             "channel_id": None,
             "mention_role": None,
-            "cooldown_seconds": 60
+            "cooldown_seconds": 60,
+            "thumbnail_url": None 
         }
 
         default_member = {
@@ -209,6 +210,9 @@ class Gortle(commands.Cog):
 
             if active and old_word:
                 embed = discord.Embed(title="Gortle Expired!", description=f"The word was **{old_word.upper()}**.", color=discord.Color.red())
+                thumb = await self.config.guild(target_channel.guild).thumbnail_url()
+                if thumb:
+                    embed.set_thumbnail(url=thumb)
                 await target_channel.send(embed=embed)
 
             # Pick new word
@@ -252,6 +256,11 @@ class Gortle(commands.Cog):
             
             embed = discord.Embed(title=f"New Gortle Started! (#{game_num})", description="Guess the 6-letter word by mentioning me!", color=discord.Color.green())
             embed.add_field(name="Keyboard", value=keyboard_view, inline=False)
+            
+            thumb = await self.config.guild(target_channel.guild).thumbnail_url()
+            if thumb:
+                embed.set_thumbnail(url=thumb)
+                
             await target_channel.send(content=mention, embed=embed)
 
     async def check_weekly_role(self, now):
@@ -435,6 +444,10 @@ class Gortle(commands.Cog):
         # Add the keyboard visual
         embed.add_field(name="Keyboard", value=keyboard_view, inline=False)
         
+        thumb = await self.config.guild(message.guild).thumbnail_url()
+        if thumb:
+            embed.set_thumbnail(url=thumb)
+
         await message.channel.send(embed=embed)
 
         if guess == solution:
@@ -456,6 +469,10 @@ class Gortle(commands.Cog):
         embed.add_field(name="Solution", value=await self.config.current_word())
         embed.add_field(name="Prize", value=f"{prize} {currency}")
         
+        thumb = await self.config.guild(channel.guild).thumbnail_url()
+        if thumb:
+            embed.set_thumbnail(url=thumb)
+
         await channel.send(embed=embed)
 
     # --- Commands ---
@@ -495,6 +512,18 @@ class Gortle(commands.Cog):
         """Set the role to verify/mention for new games."""
         await self.config.guild(ctx.guild).mention_role.set(role.id)
         await ctx.send(f"Notification role set to {role.name}")
+    
+    @gortleset.command()
+    async def thumbnail(self, ctx, url: str = None):
+        """Set the thumbnail URL for the game embeds. Leave empty to clear."""
+        if not url:
+            await self.config.guild(ctx.guild).thumbnail_url.set(None)
+            await ctx.send("Thumbnail cleared.")
+        else:
+            if not url.startswith("http"):
+                 return await ctx.send("That doesn't look like a valid URL.")
+            await self.config.guild(ctx.guild).thumbnail_url.set(url)
+            await ctx.send(f"Thumbnail set to: <{url}>")
 
     @gortleset.command()
     async def schedule(self, ctx, minutes: int):
@@ -551,6 +580,27 @@ class Gortle(commands.Cog):
         """Clear all scores."""
         await self.config.clear_all_members(ctx.guild)
         await ctx.send("All scores cleared.")
+        
+    @gortleadmin.command()
+    async def hardreset(self, ctx):
+        """Resets the game number, used words, and all user scores."""
+        await ctx.send("Are you sure you want to reset EVERYTHING? This includes the game count, history of used words, and all user leaderboards. Type `yes` to confirm.")
+        try:
+            pred = lambda m: m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == "yes"
+            await self.bot.wait_for("message", check=pred, timeout=30)
+        except asyncio.TimeoutError:
+            return await ctx.send("Reset cancelled.")
+
+        # Reset Global Data
+        await self.config.game_number.set(0)
+        await self.config.used_words.set([])
+        await self.config.game_active.set(False)
+        await self.config.current_word.set(None)
+        
+        # Reset Member Data (Leaderboard)
+        await self.config.clear_all_members(ctx.guild)
+        
+        await ctx.send("Gortle has been completely reset.")
 
     @gortleadmin.command()
     async def removeuser(self, ctx, member: discord.Member):
