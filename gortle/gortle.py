@@ -383,11 +383,8 @@ class Gortle(commands.Cog):
         
         if not await self.config.game_active():
             return
-
-        if guess not in self.guesses:
-            await message.channel.send("I do not think that word is in my dictionary.", delete_after=5)
-            return
-
+            
+        # 1. Cooldown Check FIRST
         cooldown = await self.config.guild(message.guild).cooldown_seconds()
         last_guess = await self.config.member(message.author).last_guess_time()
         now = datetime.datetime.now(datetime.timezone.utc).timestamp()
@@ -399,6 +396,11 @@ class Gortle(commands.Cog):
                 await message.channel.send(f"{message.author.mention}, you need to wait. Next guess: <t:{next_time}:R>", delete_after=5)
             except discord.Forbidden:
                 pass
+            return
+
+        # 2. Dictionary Check SECOND
+        if guess not in self.guesses:
+            await message.channel.send("I do not think that word is in my dictionary.", delete_after=5)
             return
 
         await self.config.member(message.author).last_guess_time.set(int(now))
@@ -504,7 +506,7 @@ class Gortle(commands.Cog):
              actual_idx = idx if len(full_history) < 20 else (len(full_history) - 20 + idx)
              user = message.guild.get_member(entry['user_id'])
              user_name = user.display_name if user else "Unknown"
-             history_lines.append(f"**{actual_idx}.** {entry['visual']} (**{user_name}**)")
+             history_lines.append(f"`{actual_idx}.` {entry['visual']} (**{user_name}**)")
 
         description = "\n".join(history_lines)
         if len(full_history) >= 20:
