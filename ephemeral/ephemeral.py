@@ -707,6 +707,15 @@ class Ephemeral(commands.Cog):
         if not channel_id:
             return
 
+        # NEW: Check for quick leavers (< 10 minutes)
+        join_time = member.joined_at or datetime.utcnow()
+        if join_time.tzinfo:
+            join_time = join_time.replace(tzinfo=None)
+        
+        time_passed = datetime.utcnow() - join_time
+        if time_passed < timedelta(minutes=10):
+            return
+
         # Check for Not Started Role
         not_started_role_id = settings.get("ephemeral_not_started_role_id")
         if not_started_role_id:
