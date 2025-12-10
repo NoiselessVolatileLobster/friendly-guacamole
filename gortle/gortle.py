@@ -615,7 +615,15 @@ class Gortle(commands.Cog):
         except:
             currency = "credits"
 
-        embed = discord.Embed(title=f"Gortle #{game_num} Solved!", 
+        # Fetch custom title emojis
+        yay2 = discord.utils.get(self.bot.emojis, name="yay2")
+        yay = discord.utils.get(self.bot.emojis, name="yay")
+        
+        # Use str() for emoji objects to get proper ID format, else fallback to text
+        yay2_str = str(yay2) if yay2 else ":yay2:"
+        yay_str = str(yay) if yay else ":yay:"
+
+        embed = discord.Embed(title=f"{yay2_str} Gortle #{game_num} Solved! {yay_str}", 
                               description=f"**{winner.mention}** guessed the word correctly!", 
                               color=discord.Color.gold())
         embed.add_field(name="Solution", value=await self.config.current_word(), inline=False)
