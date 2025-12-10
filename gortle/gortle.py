@@ -109,10 +109,19 @@ class Gortle(commands.Cog):
             self.solutions = ["failed"]
             self.guesses = ["failed"]
 
+    def _find_emoji(self, name_query: str) -> Optional[discord.Emoji]:
+        """Case-insensitive search for an emoji."""
+        target = name_query.lower()
+        # Search all emojis the bot can see
+        for emoji in self.bot.emojis:
+            if emoji.name.lower() == target:
+                return emoji
+        return None
+
     def _get_emoji_str(self, char: str, color: str) -> str:
         """Helper to format the emoji string."""
         emoji_name = f"{color}{char.lower()}"
-        emoji = discord.utils.get(self.bot.emojis, name=emoji_name)
+        emoji = self._find_emoji(emoji_name)
         if emoji:
             return str(emoji)
         return f":{emoji_name}:"
@@ -144,7 +153,7 @@ class Gortle(commands.Cog):
                         letter_status[char] = self.EMOJI_PRESENT
         
         # Fetch spacer emoji
-        spacer = discord.utils.get(self.bot.emojis, name="greysquare")
+        spacer = self._find_emoji("greysquare")
         spacer_str = str(spacer) if spacer else ":greysquare:"
 
         for i, row in enumerate(rows):
@@ -615,9 +624,9 @@ class Gortle(commands.Cog):
         except:
             currency = "credits"
 
-        # Fetch custom title emojis
-        yay2 = discord.utils.get(self.bot.emojis, name="yay2")
-        yay = discord.utils.get(self.bot.emojis, name="yay")
+        # Fetch custom title emojis (Case-insensitive)
+        yay2 = self._find_emoji("yay2")
+        yay = self._find_emoji("yay")
         
         # Use str() for emoji objects to get proper ID format, else fallback to text
         yay2_str = str(yay2) if yay2 else ":yay2:"
