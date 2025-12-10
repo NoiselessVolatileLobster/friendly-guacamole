@@ -142,13 +142,12 @@ class About(commands.Cog):
             },
             "optin_roles": {}, 
             "reward_roles": {},
-            "advanced_rewards": {} # { "request_role_id": { "level": int, "role1_id": int, "days_min": int, "role2_id": int, "duration": int } }
+            "advanced_rewards": {},
+            "secret_rewards": {} # { "role_id": { "level": int, "days": int, "channel_id": int } }
         }
         self.config.register_guild(**default_guild)
-        # Register member config to track when role1 was granted
         self.config.register_member(role_start_times={}) 
         
-        # Start the reward check loop
         self.check_rewards.start()
 
     def cog_unload(self):
@@ -385,6 +384,7 @@ class About(commands.Cog):
                 elif not level_met:
                     progress_lines.append(f"{reward_role.mention}: Reach Level **{required_level}**")
                 else:
+                    # Grant Logic in Loop, here just display
                     progress_lines.append(f"{reward_role.mention}: Eligible! ✅")
 
         # C. Advanced Rewards
@@ -470,6 +470,7 @@ class About(commands.Cog):
 
             # Load Configs
             reward_roles_config = await self.config.guild(guild).reward_roles()
+            secret_rewards_config = await self.config.guild(guild).secret_rewards()
             advanced_config = await self.config.guild(guild).advanced_rewards()
 
             # Cache basic rewards
@@ -478,8 +479,14 @@ class About(commands.Cog):
                 for rid, data in reward_roles_config.items():
                     r = guild.get_role(int(rid))
                     if r:
-                        active_rewards.append((r, data['days'], data['level'], data.get('message'), data.get('channel_id')))
+                        active_rewards.append((r, data['days'], data['level'], data.get('message'), data.get('channel_id'), False)) # False = Not Secret
             
+            if secret_rewards_config:
+                for rid, data in secret_rewards_config.items():
+                    r = guild.get_role(int(rid))
+                    if r:
+                        active_rewards.append((r, data['days'], data['level'], None, data.get('channel_id'), True)) # True = Secret
+
             # Cache advanced rewards
             active_advanced = []
             if advanced_config:
@@ -507,56 +514,60 @@ class About(commands.Cog):
                     else:
                         days_in = 0
 
-                    # 1. Standard Rewards
-                    for role, req_days, req_level, msg, ch_id in active_rewards:
+                    # 1. Standard & Secret Rewards
+                    for role, req_days, req_level, msg, ch_id, is_secret in active_rewards:
                         if role in member.roles:
                             continue
 
                         if days_in >= req_days and level >= req_level:
                             try:
                                 await member.add_roles(role, reason="About Cog: Auto-Reward")
-                                if msg and ch_id:
+                                if ch_id:
                                     alert_channel = guild.get_channel(ch_id)
                                     if alert_channel:
-                                        try:
-                                            final_message = msg.replace("{mention}", member.mention)
-                                            await alert_channel.send(final_message)
-                                        except discord.Forbidden:
-                                            pass
+                                        if is_secret:
+                                            # Ghost Ping
+                                            try:
+                                                ping = await alert_channel.send(member.mention)
+                                                await asyncio.sleep(5)
+                                                await ping.delete()
+                                            except (discord.Forbidden, discord.HTTPException):
+                                                pass
+                                        elif msg:
+                                            # Standard Message
+                                            try:
+                                                final_message = msg.replace("{mention}", member.mention)
+                                                await alert_channel.send(final_message)
+                                            except (discord.Forbidden, discord.HTTPException):
+                                                pass
                                 await asyncio.sleep(2)
                             except (discord.Forbidden, discord.HTTPException):
                                 pass
 
                     # 2. Advanced Rewards
-                    # Config Structure: req_role -> (level, role1, days_min) -> (role2, duration)
                     for req_role, r1, r2, req_lvl, d_min, duration in active_advanced:
                         
                         if r2 in member.roles:
-                            continue # Finished path
+                            continue
 
                         if r1 in member.roles:
-                            # User has Role 1 (Intermediate). Check duration.
                             member_timestamps = await self.config.member(member).role_start_times()
                             start_ts = member_timestamps.get(str(r1.id))
                             current_ts = now.timestamp()
                             
                             if start_ts is None:
-                                # Has role but no timestamp. Start timer.
                                 async with self.config.member(member).role_start_times() as times:
                                     times[str(r1.id)] = current_ts
                             else:
-                                # Check elapsed time
                                 start_dt = datetime.fromtimestamp(start_ts, timezone.utc)
                                 days_held = (now - start_dt).days
                                 
                                 if days_held >= duration:
-                                    # Upgrade: Remove R1, Add R2
                                     try:
                                         await member.remove_roles(r1, reason="About Cog: Adv Upgrade Remove")
                                         await asyncio.sleep(1)
                                         await member.add_roles(r2, reason="About Cog: Adv Upgrade Add")
                                         
-                                        # Cleanup timestamp
                                         async with self.config.member(member).role_start_times() as times:
                                             if str(r1.id) in times:
                                                 del times[str(r1.id)]
@@ -565,14 +576,12 @@ class About(commands.Cog):
                                     except (discord.Forbidden, discord.HTTPException):
                                         pass
                         elif req_role in member.roles:
-                            # User has request role. Check eligibility for Role 1.
                             if days_in >= d_min and level >= req_lvl:
                                 try:
                                     await member.add_roles(r1, reason="About Cog: Adv Initial Grant")
                                     await asyncio.sleep(1)
                                     await member.remove_roles(req_role, reason="About Cog: Adv Req Remove")
                                     
-                                    # Save timestamp for R1 duration
                                     async with self.config.member(member).role_start_times() as times:
                                         times[str(r1.id)] = now.timestamp()
                                         
@@ -1358,3 +1367,54 @@ class About(commands.Cog):
             lines.append(f"{req_name} + Lvl {data['level']} + {data['days_min']}d -> {r1_name} -> Hold {data['duration']}d -> {r2_name}")
             
         await ctx.send(embed=discord.Embed(title="Advanced Reward Configurations", description="\n".join(lines), color=await ctx.embed_color()))
+
+    # --- Secret Reward Management ---
+    @aboutset.command(name="secretreward")
+    async def aboutset_secretreward(self, ctx, channel: discord.TextChannel, role: discord.Role, level: int, days: int):
+        """
+        Set up a secret reward role.
+        Grants automatically when requirements met, but NOT shown in [p]about embed.
+        """
+        if days < 0 or level < 0:
+             return await ctx.send("Days and Level must be non-negative.")
+
+        async with self.config.guild(ctx.guild).secret_rewards() as secrets:
+            secrets[str(role.id)] = {
+                "level": level,
+                "days": days,
+                "channel_id": channel.id
+            }
+        
+        await ctx.send(f"Configured Secret Reward: **{role.name}** (Level {level}, {days} days) with ghost ping in {channel.mention}.")
+
+    @aboutset.command(name="secretreward_remove")
+    async def aboutset_secretreward_remove(self, ctx, role: discord.Role):
+        """Remove a secret reward role configuration."""
+        async with self.config.guild(ctx.guild).secret_rewards() as secrets:
+            if str(role.id) in secrets:
+                del secrets[str(role.id)]
+                await ctx.send(f"Removed secret reward configuration for **{role.name}**.")
+            else:
+                await ctx.send("That secret reward role is not configured.")
+
+    @aboutset.command(name="secretreward_list")
+    async def aboutset_secretreward_list(self, ctx):
+        """List configured secret reward roles."""
+        secrets = await self.config.guild(ctx.guild).secret_rewards()
+        if not secrets:
+            return await ctx.send("No secret reward roles configured.")
+        
+        lines = []
+        for role_id, data in secrets.items():
+            r_role = ctx.guild.get_role(int(role_id))
+            r_name = r_role.mention if r_role else f"Deleted-Role-{role_id}"
+            
+            days = data.get("days", 0)
+            level = data.get("level", 0)
+            chan_id = data.get("channel_id")
+            chan_obj = ctx.guild.get_channel(chan_id) if chan_id else None
+            chan_name = chan_obj.mention if chan_obj else "Deleted-Channel"
+            
+            lines.append(f"{r_name} (Days: {days}, Level: {level}, Channel: {chan_name})")
+            
+        await ctx.send(embed=discord.Embed(title="Secret Reward Configurations", description="\n".join(lines), color=await ctx.embed_color()))
