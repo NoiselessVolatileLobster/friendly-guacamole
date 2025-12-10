@@ -44,6 +44,7 @@ class Gortle(commands.Cog):
             "used_words": [],
             "game_number": 0,
             "game_active": False,
+            "cooldown_reset_timestamp": 0, # Timestamp when cooldowns were last "cleared" (new game start)
             "game_state": {
                 "solved_indices": [],
                 "found_letters": [], # Letters found (Yellow or Green)
@@ -226,6 +227,9 @@ class Gortle(commands.Cog):
 
     async def start_new_game(self, manual=False):
         async with self.lock:
+            # Update Reset Timestamp for Cooldowns (Everyone starts fresh)
+            await self.config.cooldown_reset_timestamp.set(int(datetime.datetime.now(datetime.timezone.utc).timestamp()))
+
             # Check if previous game needs revealing
             active = await self.config.game_active()
             old_word = await self.config.current_word()
@@ -392,7 +396,12 @@ class Gortle(commands.Cog):
         # 1. Cooldown Check FIRST
         cooldown = await self.config.guild(message.guild).cooldown_seconds()
         last_guess = await self.config.member(message.author).last_guess_time()
+        reset_ts = await self.config.cooldown_reset_timestamp()
         now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+        
+        # If last guess was before the last reset, ignore it (treat as no cooldown)
+        if last_guess < reset_ts:
+            last_guess = 0
         
         if (now - last_guess) < cooldown:
             try:
