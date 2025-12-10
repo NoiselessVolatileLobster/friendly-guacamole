@@ -326,20 +326,27 @@ class Gortle(commands.Cog):
     async def on_message(self, message):
         if message.author.bot:
             return
-        if not self.bot.user in message.mentions:
+        
+        # Ensure we are in a guild
+        if not message.guild:
             return
 
         conf_channel = await self.config.guild(message.guild).channel_id()
-        if message.channel.id != conf_channel:
+        if not conf_channel or message.channel.id != conf_channel:
             return
 
-        content = message.content.lower()
-        match = re.search(r"\b[a-z]{6}\b", content)
+        content = message.content.lower().strip()
         
-        if not match:
-            return 
+        # Check for ! prefix
+        if not content.startswith("!"):
+            return
 
-        guess = match.group(0)
+        # Extract the potential guess by removing the '!'
+        guess = content[1:]
+        
+        # Strict validation: Must be exactly 6 lowercase letters
+        if not re.fullmatch(r"[a-z]{6}", guess):
+            return 
         
         if not await self.config.game_active():
             return
