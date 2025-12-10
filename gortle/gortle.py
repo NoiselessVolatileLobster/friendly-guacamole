@@ -554,7 +554,8 @@ class Gortle(commands.Cog):
         for entry in state.get('history', []):
             participants.add(entry['user_id'])
             
-        embed_footer = []
+        # Collect results for display and sort
+        results = []
         
         for uid in participants:
             member = channel.guild.get_member(uid)
@@ -576,6 +577,8 @@ class Gortle(commands.Cog):
             # Total Round Points = Guess Points + 2 (Participation)
             total_round_points = guess_points + 2
             
+            results.append((total_round_points, member))
+            
             # Credits = Total Points * 10
             credits_to_give = total_round_points * self.CREDITS_PER_POINT
             
@@ -584,6 +587,16 @@ class Gortle(commands.Cog):
                     await bank.deposit_credits(member, credits_to_give)
                 except Exception as e:
                     print(f"Failed to deposit credits for {member}: {e}")
+
+        # Sort results ascending by points (lowest first)
+        results.sort(key=lambda x: x[0])
+        
+        # Generate display string
+        score_lines = []
+        for points, member in results:
+            score_lines.append(f"{member.display_name}: **{points}**")
+            
+        score_str = "\n".join(score_lines)
 
         # Currency name for display
         try:
@@ -594,7 +607,11 @@ class Gortle(commands.Cog):
         embed = discord.Embed(title=f"Gortle #{game_num} Solved!", 
                               description=f"**{winner.mention}** guessed the word correctly!", 
                               color=discord.Color.gold())
-        embed.add_field(name="Solution", value=await self.config.current_word())
+        embed.add_field(name="Solution", value=await self.config.current_word(), inline=False)
+        
+        if score_str:
+            embed.add_field(name="Round Scores", value=score_str, inline=False)
+            
         embed.set_footer(text=f"Participants received +2 points and {self.CREDITS_PER_POINT} {currency} per point earned!")
         
         thumb = await self.config.guild(channel.guild).thumbnail_url()
