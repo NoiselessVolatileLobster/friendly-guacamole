@@ -152,21 +152,21 @@ class Gortle(commands.Cog):
             
             # Left padding for row 3 (before Z)
             if i == 2:
-                line += f"{spacer_str} "
+                line += f"{spacer_str}"
 
             for char in row.lower():
                 color = letter_status.get(char, self.EMOJI_UNUSED)
-                line += self._get_emoji_str(char, color) + " "
+                line += self._get_emoji_str(char, color)
             
             # Right padding for row 2 (after L)
             if i == 1:
-                line += f"{spacer_str} "
+                line += f"{spacer_str}"
             
             # Right padding for row 3 (after M) - two instances
             if i == 2:
-                line += f"{spacer_str} {spacer_str} "
+                line += f"{spacer_str}{spacer_str}"
 
-            visual_rows.append(line.strip())
+            visual_rows.append(line)
             
         return "\n".join(visual_rows)
 
@@ -305,7 +305,8 @@ class Gortle(commands.Cog):
             desc = "Guess the 6-letter word by typing `!word`!"
             
             embed = discord.Embed(title=f"New Gortle Started! (#{game_num})", description=desc, color=discord.Color.green())
-            embed.add_field(name="Keyboard", value=keyboard_view, inline=False)
+            # Use zero-width space for title to effectively remove it
+            embed.add_field(name="\u200b", value=keyboard_view, inline=False)
             
             thumb = await self.config.guild(target_channel.guild).thumbnail_url()
             if thumb:
@@ -538,7 +539,8 @@ class Gortle(commands.Cog):
         total_round_points = round_scores.get(str_uid, 0)
         
         embed.add_field(name="Points Gained", value=f"+{points} ({total_round_points} points this round)", inline=True)
-        embed.add_field(name="Keyboard", value=keyboard_view, inline=False)
+        # Use zero-width space for title to effectively remove it
+        embed.add_field(name="\u200b", value=keyboard_view, inline=False)
         
         thumb = await self.config.guild(message.guild).thumbnail_url()
         if thumb:
