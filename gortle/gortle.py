@@ -141,12 +141,30 @@ class Gortle(commands.Cog):
                         letter_status[char] = self.EMOJI_CORRECT
                     else:
                         letter_status[char] = self.EMOJI_PRESENT
+        
+        # Fetch spacer emoji
+        spacer = discord.utils.get(self.bot.emojis, name="greysquare")
+        spacer_str = str(spacer) if spacer else ":greysquare:"
 
-        for row in rows:
+        for i, row in enumerate(rows):
             line = ""
+            
+            # Left padding for row 3 (before Z)
+            if i == 2:
+                line += f"{spacer_str} "
+
             for char in row.lower():
                 color = letter_status.get(char, self.EMOJI_UNUSED)
                 line += self._get_emoji_str(char, color) + " "
+            
+            # Right padding for row 2 (after L)
+            if i == 1:
+                line += f"{spacer_str} "
+            
+            # Right padding for row 3 (after M) - two instances
+            if i == 2:
+                line += f"{spacer_str} {spacer_str} "
+
             visual_rows.append(line.strip())
             
         return "\n".join(visual_rows)
