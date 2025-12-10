@@ -20,6 +20,8 @@ class Gortle(commands.Cog):
     EMOJI_CORRECT = "green" # Guessed and in right position
     EMOJI_PRESENT = "yellow" # Guessed and in wrong position
     EMOJI_ABSENT = "black"  # Guessed and NOT in the word (inferred)
+    
+    MAX_GUESSES = 9
 
     def __init__(self, bot):
         self.bot = bot
@@ -40,7 +42,7 @@ class Gortle(commands.Cog):
             "game_active": False,
             "game_state": {
                 "solved_indices": [],
-                "found_letters": [],
+                "found_letters": [], # Letters found (Yellow or Green)
                 "guessed_letters": [], # Letters guessed at least once
                 "guesses_made": 0,
                 "history": [] # Stores list of {visual: str, user_id: int}
@@ -351,6 +353,7 @@ class Gortle(commands.Cog):
         solution = await self.config.current_word()
         state = await self.config.game_state()
         solved_indices = set(state['solved_indices'])
+        previously_found = set(state['found_letters'])
         
         guess_visual = [""] * 6
         points = 0
@@ -366,7 +369,14 @@ class Gortle(commands.Cog):
                 sol_remaining[i] = None 
                 
                 if i not in solved_indices:
-                    points += 2
+                    # Point Calculation Logic
+                    if char in previously_found:
+                        # Yellow -> Green
+                        points += 1
+                    else:
+                        # New discovery (Green)
+                        points += 2
+                    
                     state['solved_indices'].append(i)
                     state['found_letters'].append(char)
                 else:
@@ -384,6 +394,7 @@ class Gortle(commands.Cog):
                 known_count = state['found_letters'].count(char)
                 
                 if known_count < total_in_sol:
+                    # Finding a yellow letter
                     points += 1
                     state['found_letters'].append(char)
             else:
@@ -395,11 +406,11 @@ class Gortle(commands.Cog):
             "user_id": message.author.id,
             "word": guess
         }
-        # Safe get/set for history since it's a new field
         if 'history' not in state:
             state['history'] = []
         state['history'].append(history_entry)
 
+        # Update guessed letters
         current_guessed = set(state['guessed_letters'])
         for c in guess:
             current_guessed.add(c)
@@ -407,6 +418,7 @@ class Gortle(commands.Cog):
         
         await self.config.game_state.set(state)
 
+        # Update Score
         async with self.config.member(message.author).words_guessed() as wg:
             wg[guess] = wg.get(guess, 0) + 1
         
@@ -422,16 +434,12 @@ class Gortle(commands.Cog):
         keyboard_view = self._get_keyboard_visual(state, solution)
         
         # Build History Display
-        # Show all history, but safeguard for Discord 4096 char limit
-        # Each line approx 200 chars depending on emoji ID length
         full_history = state['history']
-        display_history = full_history if len(full_history) < 20 else full_history[-20:] # Show last 20 if too long
+        display_history = full_history if len(full_history) < 20 else full_history[-20:]
         
         history_lines = []
         for idx, entry in enumerate(display_history, 1):
-             # Re-calculate index if truncated
              actual_idx = idx if len(full_history) < 20 else (len(full_history) - 20 + idx)
-             
              user = message.guild.get_member(entry['user_id'])
              user_name = user.display_name if user else "Unknown"
              history_lines.append(f"**{actual_idx}.** {entry['visual']} (**{user_name}**)")
@@ -452,27 +460,61 @@ class Gortle(commands.Cog):
 
         if guess == solution:
             await self.handle_win(message.author, message.channel, game_num)
+        elif len(state['history']) >= self.MAX_GUESSES:
+            # Game Over - Loss
+            await self.handle_loss(message.channel, solution)
 
     async def handle_win(self, winner, channel, game_num):
         await self.config.game_active.set(False)
         prize = await self.config.win_amount()
         
+        # 1. Award Prize to Winner
         try:
             await bank.deposit_credits(winner, prize)
             currency = await bank.get_currency_name(channel.guild)
         except:
             currency = "credits"
 
+        # 2. Award Participation Points (+2 to all unique participants)
+        state = await self.config.game_state()
+        participants = set()
+        for entry in state.get('history', []):
+            participants.add(entry['user_id'])
+        
+        # Add points to participants (including winner, they get these on top of regular points)
+        for uid in participants:
+            member = channel.guild.get_member(uid)
+            if member:
+                 await self.config.member(member).score.set(
+                    await self.config.member(member).score() + 2
+                 )
+                 await self.config.member(member).weekly_score.set(
+                    await self.config.member(member).weekly_score() + 2
+                 )
+
         embed = discord.Embed(title=f"Gortle #{game_num} Solved!", 
                               description=f"**{winner.mention}** guessed the word correctly!", 
                               color=discord.Color.gold())
         embed.add_field(name="Solution", value=await self.config.current_word())
         embed.add_field(name="Prize", value=f"{prize} {currency}")
+        embed.set_footer(text="Everyone who participated got +2 points!")
         
         thumb = await self.config.guild(channel.guild).thumbnail_url()
         if thumb:
             embed.set_thumbnail(url=thumb)
 
+        await channel.send(embed=embed)
+
+    async def handle_loss(self, channel, solution):
+        await self.config.game_active.set(False)
+        embed = discord.Embed(title="Gortle Failed!", 
+                              description=f"Max guesses reached! The word was **{solution.upper()}**.", 
+                              color=discord.Color.red())
+        
+        thumb = await self.config.guild(channel.guild).thumbnail_url()
+        if thumb:
+            embed.set_thumbnail(url=thumb)
+            
         await channel.send(embed=embed)
 
     # --- Commands ---
