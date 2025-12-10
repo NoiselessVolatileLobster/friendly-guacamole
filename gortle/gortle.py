@@ -7,6 +7,7 @@ import json
 import os
 from typing import Optional, Literal
 from collections import Counter
+import math
 
 from redbot.core import commands, Config, bank, checks
 from redbot.core.data_manager import bundled_data_path
@@ -19,7 +20,7 @@ class Gortle(commands.Cog):
     EMOJI_UNUSED = "white"   # Letters that have not been guessed
     EMOJI_CORRECT = "green" # Guessed and in right position
     EMOJI_PRESENT = "yellow" # Guessed and in wrong position
-    EMOJI_ABSENT = "black"  # Guessed and NOT in the word (inferred)
+    EMOJI_ABSENT = "grey"  # Guessed and NOT in the word (inferred)
     
     MAX_GUESSES = 9
     CREDITS_PER_POINT = 10
@@ -34,7 +35,9 @@ class Gortle(commands.Cog):
         self._load_word_lists()
 
         default_global = {
-            "game_schedule_min": 0, 
+            "schedule_auto_freq": 0, # Times per hour (0 to disable)
+            "schedule_manual_max": 0, # Max manual games per clock hour
+            "manual_log": {"hour": 0, "count": 0}, # Tracks manual usage: {hour_timestamp: int, count: int}
             "next_game_timestamp": 0,
             "current_game_id": 0,
             "current_word": None,
@@ -148,6 +151,30 @@ class Gortle(commands.Cog):
             
         return "\n".join(visual_rows)
 
+    def _calculate_next_auto_time(self, now, freq):
+        """Calculates the next timestamp for an auto-game based on frequency per hour."""
+        if freq <= 0:
+            return 0
+            
+        interval_minutes = 60 / freq
+        current_minute = now.minute
+        
+        # Calculate which 'slot' we are in or passed
+        # e.g. freq=2 (30 min), current=15. Slots: 0, 30. Next: 30.
+        # e.g. freq=2 (30 min), current=45. Slots: 0, 30. Next: 00 (next hour).
+        
+        next_slot_index = math.ceil((current_minute + 1) / interval_minutes) # +1 to avoid immediate re-trigger if logic runs fast
+        next_minute = int(next_slot_index * interval_minutes)
+        
+        if next_minute >= 60:
+            # Move to next hour
+            next_time = now.replace(minute=0, second=0, microsecond=0) + datetime.timedelta(hours=1)
+        else:
+            # Same hour
+            next_time = now.replace(minute=next_minute, second=0, microsecond=0)
+            
+        return int(next_time.timestamp())
+
     async def game_loop(self):
         """Checks schedule for new games and weekly roles."""
         await self.bot.wait_until_ready()
@@ -160,14 +187,19 @@ class Gortle(commands.Cog):
                 await self.check_weekly_role(now)
 
                 # 2. Check Game Schedule
-                next_game = await self.config.next_game_timestamp()
-                schedule_min = await self.config.game_schedule_min()
+                next_game_ts = await self.config.next_game_timestamp()
+                auto_freq = await self.config.schedule_auto_freq()
                 
-                if schedule_min > 0:
-                    if timestamp >= next_game:
-                        await self.start_new_game()
-                        next_ts = timestamp + (schedule_min * 60)
-                        await self.config.next_game_timestamp.set(next_ts)
+                if auto_freq > 0:
+                    # If we haven't set a next game yet, or we passed it
+                    if next_game_ts == 0 or timestamp >= next_game_ts:
+                        # Only start if next_game_ts was actually set to a valid past time (not 0 initialization)
+                        if next_game_ts != 0:
+                            await self.start_new_game(manual=False)
+                        
+                        # Calculate next time
+                        new_next_ts = self._calculate_next_auto_time(now, auto_freq)
+                        await self.config.next_game_timestamp.set(new_next_ts)
 
             except Exception as e:
                 print(f"Error in Gortle loop: {e}")
@@ -242,7 +274,10 @@ class Gortle(commands.Cog):
             
             keyboard_view = self._get_keyboard_visual(new_state, new_word)
             
-            embed = discord.Embed(title=f"New Gortle Started! (#{game_num})", description="Guess the 6-letter word by typing `!word`!", color=discord.Color.green())
+            # Message differs slightly for manual vs auto? (Optional, kept generic for now)
+            desc = "Guess the 6-letter word by typing `!word`!"
+            
+            embed = discord.Embed(title=f"New Gortle Started! (#{game_num})", description=desc, color=discord.Color.green())
             embed.add_field(name="Keyboard", value=keyboard_view, inline=False)
             
             thumb = await self.config.guild(target_channel.guild).thumbnail_url()
@@ -548,6 +583,38 @@ class Gortle(commands.Cog):
     # --- Commands ---
 
     @commands.command()
+    async def newgortle(self, ctx):
+        """Manually start a new Gortle game.
+        This is subject to a rate limit set by the server admins.
+        """
+        # Check if game is already active
+        if await self.config.game_active():
+            return await ctx.send("A Gortle game is already active!")
+
+        # Check Manual Limit
+        limit = await self.config.schedule_manual_max()
+        if limit > 0:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            current_hour_ts = int(now.replace(minute=0, second=0, microsecond=0).timestamp())
+            
+            log = await self.config.manual_log()
+            
+            # Check if stored log is for a previous hour
+            if log['hour'] != current_hour_ts:
+                # Reset
+                log = {"hour": current_hour_ts, "count": 0}
+            
+            if log['count'] >= limit:
+                return await ctx.send(f"The maximum number of manual games for this hour ({limit}) has been reached. Please wait for the next hour or an auto-scheduled game.")
+            
+            # Increment and Save
+            log['count'] += 1
+            await self.config.manual_log.set(log)
+
+        await self.start_new_game(manual=True)
+        await ctx.send("Game started.")
+
+    @commands.command()
     async def gortletop(self, ctx):
         """Shows the Gortle leaderboard."""
         members = await self.config.all_members(ctx.guild)
@@ -596,10 +663,25 @@ class Gortle(commands.Cog):
             await ctx.send(f"Thumbnail set to: <{url}>")
 
     @gortleset.command()
-    async def schedule(self, ctx, minutes: int):
-        """Set how often new games post (in minutes). Set to 0 to disable auto-posting."""
-        await self.config.game_schedule_min.set(minutes)
-        await ctx.send(f"Schedule set to every {minutes} minutes.")
+    async def schedule(self, ctx, auto_freq: int, manual_max: int):
+        """Set the game schedule logic.
+        
+        auto_freq: How many times per hour to auto-post a game (e.g., 2 = every 30 mins). Set 0 to disable.
+        manual_max: How many manual games users can start per hour. Set 0 for unlimited.
+        """
+        if auto_freq < 0:
+            return await ctx.send("Auto frequency cannot be negative.")
+        if manual_max < 0:
+            return await ctx.send("Manual max cannot be negative.")
+            
+        await self.config.schedule_auto_freq.set(auto_freq)
+        await self.config.schedule_manual_max.set(manual_max)
+        
+        # Reset next game timestamp so logic recalculates immediately
+        await self.config.next_game_timestamp.set(0)
+        
+        msg = f"Schedule updated:\n- Auto-post: {auto_freq} times/hour\n- Manual limit: {manual_max} games/hour"
+        await ctx.send(msg)
 
     @gortleset.command()
     async def cooldown(self, ctx, seconds: int):
@@ -624,12 +706,6 @@ class Gortle(commands.Cog):
         await self.config.weekly_role_day.set(day)
         await self.config.weekly_role_hour.set(hour)
         await ctx.send(f"Weekly role {role.name} will be awarded on day {day} at hour {hour} UTC.")
-
-    @gortleset.command()
-    async def manualstart(self, ctx):
-        """Force start a new game immediately."""
-        await self.start_new_game(manual=True)
-        await ctx.send("Game started.")
 
     @gortleset.command()
     async def reloadlists(self, ctx):
