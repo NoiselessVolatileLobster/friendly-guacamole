@@ -209,15 +209,15 @@ class Gortle(commands.Cog):
                 auto_freq = await self.config.schedule_auto_freq()
                 
                 if auto_freq > 0:
-                    # If we haven't set a next game yet, or we passed it
                     if next_game_ts == 0 or timestamp >= next_game_ts:
+                        # Swap order: Calculate next time FIRST, then start game.
+                        # This allows start_new_game to see the valid FUTURE timestamp for the embed.
+                        new_next_ts = self._calculate_next_auto_time(now, auto_freq)
+                        await self.config.next_game_timestamp.set(new_next_ts)
+
                         # Only start if next_game_ts was actually set to a valid past time (not 0 initialization)
                         if next_game_ts != 0:
                             await self.start_new_game(manual=False)
-                        
-                        # Calculate next time
-                        new_next_ts = self._calculate_next_auto_time(now, auto_freq)
-                        await self.config.next_game_timestamp.set(new_next_ts)
 
             except Exception as e:
                 print(f"Error in Gortle loop: {e}")
@@ -291,8 +291,13 @@ class Gortle(commands.Cog):
             mention = f"<@&{role_id}>" if role_id else ""
             
             keyboard_view = self._get_keyboard_visual(new_state, new_word)
+
+            # Add expiration timestamp if schedule is active
+            next_ts = await self.config.next_game_timestamp()
+            now_ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+            if next_ts > now_ts:
+                 keyboard_view += f"\n\n**Next Game:** <t:{next_ts}:R>"
             
-            # Message differs slightly for manual vs auto? (Optional, kept generic for now)
             desc = "Guess the 6-letter word by typing `!word`!"
             
             embed = discord.Embed(title=f"New Gortle Started! (#{game_num})", description=desc, color=discord.Color.green())
@@ -496,6 +501,12 @@ class Gortle(commands.Cog):
 
         game_num = await self.config.game_number()
         keyboard_view = self._get_keyboard_visual(state, solution)
+
+        # Add expiration timestamp if schedule is active
+        next_ts = await self.config.next_game_timestamp()
+        now_ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+        if next_ts > now_ts:
+             keyboard_view += f"\n\n**Next Game:** <t:{next_ts}:R>"
         
         # Build History Display
         full_history = state['history']
