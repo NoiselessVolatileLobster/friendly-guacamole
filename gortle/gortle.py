@@ -267,15 +267,17 @@ class Gortle(commands.Cog):
 
             # Pick new word
             used = await self.config.used_words()
-            available = [w for w in self.solutions if w not in used]
+            # Filter: unused AND exactly 6 chars long
+            available = [w for w in self.solutions if w not in used and len(w) == 6]
             
             if not available:
                 used = []
                 await self.config.used_words.set([])
-                available = self.solutions
+                # Reset and ensure we still filter by length
+                available = [w for w in self.solutions if len(w) == 6]
 
             if not available:
-                print("[Gortle] No words available in solutions.json!")
+                print("[Gortle] No valid 6-letter words available in solutions.json!")
                 return
 
             new_word = random.choice(available)
