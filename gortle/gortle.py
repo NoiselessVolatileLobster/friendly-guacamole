@@ -22,6 +22,7 @@ class Gortle(commands.Cog):
     EMOJI_ABSENT = "black"  # Guessed and NOT in the word (inferred)
     
     MAX_GUESSES = 9
+    CREDITS_PER_POINT = 10
 
     def __init__(self, bot):
         self.bot = bot
@@ -45,9 +46,10 @@ class Gortle(commands.Cog):
                 "found_letters": [], # Letters found (Yellow or Green)
                 "guessed_letters": [], # Letters guessed at least once
                 "guesses_made": 0,
-                "history": [] # Stores list of {visual: str, user_id: int}
+                "history": [], # Stores list of {visual: str, user_id: int}
+                "round_scores": {} # Tracks points earned specifically in this round {user_id: points}
             },
-            "win_amount": 100,
+            "win_amount": 100, # Legacy, kept for config safety but unused
             "weekly_role_id": None,
             "weekly_role_day": 0,
             "weekly_role_hour": 9,
@@ -229,7 +231,8 @@ class Gortle(commands.Cog):
                 "found_letters": [],
                 "guessed_letters": [],
                 "guesses_made": 0,
-                "history": []
+                "history": [],
+                "round_scores": {} # Reset round scores
             }
             await self.config.game_state.set(new_state)
 
@@ -416,6 +419,12 @@ class Gortle(commands.Cog):
             current_guessed.add(c)
         state['guessed_letters'] = sorted(list(current_guessed))
         
+        # Update Round Scores (for later payout)
+        round_scores = state.get('round_scores', {})
+        str_uid = str(message.author.id)
+        round_scores[str_uid] = round_scores.get(str_uid, 0) + points
+        state['round_scores'] = round_scores
+
         await self.config.game_state.set(state)
 
         # Update Score
@@ -466,38 +475,57 @@ class Gortle(commands.Cog):
 
     async def handle_win(self, winner, channel, game_num):
         await self.config.game_active.set(False)
-        prize = await self.config.win_amount()
         
-        # 1. Award Prize to Winner
+        state = await self.config.game_state()
+        round_scores = state.get('round_scores', {})
+        participants = set()
+        
+        # Identify participants from history
+        for entry in state.get('history', []):
+            participants.add(entry['user_id'])
+            
+        embed_footer = []
+        
+        for uid in participants:
+            member = channel.guild.get_member(uid)
+            if not member:
+                continue
+                
+            # 1. Award Participation Points (+2)
+            await self.config.member(member).score.set(
+                await self.config.member(member).score() + 2
+            )
+            await self.config.member(member).weekly_score.set(
+                await self.config.member(member).weekly_score() + 2
+            )
+            
+            # 2. Calculate Payout
+            # Get points earned during guesses
+            guess_points = round_scores.get(str(uid), 0)
+            
+            # Total Round Points = Guess Points + 2 (Participation)
+            total_round_points = guess_points + 2
+            
+            # Credits = Total Points * 10
+            credits_to_give = total_round_points * self.CREDITS_PER_POINT
+            
+            if credits_to_give > 0:
+                try:
+                    await bank.deposit_credits(member, credits_to_give)
+                except Exception as e:
+                    print(f"Failed to deposit credits for {member}: {e}")
+
+        # Currency name for display
         try:
-            await bank.deposit_credits(winner, prize)
             currency = await bank.get_currency_name(channel.guild)
         except:
             currency = "credits"
-
-        # 2. Award Participation Points (+2 to all unique participants)
-        state = await self.config.game_state()
-        participants = set()
-        for entry in state.get('history', []):
-            participants.add(entry['user_id'])
-        
-        # Add points to participants (including winner, they get these on top of regular points)
-        for uid in participants:
-            member = channel.guild.get_member(uid)
-            if member:
-                 await self.config.member(member).score.set(
-                    await self.config.member(member).score() + 2
-                 )
-                 await self.config.member(member).weekly_score.set(
-                    await self.config.member(member).weekly_score() + 2
-                 )
 
         embed = discord.Embed(title=f"Gortle #{game_num} Solved!", 
                               description=f"**{winner.mention}** guessed the word correctly!", 
                               color=discord.Color.gold())
         embed.add_field(name="Solution", value=await self.config.current_word())
-        embed.add_field(name="Prize", value=f"{prize} {currency}")
-        embed.set_footer(text="Everyone who participated got +2 points!")
+        embed.set_footer(text=f"Participants received +2 points and {self.CREDITS_PER_POINT} {currency} per point earned!")
         
         thumb = await self.config.guild(channel.guild).thumbnail_url()
         if thumb:
