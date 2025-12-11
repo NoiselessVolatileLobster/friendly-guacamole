@@ -50,13 +50,28 @@ class AWordAnHour(commands.Cog):
 
     @awah.command(name="view")
     async def view_sentence(self, ctx):
-        """View the current sentence in progress."""
+        """View the configured channel and current sentence in progress."""
+        channel_id = await self.config.guild(ctx.guild).channel_id()
         words = await self.config.guild(ctx.guild).current_sentence()
-        if not words:
-            return await ctx.send("No words have been added yet.")
         
-        text = " ".join(words)
-        await ctx.send(f"**Current Sentence:**\n{text}")
+        # Determine Channel Status
+        if channel_id:
+            channel = ctx.guild.get_channel(channel_id)
+            if channel:
+                channel_status = f"**Configured Channel:** {channel.mention}"
+            else:
+                channel_status = "**Configured Channel:** ⚠️ Channel ID set, but channel not found (deleted?)."
+        else:
+            channel_status = "**Configured Channel:** ❌ No channel configured."
+
+        # Determine Sentence Status
+        if words:
+            sentence_text = " ".join(words)
+            sentence_status = f"**Current Sentence:**\n{sentence_text}"
+        else:
+            sentence_status = "**Current Sentence:** *Empty*"
+            
+        await ctx.send(f"{channel_status}\n\n{sentence_status}")
 
     async def finish_sentence(self, channel, guild):
         """Helper to finalize the sentence and post the embed."""
@@ -156,6 +171,5 @@ class AWordAnHour(commands.Cog):
             return
 
         # VOTE CHECK: Only trigger if the count is EXACTLY 2.
-        # This prevents it from triggering again if a 3rd person reacts later.
         if reaction.count == 2:
             await self.finish_sentence(channel, guild)
