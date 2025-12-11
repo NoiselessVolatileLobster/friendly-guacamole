@@ -108,40 +108,69 @@ class ChannelSyncCheck(commands.Cog):
         self.bot = bot
 
     def _get_perm_diff(self, category, channel):
-        """Deep diff logic."""
-        cat_overwrites = category.overwrites
-        chan_overwrites = channel.overwrites
-        diffs = []
-        all_targets = set(cat_overwrites.keys()) | set(chan_overwrites.keys())
-        
-        for target in all_targets:
-            if isinstance(target, discord.Member): continue # Skip member-specific overrides for brevity
-
-            cat_perms = cat_overwrites.get(target)
-            chan_perms = chan_overwrites.get(target)
-
-            if cat_perms is None and chan_perms is not None:
-                diffs.append(f"• {target.name}: Added in Channel")
-                continue
-            elif cat_perms is not None and chan_perms is None:
-                diffs.append(f"• {target.name}: Missing in Channel")
-                continue
-
-            c_p_dict = dict(cat_perms)
-            ch_p_dict = dict(chan_perms)
-            target_diffs = []
+            """
+            Compares overwrites between a category and a channel.
+            Ignores 'empty' overwrites (where all permissions are neutral/slash).
+            """
+            cat_overwrites = category.overwrites
+            chan_overwrites = channel.overwrites
             
-            for perm_name, cat_val in c_p_dict.items():
-                chan_val = ch_p_dict.get(perm_name)
-                if cat_val != chan_val:
-                    def fmt_val(v): return "✅" if v is True else "❌" if v is False else "Nr"
-                    target_diffs.append(f"{perm_name}: {fmt_val(cat_val)} -> {fmt_val(chan_val)}")
+            diffs = []
+            
+            # Helper to check if an overwrite is effectively empty (all None/Neutral)
+            def is_empty(overwrite):
+                if overwrite is None:
+                    return True
+                # overwrite iter yields (name, value). value is True, False, or None.
+                # We want to know if ALL values are None.
+                return all(value is None for _, value in overwrite)
 
-            if target_diffs:
-                diffs.append(f"• {target.name}: " + ", ".join(target_diffs))
+            # Get all roles/members involved in either set of overwrites
+            all_targets = set(cat_overwrites.keys()) | set(chan_overwrites.keys())
+            
+            for target in all_targets:
+                if isinstance(target, discord.Member):
+                    continue
+
+                cat_perms = cat_overwrites.get(target)
+                chan_perms = chan_overwrites.get(target)
+
+                # Check for 'Ghost' overwrites (one is None, the other is all Neutral)
+                cat_empty = is_empty(cat_perms)
+                chan_empty = is_empty(chan_perms)
+
+                # If both are effectively empty, they are synced enough for us. Skip.
+                if cat_empty and chan_empty:
+                    continue
+
+                # If one is empty and the other isn't, report it as Added/Missing
+                if cat_empty and not chan_empty:
+                    diffs.append(f"• {target.name}: Added in Channel (Ghost Fix)")
+                    continue
+                elif not cat_empty and chan_empty:
+                    diffs.append(f"• {target.name}: Missing in Channel")
+                    continue
+
+                # If we are here, both exist and have at least one active permission.
+                # Compare specific values.
+                c_p_dict = dict(cat_perms)
+                ch_p_dict = dict(chan_perms)
                 
-        return diffs
+                target_diffs = []
+                
+                for perm_name, cat_val in c_p_dict.items():
+                    chan_val = ch_p_dict.get(perm_name)
+                    
+                    if cat_val != chan_val:
+                        def fmt_val(v):
+                            return "✅" if v is True else "❌" if v is False else "Nr" 
+                        
+                        target_diffs.append(f"{perm_name}: {fmt_val(cat_val)} -> {fmt_val(chan_val)}")
 
+                if target_diffs:
+                    diffs.append(f"• {target.name}: " + ", ".join(target_diffs))
+                    
+            return diffs
     @commands.command()
     @checks.admin_or_permissions(administrator=True)
     async def channelsync(self, ctx):
