@@ -31,7 +31,7 @@ class AWordAnHour(commands.Cog):
         # Create the Welcome Embed
         embed = discord.Embed(
             title="A Word An Hour",
-            description="Welcome to A Word An Hour! You can type *one* word every hour to write a collaborative story. \n At any point, you can react with the stop emoji 🛑to finish a sentence and start a new one!",
+            description="Welcome to A Word An Hour! You can type *one* word every hour to write a collaborative story. \n At any point, react with the stop emoji 🛑. Once **2 people** react, the sentence will finish!",
             color=discord.Color.blue()
         )
         embed.set_footer(text="The Third Place")
@@ -63,6 +63,7 @@ class AWordAnHour(commands.Cog):
         words = await self.config.guild(guild).current_sentence()
         
         if not words:
+            # If empty, we don't post a "finished" embed, just a small notice
             await channel.send("The sentence was empty, so we are just starting fresh!", delete_after=5)
             return
 
@@ -95,18 +96,18 @@ class AWordAnHour(commands.Cog):
 
         content = message.content.strip()
 
-        # Check for Stop via Message
+        # Check for Stop via Message (Still strictly enforced if someone types it manually)
         if content == "🛑":
             await self.finish_sentence(message.channel, message.guild)
             return
 
-        # Check word count (split by whitespace)
+        # Check word count
         if len(content.split()) > 1:
             try:
                 await message.delete()
                 await message.channel.send(f"{message.author.mention}, one word at a time please!", delete_after=3)
             except discord.Forbidden:
-                pass # Bot lacks delete permissions
+                pass 
             return
 
         # If we passed checks, add the word
@@ -114,16 +115,47 @@ class AWordAnHour(commands.Cog):
             s.append(content)
 
     @commands.Cog.listener()
-    async def on_reaction_add(self, reaction, user):
-        if user.bot:
+    async def on_raw_reaction_add(self, payload):
+        # Ignore bot reactions
+        if payload.member and payload.member.bot:
             return
-        if not reaction.message.guild:
+        
+        # Must be in a guild
+        if not payload.guild_id:
             return
 
-        channel_id = await self.config.guild(reaction.message.guild).channel_id()
-        if reaction.message.channel.id != channel_id:
+        # Check emoji first to save resources
+        if str(payload.emoji) != "🛑":
             return
 
-        # Check for Stop via Reaction
-        if str(reaction.emoji) == "🛑":
-            await self.finish_sentence(reaction.message.channel, reaction.message.guild)
+        # Get the guild object
+        guild = self.bot.get_guild(payload.guild_id)
+        if not guild:
+            return
+
+        # Check channel
+        config_channel_id = await self.config.guild(guild).channel_id()
+        if payload.channel_id != config_channel_id:
+            return
+        
+        # Get channel object
+        channel = guild.get_channel(payload.channel_id)
+        if not channel:
+            return
+
+        # Fetch the actual message to count reactions
+        try:
+            message = await channel.fetch_message(payload.message_id)
+        except (discord.NotFound, discord.Forbidden):
+            return
+
+        # Find the specific reaction object for 🛑
+        reaction = discord.utils.get(message.reactions, emoji="🛑")
+        
+        if not reaction:
+            return
+
+        # VOTE CHECK: Only trigger if the count is EXACTLY 2.
+        # This prevents it from triggering again if a 3rd person reacts later.
+        if reaction.count == 2:
+            await self.finish_sentence(channel, guild)
