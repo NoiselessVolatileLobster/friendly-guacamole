@@ -41,6 +41,7 @@ class Ephemeral(commands.Cog):
             messages_threshold=10,
             message_length_threshold=10,
             ephemeral_role_id=None,
+            ephemeral_expire_role_id=None,
             
             # --- CONFIGURATION FOR ACTIVATION SCOPE ---
             activation_phrase="let me in", 
@@ -83,7 +84,7 @@ class Ephemeral(commands.Cog):
             second_greeting_message="You've been in Ephemeral mode for {time_passed}. Please continue interacting! {mention}",
             
             expire_message_channel_id=None,
-            expire_message="⚠️ {mention} has had their Ephemeral Timer Expire.",
+            expire_message="⚠️ {mention} has had their Ephemeral Timer Expire and has been assigned the Expired role.",
             
             # --- SUCCESS MESSAGE CONFIGURATION (EMBED) ---
             success_message_channel_id=None,
@@ -501,13 +502,18 @@ class Ephemeral(commands.Cog):
 
     async def _handle_ephemeral_expire(self, guild: discord.Guild, user: discord.Member, settings: dict):
         ephemeral_role = guild.get_role(settings["ephemeral_role_id"])
+        expire_role = guild.get_role(settings["ephemeral_expire_role_id"])
 
         if ephemeral_role and ephemeral_role in user.roles:
             try: await user.remove_roles(ephemeral_role, reason="Ephemeral Timer Expired.")
             except: pass
 
+        if expire_role:
+            try: await user.add_roles(expire_role, reason="Ephemeral Timer Expired.")
+            except: pass
+
         await self._send_custom_message(guild, user, settings["expire_message_channel_id"], settings["expire_message"])
-        await self._log_event(guild, f"❌ **Expired:** {user.mention} (`{user.id}`) timer expired.")
+        await self._log_event(guild, f"❌ **Expired:** {user.mention} (`{user.id}`) timer expired and received the expired role.")
         await self._perform_automated_action(guild, user, "warn_expire")
 
         self.stop_user_timer(guild.id, user.id)
@@ -849,23 +855,23 @@ class Ephemeral(commands.Cog):
         def get_role_str(rid): 
             r = ctx.guild.get_role(rid)
             return r.mention if r else "Not Set"
-        def get_chan_str(cid):
+        def get_channel_str(cid):
             c = ctx.guild.get_channel(cid)
             return c.mention if c else "Not Set"
         def fmt_warn(c): return f"{'Enabled' if c['enabled'] else 'Disabled'} | {c['action']} | {c['reason']}"
 
         embed = discord.Embed(title="Ephemeral Mode Config", color=await ctx.embed_color())
         
-        act = (f"Phrase: `{settings['activation_phrase']}`\nTimer Ch: {get_chan_str(settings['ephemeral_timer_channel_id'])}\n"
+        act = (f"Phrase: `{settings['activation_phrase']}`\nTimer Ch: {get_channel_str(settings['ephemeral_timer_channel_id'])}\n"
                f"Not Started Role: {get_role_str(settings['ephemeral_not_started_role_id'])}\n"
                f"Read Rules Role: {get_role_str(settings['ephemeral_read_rules_role_id'])}\n"
-               f"Start(1st): {get_chan_str(settings['start_message_first_channel_id'])}\n"
+               f"Start(1st): {get_channel_str(settings['start_message_first_channel_id'])}\n"
                f"Msg: `{settings['start_message_first_content']}`\n"
-               f"Start(Ret): {get_chan_str(settings['start_message_returning_channel_id'])}\n"
+               f"Start(Ret): {get_channel_str(settings['start_message_returning_channel_id'])}\n"
                f"Msg: `{settings['start_message_returning_content']}`\n"
-               f"Welcome Embed Ch: {get_chan_str(settings['welcome_embed_channel_id'])}\n"
+               f"Welcome Embed Ch: {get_channel_str(settings['welcome_embed_channel_id'])}\n"
                f"Welcome Title: `{settings['welcome_embed_title']}`\n"
-               f"Farewell Embed Ch: {get_chan_str(settings['farewell_embed_channel_id'])}\n"
+               f"Farewell Embed Ch: {get_channel_str(settings['farewell_embed_channel_id'])}\n"
                f"Farewell Title: `{settings['farewell_embed_title']}`")
         embed.add_field(name="Activation", value=act, inline=False)
         
@@ -875,6 +881,7 @@ class Ephemeral(commands.Cog):
         embed.add_field(name="Thresholds", value=thresh, inline=False)
         
         roles = (f"Ephemeral: {get_role_str(settings['ephemeral_role_id'])}\n"
+                 f"Expired: {get_role_str(settings['ephemeral_expire_role_id'])}\n"
                  f"NoMsg: {get_role_str(settings['nomessages_role_id'])}")
         embed.add_field(name="Roles", value=roles, inline=False)
         
@@ -930,6 +937,12 @@ class Ephemeral(commands.Cog):
         """Sets Ephemeral role."""
         await self.config.guild(ctx.guild).ephemeral_role_id.set(role.id)
         await ctx.send(f"Ephemeral role set to **{role.name}**.")
+
+    @ephemeralset.command(name="expirerole")
+    async def ephemeralset_expirerole(self, ctx: commands.Context, role: discord.Role):
+        """Sets Expired role."""
+        await self.config.guild(ctx.guild).ephemeral_expire_role_id.set(role.id)
+        await ctx.send(f"Expired role set to **{role.name}**.")
 
     @ephemeralset.command(name="nomessagesrole")
     async def ephemeralset_nomessagesrole(self, ctx: commands.Context, role: discord.Role):
