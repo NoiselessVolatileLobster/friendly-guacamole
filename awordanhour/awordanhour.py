@@ -74,7 +74,7 @@ class AWordAnHour(commands.Cog):
         await ctx.send(f"{channel_status}\n\n{sentence_status}")
 
     async def finish_sentence(self, channel, guild):
-        """Helper to finalize the sentence and post the embed."""
+        """Helper to finalize the sentence, post the embed, and pin it."""
         words = await self.config.guild(guild).current_sentence()
         
         if not words:
@@ -95,7 +95,16 @@ class AWordAnHour(commands.Cog):
         if guild.icon:
             embed.set_thumbnail(url=guild.icon.url)
         
-        await channel.send(embed=embed)
+        # Send and Pin
+        msg = await channel.send(embed=embed)
+        try:
+            await msg.pin()
+        except discord.Forbidden:
+            await channel.send("I tried to pin the story, but I don't have the 'Manage Messages' permission!", delete_after=5)
+        except discord.HTTPException:
+            await channel.send("I couldn't pin the story. The channel might have reached the 50 pin limit.", delete_after=5)
+
+        # Reset sentence
         await self.config.guild(guild).current_sentence.set([])
 
     @commands.Cog.listener()
