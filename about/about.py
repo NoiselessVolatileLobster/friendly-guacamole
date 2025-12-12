@@ -178,34 +178,16 @@ class About(commands.Cog):
                 if hasattr(levelup_cog, 'db') and hasattr(levelup_cog.db, 'get_conf'):
                     conf = levelup_cog.db.get_conf(member.guild)
                     profile = conf.get_profile(member)
-                    # profile object usually has 'level', 'xp' (total), but not always 'next_level_xp' directly exposed
-                    # We might need to rely on the cog's logic. 
-                    # Assuming standard Vrt LevelUp profile structure:
-                    current_xp = profile.xp
-                    # Calculate required XP for next level if not exposed
-                    # For now, let's try a safer fallback:
-                    # Some versions have 'progress' property on profile or we can try to calculate
                     
-                    # Hacky attempt to find progress if available, otherwise 0
-                    # If this fails, we just don't show percentage in new member
-                    pass 
-                
-                # Attempt to get percentage from cog if a method exists, or calculate if we knew formula
-                # Since we don't have the formula, we'll try to find a property on the profile object
-                # returned by get_conf(guild).get_profile(member) if possible.
-                # Re-fetching profile to inspect
-                conf = levelup_cog.db.get_conf(member.guild)
-                profile = conf.get_profile(member)
-                
-                # Vrt's LevelUp Profile typically has: xp, level, prestige, etc.
-                # To get percentage we need: (current_level_xp / req_xp) * 100
-                # We will try to read 'level_xp' and 'required_xp' if they exist (common in forks)
-                # or fallback to 0.
-                
-                l_xp = getattr(profile, 'level_xp', 0)
-                req_xp = getattr(profile, 'required_xp', 1) # avoid div/0
-                if req_xp > 0:
-                    level_percentage = int((l_xp / req_xp) * 100)
+                    # Vrt's LevelUp Profile typically has: xp, level, prestige, etc.
+                    # To get percentage we need: (current_level_xp / req_xp) * 100
+                    # We will try to read 'level_xp' and 'required_xp' if they exist (common in forks)
+                    # or fallback to 0.
+                    
+                    l_xp = getattr(profile, 'level_xp', 0)
+                    req_xp = getattr(profile, 'required_xp', 1) # avoid div/0
+                    if req_xp > 0:
+                        level_percentage = int((l_xp / req_xp) * 100)
 
             except Exception:
                 pass 
@@ -920,7 +902,10 @@ class About(commands.Cog):
 
     @aboutset_channel.command(name="add")
     async def channel_add(self, ctx, category: discord.CategoryChannel, type: Literal["public", "secret"], *, label: str):
-        """Add a category to the channel navigator."""
+        """
+        Add a category to the channel navigator.
+        Type must be 'public' or 'secret'. Label is the button text.
+        """
         async with self.config.guild(ctx.guild).channel_categories() as cats:
             cats[str(category.id)] = {
                 "type": type.lower(),
