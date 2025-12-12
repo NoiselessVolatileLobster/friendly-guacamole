@@ -718,6 +718,14 @@ class Ephemeral(commands.Cog):
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         guild = member.guild
+        
+        # --- CLEANUP: Reset all ephemeral stats for this user ---
+        # Stop any running timers
+        self.stop_user_timer(guild.id, member.id)
+        self.stop_join_timer(guild.id, member.id)
+        # Clear database config for this member
+        await self.config.member(member).clear()
+        
         settings = await self.config.guild(guild).all()
         
         # Check if farewell is configured
