@@ -142,7 +142,7 @@ class Snowball(commands.Cog):
     # --- Commands: Inventory & Equipping ---
 
     @commands.command()
-    async def equip(self, ctx, *, item_name: str):
+    async def snowequip(self, ctx, *, item_name: str):
         """
         Equip a booster item from your inventory.
         You must unequip your current item first.
@@ -511,7 +511,7 @@ class Snowball(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command()
-    async def mystats(self, ctx):
+    async def mysnowstats(self, ctx):
         """Check your own stats and HP."""
         data = await self.config.member(ctx.author).all()
         inv = data['inventory']
@@ -590,7 +590,10 @@ class Snowball(commands.Cog):
         else:
             embed.add_field(name="Shop Items", value="No items configured.", inline=False)
 
-        await ctx.send(embed=embed)
+        @snowballset.group(name="item")
+        async def snowballset_item(self, ctx):
+            """Manage items."""
+            pass
 
     @snowballset.group(name="item")
     async def snowballset_item(self, ctx):
