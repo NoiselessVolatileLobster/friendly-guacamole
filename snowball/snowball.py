@@ -349,7 +349,8 @@ class Snowball(commands.Cog):
             data['coffee_drunk'] += 1
             data['stat_coffee_drunk'] += 1
 
-        await ctx.send(f"☕ You act jittery! Damage bonus active. (Cups: {data['coffee_drunk'] + 1})")
+        # FIX: Removed the +1 here
+        await ctx.send(f"☕ You act jittery! Damage bonus active. (Cups: {data['coffee_drunk']})")
 
     # --- Commands: Fighting ---
 
