@@ -866,9 +866,9 @@ class Ephemeral(commands.Cog):
                f"Not Started Role: {get_role_str(settings['ephemeral_not_started_role_id'])}\n"
                f"Read Rules Role: {get_role_str(settings['ephemeral_read_rules_role_id'])}\n"
                f"Start(1st): {get_channel_str(settings['start_message_first_channel_id'])}\n"
-               f"Msg: `{settings['start_message_first_content']}`\n"
+               f"Msg: {settings['start_message_first_content']}\n"
                f"Start(Ret): {get_channel_str(settings['start_message_returning_channel_id'])}\n"
-               f"Msg: `{settings['start_message_returning_content']}`\n"
+               f"Msg: {settings['start_message_returning_content']}\n"
                f"Welcome Embed Ch: {get_channel_str(settings['welcome_embed_channel_id'])}\n"
                f"Welcome Title: `{settings['welcome_embed_title']}`\n"
                f"Farewell Embed Ch: {get_channel_str(settings['farewell_embed_channel_id'])}\n"
@@ -884,6 +884,25 @@ class Ephemeral(commands.Cog):
                  f"Expired: {get_role_str(settings['ephemeral_expire_role_id'])}\n"
                  f"NoMsg: {get_role_str(settings['nomessages_role_id'])}")
         embed.add_field(name="Roles", value=roles, inline=False)
+        
+        first_td = timedelta(seconds=settings['first_greeting_threshold'])
+        second_td = timedelta(seconds=settings['second_greeting_threshold'])
+        
+        greetings_val = (
+            f"**1st Greeting:** {timedelta_to_human(first_td)} in {get_channel_str(settings['first_greeting_channel_id'])}\n"
+            f"Message: {settings['first_greeting_message']}\n\n"
+            f"**2nd Greeting:** {timedelta_to_human(second_td)} in {get_channel_str(settings['second_greeting_channel_id'])}\n"
+            f"Message: {settings['second_greeting_message']}"
+        )
+        embed.add_field(name="Greetings", value=greetings_val, inline=False)
+
+        failures_val = (
+            f"**Expire Fail:** {get_channel_str(settings['expire_message_channel_id'])}\n"
+            f"Message: `{settings['expire_message']}`\n\n"
+            f"**No Messages Fail:** {get_channel_str(settings['nomessages_failed_message_channel_id'])}\n"
+            f"Message: `{settings['nomessages_failed_message']}`"
+        )
+        embed.add_field(name="Failures", value=failures_val, inline=False)
         
         warns = (f"NoMsg: {fmt_warn(settings['warn_nomessages'])}\n"
                  f"Expire: {fmt_warn(settings['warn_expire'])}\n"
