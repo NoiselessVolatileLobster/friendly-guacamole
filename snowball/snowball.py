@@ -448,7 +448,6 @@ class Snowball(commands.Cog):
         embed = discord.Embed(title="❄️ The Snowball Shop", color=discord.Color.blue())
         embed.description = f"Refreshes every hour. You have: {await bank.get_balance(ctx.author)} {currency}"
 
-        # CHANGED: Timeout increased to 600 seconds (10 minutes)
         view = View(timeout=600)
         unique_shop = list(set(shop_items))
 
@@ -590,6 +589,9 @@ class Snowball(commands.Cog):
             embed.add_field(name=f"Shop Items ({len(items)})", value=items_desc, inline=False)
         else:
             embed.add_field(name="Shop Items", value="No items configured.", inline=False)
+        
+        # --- FIXED MISSING SEND ---
+        await ctx.send(embed=embed)
 
     @snowballset.group(name="item")
     async def snowballset_item(self, ctx):
