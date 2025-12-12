@@ -104,7 +104,7 @@ class Snowball(commands.Cog):
 
         if data["pooped_end"] > now:
             relative = f"<t:{data['pooped_end']}:R>"
-            await ctx.send(f"💩 You've pooped your pants. Come back in {relative}.")
+            await ctx.send(f"💩 You've pooped your pants. Come back {relative}.")
             return False
 
         if data["frostbite_end"] > now:
@@ -157,7 +157,6 @@ class Snowball(commands.Cog):
         weather_mod = int((snow_prob - 50) / 10)
 
         # Time
-        # FIXED: Corrected 'snowfall_roll_time' to 'snowball_roll_time'
         base_time = await self.config.guild(ctx.guild).snowball_roll_time()
         actual_time = max(5, base_time - time_reduction)
         
@@ -250,7 +249,8 @@ class Snowball(commands.Cog):
                 data['coffee_drunk'] = 0 
                 data['inventory'][found_item_name] -= 1
                 relative = f"<t:{data['pooped_end']}:R>"
-                return await ctx.send(f"💩 Oh no! You drank too much coffee and **Pooped Your Pants**! You are out of the game for {relative}.")
+                # --- CHANGE IS HERE ---
+                return await ctx.send(f"💩 Oh no! You drank too much coffee and **Pooped Your Pants**! Come back {relative}.")
             
             data['inventory'][found_item_name] -= 1
             data['coffee_drunk'] += 1
