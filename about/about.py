@@ -172,22 +172,14 @@ class About(commands.Cog):
                 user_level = await levelup_cog.get_level(member)
                 level_str = f"**Level {user_level}** • "
                 
-                # 2. Get Percentage (Try accessing profile directly for max precision)
-                # Note: This relies on internal structure of Vrt's LevelUp. 
-                # If methods fail, we default percentage to 0.
-                if hasattr(levelup_cog, 'db') and hasattr(levelup_cog.db, 'get_conf'):
-                    conf = levelup_cog.db.get_conf(member.guild)
-                    profile = conf.get_profile(member)
-                    
-                    # Vrt's LevelUp Profile typically has: xp, level, prestige, etc.
-                    # To get percentage we need: (current_level_xp / req_xp) * 100
-                    # We will try to read 'level_xp' and 'required_xp' if they exist (common in forks)
-                    # or fallback to 0.
-                    
-                    l_xp = getattr(profile, 'level_xp', 0)
-                    req_xp = getattr(profile, 'required_xp', 1) # avoid div/0
-                    if req_xp > 0:
-                        level_percentage = int((l_xp / req_xp) * 100)
+                # 2. Get Percentage
+                # We specifically check for Level 0 based on user request.
+                # Assuming 100 XP is the cap for level 0 -> 1.
+                if user_level == 0:
+                    current_xp = await levelup_cog.get_xp(member)
+                    # Percentage = (current_xp / 100) * 100 = current_xp
+                    # Cap at 99% for display if it somehow exceeds but level didn't update
+                    level_percentage = min(current_xp, 99) 
 
             except Exception:
                 pass 
@@ -333,20 +325,20 @@ class About(commands.Cog):
         has_posted_intro = has_role(intro_rid)
         has_no_intro = has_role(nointro_rid)
 
-        # Prepare percentage string
-        perc_str = f" ({level_percentage}%)" if level_percentage > 0 else ""
+        # Prepare percentage string (Only for level 0)
+        perc_str = f" (you're {level_percentage}% of the way there!)" if level_percentage > 0 else ""
 
         if is_ephemeral:
             nm_output = "\n\n**New Member**\n💨Ephemeral Mode. Cannot see previous messages or reply to users"
         else:
             if user_level < gen_level:
                 if has_no_intro:
-                    nm_output = f"\n\n**New Member**{perc_str}\n🗣️ Chat more and post an intro to unlock the rest of the server"
+                    nm_output = f"\n\n**New Member**\n🗣️ Chat more{perc_str} and post an intro to unlock the rest of the server"
                 elif has_posted_intro:
-                    nm_output = f"\n\n**New Member**{perc_str}\n🗣️ Chat more to unlock the rest of the server"
+                    nm_output = f"\n\n**New Member**\n🗣️ Chat more{perc_str} to unlock the rest of the server"
             else:
                 if has_no_intro:
-                    nm_output = f"\n\n**New Member**{perc_str}\n🗣️ Post an intro to unlock the rest of the server"
+                    nm_output = f"\n\n**New Member**\n🗣️ Post an intro to unlock the rest of the server"
                 elif has_posted_intro:
                     nm_output = ""
 
@@ -681,6 +673,7 @@ class About(commands.Cog):
                         
                         if member_count > 0:
                             location_lines.append(f"{emoji} **{role_name}**: {member_count}")
+                            total_tracked += member_count
                     
                     if location_lines:
                         locations_output = "\n\n**Member Locations:**\n" + "\n".join(location_lines)
@@ -902,10 +895,7 @@ class About(commands.Cog):
 
     @aboutset_channel.command(name="add")
     async def channel_add(self, ctx, category: discord.CategoryChannel, type: Literal["public", "secret"], *, label: str):
-        """
-        Add a category to the channel navigator.
-        Type must be 'public' or 'secret'. Label is the button text.
-        """
+        """Add a category to the channel navigator."""
         async with self.config.guild(ctx.guild).channel_categories() as cats:
             cats[str(category.id)] = {
                 "type": type.lower(),
