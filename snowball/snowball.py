@@ -18,11 +18,6 @@ class Snowball(commands.Cog):
 
         # Default Settings
         default_guild = {
-            "shop_inventory": [], 
-            "shop_last_refresh": 0,
-            "snowball_roll_time": 60,
-            "channel_id": None,
-            "snowfall_probability": 50,
             "items": {
                 # --- DRINKS (Bonus Dmg, Duration) ---
                 "Tinsel Tea": {
@@ -101,16 +96,21 @@ class Snowball(commands.Cog):
                 "Snow Shovel": {
                     "type": "booster", "rarity": 10, "bonus": 4, "price": 20000, "durability": 5, "duration": 0
                 }
-            }
+            },
+            "shop_inventory": [], 
+            "shop_last_refresh": 0,
+            "snowball_roll_time": 60,
+            "channel_id": None,
+            "snowfall_probability": 50
         }
 
         default_member = {
             "hp": 100,
             "snowballs": 0,
-            "inventory": {}, 
-            "active_booster": {}, 
-            "active_drink": {},   
-            "frostbite_end": 0, 
+            "inventory": {}, # {item_name: quantity}
+            "active_booster": {}, # {name, current_durability, max_durability}
+            "active_drink": {},   # {name, bonus, expires_at}
+            "frostbite_end": 0, # Timestamp
             
             # Stats
             "stat_damage_dealt": 0,
@@ -341,6 +341,7 @@ class Snowball(commands.Cog):
             return
 
         inventory = await self.config.member(ctx.author).inventory()
+        # Find exact casing
         found_name = None
         for k in inventory.keys():
             if k.lower() == item_name.lower():
@@ -352,6 +353,7 @@ class Snowball(commands.Cog):
 
         guild_items = await self.config.guild(ctx.guild).items()
         
+        # Check type
         if found_name not in guild_items or guild_items[found_name]['type'] != 'cookie':
              return await ctx.send(f"**{found_name}** is not a cookie! You cannot eat this to heal.")
 
@@ -391,11 +393,12 @@ class Snowball(commands.Cog):
 
         guild_items = await self.config.guild(ctx.guild).items()
         
+        # Check type
         if found_name not in guild_items or guild_items[found_name]['type'] != 'drink':
              return await ctx.send(f"**{found_name}** is not a drink!")
 
         item_data = guild_items[found_name]
-        duration = item_data.get('duration', 60)
+        duration = item_data.get('duration', 60) # Default 60s
         bonus = item_data['bonus']
         
         async with self.config.member(ctx.author).all() as data:
@@ -403,6 +406,7 @@ class Snowball(commands.Cog):
             if data['inventory'][found_name] <= 0:
                 del data['inventory'][found_name]
             
+            # Apply Buff
             expires = int(time.time()) + duration
             data['active_drink'] = {
                 "name": found_name,
@@ -434,8 +438,10 @@ class Snowball(commands.Cog):
         if target_data['frostbite_end'] > int(time.time()):
             return await ctx.send(f"{target.display_name} is already frozen solid! Leave them alone.")
 
+        # Calculate Damage
         damage = random.randint(1, 6)
         
+        # Check Drink Bonus
         drink_bonus = 0
         drink_name = None
         active_drink = author_data.get('active_drink')
@@ -450,6 +456,7 @@ class Snowball(commands.Cog):
             a_data['snowballs'] -= 1
             a_data['stat_damage_dealt'] += total_damage
             
+            # Clear expired drink data if needed (lazy cleanup)
             if active_drink and active_drink['expires_at'] <= int(time.time()):
                  a_data['active_drink'] = {}
 
@@ -539,6 +546,7 @@ class Snowball(commands.Cog):
             price = item['price']
             i_type = item['type']
             
+            # Dynamic Description based on type
             if i_type == 'booster':
                 durability = item.get('durability', 1) 
                 desc_str = f"Type: Booster | Bonus: +{item['bonus']} Balls | Durability: {durability}"
@@ -666,23 +674,28 @@ class Snowball(commands.Cog):
         embed.add_field(name="Snowball Roll Time", value=f"{guild_data['snowball_roll_time']} seconds", inline=True)
         
         items = guild_data['items']
-        if items:
-            items_desc = ""
-            for name, data in items.items():
+        
+        # Categorize items to avoid Field Limits
+        cookies = {k: v for k, v in items.items() if v['type'] == 'cookie'}
+        drinks = {k: v for k, v in items.items() if v['type'] == 'drink'}
+        boosters = {k: v for k, v in items.items() if v['type'] == 'booster'}
+        
+        def format_list(item_dict):
+            if not item_dict: return "None"
+            lines = []
+            for name, data in item_dict.items():
                 extra = ""
                 if data['type'] == 'booster':
-                    extra = f" | Durability: {data.get('durability', 1)}"
+                    extra = f" | Dur: {data.get('durability', 1)}"
                 elif data['type'] == 'drink':
-                    extra = f" | Duration: {data.get('duration', 60)}s"
+                    extra = f" | Time: {data.get('duration', 60)}s"
                 
-                items_desc += (
-                    f"**{name}** ({data['type']})\n"
-                    f"Cost: {data['price']} | Bonus: {data['bonus']}{extra}\n"
-                    f"Rarity: {data['rarity']}\n\n"
-                )
-            embed.add_field(name=f"Shop Items ({len(items)})", value=items_desc, inline=False)
-        else:
-            embed.add_field(name="Shop Items", value="No items configured.", inline=False)
+                lines.append(f"**{name}**: Cost {data['price']} | Bonus +{data['bonus']}{extra}")
+            return "\n".join(lines)
+
+        embed.add_field(name="🍪 Cookies", value=format_list(cookies), inline=False)
+        embed.add_field(name="☕ Drinks", value=format_list(drinks), inline=False)
+        embed.add_field(name="⚡ Boosters", value=format_list(boosters), inline=False)
         
         await ctx.send(embed=embed)
 
