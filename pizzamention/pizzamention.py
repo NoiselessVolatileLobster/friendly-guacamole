@@ -28,13 +28,11 @@ class PizzaMention(commands.Cog):
         Usage: [p]pizzastart <t:timestamp>
         Example: [p]pizzastart <t:1700000000>
         """
-        # Regex to find digits inside <t: ... >
         match = re.search(r"<t:(\d+)", timestamp)
         
         if match:
             ts = int(match.group(1))
             await self.config.guild(ctx.guild).last_mention.set(ts)
-            # :F formats it as a full date/time in Discord
             await ctx.send(f"Timer reset. Last mention set to: <t:{ts}:F>")
         else:
             await ctx.send("Invalid format. Please use a Discord timestamp (e.g., `<t:1733000000>`).")
@@ -50,17 +48,14 @@ class PizzaMention(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message_without_command(self, message: discord.Message):
-        # Ignore bots and DMs
         if message.author.bot or not message.guild:
             return
 
-        # Check if we have permission to send messages in this channel
         if not message.channel.permissions_for(message.guild.me).send_messages:
             return
 
         keyword = await self.config.guild(message.guild).keyword()
         
-        # Case-insensitive check
         if keyword.lower() in message.content.lower():
             
             current_time = int(time.time())
@@ -69,11 +64,13 @@ class PizzaMention(commands.Cog):
             diff_seconds = current_time - last_time
             days = int(diff_seconds // 86400) 
             
-            # Anti-spam: Only post if > 24 hours (86400 seconds)
+            # Anti-spam: Only post if > 24 hours
             if diff_seconds > 86400:
+                # Grammar check for pluralization
+                day_str = "day" if days == 1 else "days"
+                
                 await message.channel.send(
-                    f"We made it {days} days without talking about {keyword}."
+                    f"We made it {days} {day_str} without talking about {keyword}."
                 )
             
-            # Reset timer regardless of whether we posted
             await self.config.guild(message.guild).last_mention.set(current_time)
