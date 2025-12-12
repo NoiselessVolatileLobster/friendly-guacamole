@@ -232,10 +232,11 @@ class Snowball(commands.Cog):
         base_time = await self.config.guild(ctx.guild).snowball_roll_time()
         actual_time = max(5, base_time - time_reduction)
         
-        msg = await ctx.send(f"❄️ gathering snow... (Probability: {snow_prob}% | Time: {actual_time}s)")
+        # Send initial message (no mention)
+        await ctx.send(f"❄️ gathering snow... (Probability: {snow_prob}% | Time: {actual_time}s)")
         
-        async with ctx.typing():
-            await asyncio.sleep(actual_time)
+        # Wait WITHOUT typing indicator
+        await asyncio.sleep(actual_time)
             
         if not await self.check_status(ctx):
             return
@@ -268,7 +269,8 @@ class Snowball(commands.Cog):
         if booster_name:
             booster_msg = f"\nUsed equipped **{booster_name}**."
         
-        await msg.edit(content=f"☃️ You made **{total_balls}** snowballs! ({calc_str}){booster_msg}{broke_msg}")
+        # Send NEW message with mention
+        await ctx.send(f"{ctx.author.mention} ☃️ You made **{total_balls}** snowballs! ({calc_str}){booster_msg}{broke_msg}")
 
     # --- Commands: Consumables ---
 
@@ -590,7 +592,6 @@ class Snowball(commands.Cog):
         else:
             embed.add_field(name="Shop Items", value="No items configured.", inline=False)
         
-        # --- FIXED MISSING SEND ---
         await ctx.send(embed=embed)
 
     @snowballset.group(name="item")
