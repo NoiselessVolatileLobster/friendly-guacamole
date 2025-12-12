@@ -157,7 +157,8 @@ class Snowball(commands.Cog):
         weather_mod = int((snow_prob - 50) / 10)
 
         # Time
-        base_time = await self.config.guild(ctx.guild).snowfall_roll_time()
+        # FIXED: Corrected 'snowfall_roll_time' to 'snowball_roll_time'
+        base_time = await self.config.guild(ctx.guild).snowball_roll_time()
         actual_time = max(5, base_time - time_reduction)
         
         msg = await ctx.send(f"❄️ gathering snow... (Probability: {snow_prob}% | Time: {actual_time}s)")
