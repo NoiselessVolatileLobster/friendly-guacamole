@@ -437,7 +437,11 @@ class Gortle(commands.Cog):
         solution = await self.config.current_word()
         state = await self.config.game_state()
         solved_indices = set(state['solved_indices'])
-        previously_found = set(state['found_letters'])
+        
+        # Use Counter to track how many instances of each letter we have ALREADY found
+        # This helps distinguish between finding a 'new' letter vs upgrading a 'known' one
+        # specifically for double-letter cases.
+        previously_found = Counter(state['found_letters'])
         
         guess_visual = [""] * 6
         points = 0
@@ -454,15 +458,17 @@ class Gortle(commands.Cog):
                 
                 if i not in solved_indices:
                     # Point Calculation Logic
-                    if char in previously_found:
-                        # Yellow -> Green
+                    if previously_found[char] > 0:
+                        # We knew this letter existed (Yellow), now we know placement (Green) -> Upgrade
                         points += 1
+                        previously_found[char] -= 1
+                        # Do NOT append to found_letters, we are just upgrading the status of a known instance
                     else:
                         # New discovery (Green)
                         points += 2
+                        state['found_letters'].append(char)
                     
                     state['solved_indices'].append(i)
-                    state['found_letters'].append(char)
                 else:
                     points += 0 
 
