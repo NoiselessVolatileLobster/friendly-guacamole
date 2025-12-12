@@ -30,7 +30,8 @@ class Snowball(commands.Cog):
             "hp": 100,
             "snowballs": 0,
             "coffee_drunk": 0,
-            "inventory": {}, # {item_name: count}
+            "inventory": {}, # {item_name: quantity} - purely storage
+            "active_booster": {}, # {name: str, current_durability: int, max_durability: int}
             "frostbite_end": 0, # Timestamp
             "pooped_end": 0,    # Timestamp
             
@@ -119,23 +120,96 @@ class Snowball(commands.Cog):
 
         return True
 
-    async def get_active_booster(self, user):
-        """Returns the best booster bonus."""
-        inventory = await self.config.member(user).inventory()
+    async def get_equipped_booster_bonus(self, user):
+        """Returns the bonus stats of the currently equipped item."""
+        data = await self.config.member(user).all()
+        active = data.get("active_booster", {})
+        
+        if not active:
+            return 0, 0, None # bonus, time_red, name
+        
+        name = active['name']
         items = await self.config.guild(user.guild).items()
         
-        best_bonus = 0
-        best_time_red = 0 
+        if name in items:
+            item_data = items[name]
+            bonus = item_data['bonus']
+            time_red = item_data['bonus'] * 15
+            return bonus, time_red, name
+            
+        return 0, 0, None
+
+    # --- Commands: Inventory & Equipping ---
+
+    @commands.command()
+    async def equip(self, ctx, *, item_name: str):
+        """
+        Equip a booster item from your inventory.
+        You must unequip your current item first.
+        """
+        if not await self.check_channel(ctx):
+            return
+
+        # Case insensitive search
+        inventory = await self.config.member(ctx.author).inventory()
+        # Find exact casing
+        found_name = None
+        for k in inventory.keys():
+            if k.lower() == item_name.lower():
+                found_name = k
+                break
         
-        for item_name, count in inventory.items():
-            if count > 0 and item_name in items:
-                item = items[item_name]
-                if item['type'] == 'booster':
-                    if item['bonus'] > best_bonus:
-                        best_bonus = item['bonus']
-                        best_time_red = item['bonus'] * 15 
-                        
-        return best_bonus, best_time_red
+        if not found_name:
+            return await ctx.send("You don't have that item in your inventory.")
+
+        # Check if item is actually a booster
+        guild_items = await self.config.guild(ctx.guild).items()
+        if found_name not in guild_items or guild_items[found_name]['type'] != 'booster':
+            return await ctx.send("You can only equip Booster items. Consumables are used instantly.")
+
+        async with self.config.member(ctx.author).all() as data:
+            # Check if slot occupied
+            if data['active_booster']:
+                current = data['active_booster']['name']
+                return await ctx.send(f"You already have **{current}** equipped! Run `[p]unequip` first.")
+
+            # Move from inventory to active
+            data['inventory'][found_name] -= 1
+            if data['inventory'][found_name] <= 0:
+                del data['inventory'][found_name]
+            
+            max_dura = guild_items[found_name].get('durability', 1)
+            
+            data['active_booster'] = {
+                "name": found_name,
+                "current_durability": max_dura,
+                "max_durability": max_dura
+            }
+        
+        await ctx.send(f"✅ You equipped **{found_name}**!")
+
+    @commands.command()
+    async def unequip(self, ctx):
+        """Unequip your current booster and return it to inventory."""
+        if not await self.check_channel(ctx):
+            return
+
+        async with self.config.member(ctx.author).all() as data:
+            active = data.get('active_booster')
+            if not active:
+                return await ctx.send("You aren't holding anything.")
+            
+            name = active['name']
+            
+            # Return to inventory
+            if name in data['inventory']:
+                data['inventory'][name] += 1
+            else:
+                data['inventory'][name] = 1
+            
+            data['active_booster'] = {}
+        
+        await ctx.send(f"You put away your **{name}**.")
 
     # --- Commands: Snowball Making ---
 
@@ -147,13 +221,11 @@ class Snowball(commands.Cog):
         if not await self.check_status(ctx):
             return
 
-        # Boosters
-        item_bonus, time_reduction = await self.get_active_booster(ctx.author)
+        # Get stats from EQUIPPED item
+        item_bonus, time_reduction, booster_name = await self.get_equipped_booster_bonus(ctx.author)
         
         # Weather
         snow_prob = await self.config.guild(ctx.guild).snowfall_probability()
-        # Calculation: (Prob - 50) / 10. 
-        # 100% -> +5 balls. 50% -> 0 balls. 0% -> -5 balls.
         weather_mod = int((snow_prob - 50) / 10)
 
         # Time
@@ -173,15 +245,30 @@ class Snowball(commands.Cog):
         # Calculate Total
         total_balls = base_roll + item_bonus + weather_mod
         if total_balls < 1:
-            total_balls = 1 # Minimum 1
+            total_balls = 1 
         
         async with self.config.member(ctx.author).all() as data:
             data['snowballs'] += total_balls
             data['stat_snowballs_made'] += total_balls
+            
+            # Reduce Durability of EQUIPPED item
+            broke_msg = ""
+            if booster_name and data['active_booster']:
+                data['active_booster']['current_durability'] -= 1
+                curr = data['active_booster']['current_durability']
+                
+                if curr <= 0:
+                    data['active_booster'] = {} # Clear slot
+                    broke_msg = f"\n⚠️ **Your {booster_name} broke!**"
 
         # Breakdown string
         calc_str = f"Base: {base_roll} + Items: {item_bonus} + Weather: {weather_mod}"
-        await msg.edit(content=f"☃️ You made **{total_balls}** snowballs! ({calc_str})")
+        
+        booster_msg = ""
+        if booster_name:
+            booster_msg = f"\nUsed equipped **{booster_name}**."
+        
+        await msg.edit(content=f"☃️ You made **{total_balls}** snowballs! ({calc_str}){booster_msg}{broke_msg}")
 
     # --- Commands: Consumables ---
 
@@ -213,6 +300,9 @@ class Snowball(commands.Cog):
         
         async with self.config.member(ctx.author).all() as data:
             data['inventory'][found_item_name] -= 1
+            if data['inventory'][found_item_name] <= 0:
+                del data['inventory'][found_item_name]
+                
             old_hp = data['hp']
             data['hp'] = min(100, old_hp + heal_amount)
             data['stat_cocoa_drunk'] += 1
@@ -244,15 +334,16 @@ class Snowball(commands.Cog):
             return await ctx.send("You don't have any Coffee! Buy some in the `[p]snowshop`.")
 
         async with self.config.member(ctx.author).all() as data:
+            data['inventory'][found_item_name] -= 1
+            if data['inventory'][found_item_name] <= 0:
+                del data['inventory'][found_item_name]
+
             if data['coffee_drunk'] >= 3:
                 data['pooped_end'] = int(time.time()) + (15 * 60) # 15 mins
                 data['coffee_drunk'] = 0 
-                data['inventory'][found_item_name] -= 1
                 relative = f"<t:{data['pooped_end']}:R>"
-                # --- CHANGE IS HERE ---
                 return await ctx.send(f"💩 Oh no! You drank too much coffee and **Pooped Your Pants**! Come back {relative}.")
             
-            data['inventory'][found_item_name] -= 1
             data['coffee_drunk'] += 1
             data['stat_coffee_drunk'] += 1
 
@@ -366,8 +457,9 @@ class Snowball(commands.Cog):
                 
             item = all_items[item_name]
             price = item['price']
+            durability = item.get('durability', 1) 
             
-            desc_str = f"Type: {item['type'].title()} | Bonus: +{item['bonus']}"
+            desc_str = f"Type: {item['type'].title()} | Bonus: +{item['bonus']} | Durability: {durability}"
             embed.add_field(name=f"{item_name} - {price} {currency}", value=desc_str, inline=False)
 
             async def button_callback(interaction, i_name=item_name, i_price=price):
@@ -424,15 +516,24 @@ class Snowball(commands.Cog):
         data = await self.config.member(ctx.author).all()
         inv = data['inventory']
         
+        # Inventory List
         inv_str = humanize_list([f"{k} (x{v})" for k, v in inv.items() if v > 0])
         if not inv_str:
             inv_str = "Empty"
+
+        # Equipped Item
+        active = data.get('active_booster')
+        if active:
+            active_str = f"{active['name']} ({active['current_durability']}/{active['max_durability']} dur)"
+        else:
+            active_str = "None"
         
         snow_prob = await self.config.guild(ctx.guild).snowfall_probability()
 
         embed = discord.Embed(title=f"{ctx.author.display_name}'s Snow Profile", color=discord.Color.green())
-        embed.add_field(name="Health", value=f"{data['hp']}/100")
-        embed.add_field(name="Snowballs", value=data['snowballs'])
+        embed.add_field(name="Health", value=f"{data['hp']}/100", inline=True)
+        embed.add_field(name="Snowballs", value=data['snowballs'], inline=True)
+        embed.add_field(name="Equipped", value=active_str, inline=False)
         embed.add_field(name="Inventory", value=inv_str, inline=False)
         embed.add_field(name="Weather Forecast", value=f"{snow_prob}% Chance of Snow", inline=False)
         
@@ -460,11 +561,12 @@ class Snowball(commands.Cog):
         pass
 
     @snowballset_item.command(name="add")
-    async def item_add(self, ctx, type: str, rarity: int, name: str, bonus: int, price: int):
+    async def item_add(self, ctx, type: str, rarity: int, name: str, bonus: int, price: int, durability: int = 1):
         """
         Add an item to the store.
         Type: booster, coffee, chocolate
         Rarity: 1 (Rare) to 10 (Common)
+        Durability: Number of uses before it breaks.
         """
         type = type.lower()
         if type not in ["booster", "coffee", "chocolate"]:
@@ -472,16 +574,20 @@ class Snowball(commands.Cog):
         
         if not (1 <= rarity <= 10):
             return await ctx.send("Rarity must be between 1 and 10.")
+        
+        if durability < 1:
+            return await ctx.send("Durability must be at least 1.")
 
         async with self.config.guild(ctx.guild).items() as items:
             items[name] = {
                 "type": type,
                 "rarity": rarity,
                 "bonus": bonus,
-                "price": price
+                "price": price,
+                "durability": durability
             }
         
-        await ctx.send(f"Added item **{name}** ({type}) - Cost: {price}, Rarity: {rarity}")
+        await ctx.send(f"Added item **{name}** ({type}) - Cost: {price}, Rarity: {rarity}, Durability: {durability}")
 
     @snowballset_item.command(name="remove")
     async def item_remove(self, ctx, name: str):
