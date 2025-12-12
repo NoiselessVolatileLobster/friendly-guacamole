@@ -555,6 +555,43 @@ class Snowball(commands.Cog):
         """Configuration for the Snowball system."""
         pass
 
+    @snowballset.command(name="reset")
+    async def reset_game(self, ctx):
+        """
+        DANGER: Resets ALL player stats, inventories, and snowballs.
+        This does not remove the items from the shop.
+        """
+        await self.config.clear_all_members(ctx.guild)
+        await ctx.send("🚨 **GAME RESET!** 🚨\nAll player HP, stats, snowballs, and inventories have been wiped. Let the new games begin!")
+
+    @snowballset.command(name="settings")
+    async def view_settings(self, ctx):
+        """View the current game configuration and shop items."""
+        guild_data = await self.config.guild(ctx.guild).all()
+        
+        channel_id = guild_data['channel_id']
+        channel_obj = ctx.guild.get_channel(channel_id) if channel_id else None
+        channel_str = channel_obj.mention if channel_obj else "Anywhere (None set)"
+
+        embed = discord.Embed(title="⚙️ Snowball Settings", color=discord.Color.light_grey())
+        embed.add_field(name="Fight Channel", value=channel_str, inline=True)
+        embed.add_field(name="Snowball Roll Time", value=f"{guild_data['snowball_roll_time']} seconds", inline=True)
+        
+        items = guild_data['items']
+        if items:
+            items_desc = ""
+            for name, data in items.items():
+                items_desc += (
+                    f"**{name}**\n"
+                    f"Type: {data['type']} | Cost: {data['price']}\n"
+                    f"Bonus: {data['bonus']} | Durability: {data.get('durability', 1)} | Rarity: {data['rarity']}\n\n"
+                )
+            embed.add_field(name=f"Shop Items ({len(items)})", value=items_desc, inline=False)
+        else:
+            embed.add_field(name="Shop Items", value="No items configured.", inline=False)
+
+        await ctx.send(embed=embed)
+
     @snowballset.group(name="item")
     async def snowballset_item(self, ctx):
         """Manage items."""
