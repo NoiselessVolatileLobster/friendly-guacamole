@@ -29,16 +29,15 @@ class Snowball(commands.Cog):
         default_member = {
             "hp": 100,
             "snowballs": 0,
-            "coffee_drunk": 0,
-            "inventory": {}, # {item_name: quantity} - purely storage
-            "active_booster": {}, # {name: str, current_durability: int, max_durability: int}
+            "inventory": {}, # {item_name: quantity}
+            "active_booster": {}, # {name, current_durability, max_durability}
+            "active_drink": {},   # {name, bonus, expires_at}
             "frostbite_end": 0, # Timestamp
-            "pooped_end": 0,    # Timestamp
             
             # Stats
             "stat_damage_dealt": 0,
-            "stat_cocoa_drunk": 0,
-            "stat_coffee_drunk": 0,
+            "stat_cookies_eaten": 0,
+            "stat_drinks_drunk": 0,
             "stat_snowballs_made": 0,
             "stat_hits_taken": 0,
             "stat_hp_lost": 0,
@@ -98,15 +97,10 @@ class Snowball(commands.Cog):
         return True
 
     async def check_status(self, ctx):
-        """Checks if the user is frozen or pooped."""
+        """Checks if the user is frozen."""
         member_conf = self.config.member(ctx.author)
         data = await member_conf.all()
         now = int(time.time())
-
-        if data["pooped_end"] > now:
-            relative = f"<t:{data['pooped_end']}:R>"
-            await ctx.send(f"💩 You've pooped your pants. Come back {relative}.")
-            return False
 
         if data["frostbite_end"] > now:
             relative = f"<t:{data['frostbite_end']}:R>"
@@ -150,7 +144,6 @@ class Snowball(commands.Cog):
         if not await self.check_channel(ctx):
             return
 
-        # Case insensitive search
         inventory = await self.config.member(ctx.author).inventory()
         # Find exact casing
         found_name = None
@@ -162,18 +155,15 @@ class Snowball(commands.Cog):
         if not found_name:
             return await ctx.send("You don't have that item in your inventory.")
 
-        # Check if item is actually a booster
         guild_items = await self.config.guild(ctx.guild).items()
         if found_name not in guild_items or guild_items[found_name]['type'] != 'booster':
-            return await ctx.send("You can only equip Booster items. Consumables are used instantly.")
+            return await ctx.send("You can only equip **Booster** items. Use `[p]eat` for cookies or `[p]drink` for drinks.")
 
         async with self.config.member(ctx.author).all() as data:
-            # Check if slot occupied
             if data['active_booster']:
                 current = data['active_booster']['name']
                 return await ctx.send(f"You already have **{current}** equipped! Run `[p]snowunequip` first.")
 
-            # Move from inventory to active
             data['inventory'][found_name] -= 1
             if data['inventory'][found_name] <= 0:
                 del data['inventory'][found_name]
@@ -201,7 +191,6 @@ class Snowball(commands.Cog):
             
             name = active['name']
             
-            # Return to inventory
             if name in data['inventory']:
                 data['inventory'][name] += 1
             else:
@@ -221,21 +210,16 @@ class Snowball(commands.Cog):
         if not await self.check_status(ctx):
             return
 
-        # Get stats from EQUIPPED item
         item_bonus, time_reduction, booster_name = await self.get_equipped_booster_bonus(ctx.author)
         
-        # Weather
         snow_prob = await self.config.guild(ctx.guild).snowfall_probability()
         weather_mod = int((snow_prob - 50) / 10)
 
-        # Time
         base_time = await self.config.guild(ctx.guild).snowball_roll_time()
         actual_time = max(5, base_time - time_reduction)
         
-        # Send initial message (no mention)
         await ctx.send(f"❄️ gathering snow... (Probability: {snow_prob}% | Time: {actual_time}s)")
         
-        # Wait WITHOUT typing indicator
         await asyncio.sleep(actual_time)
             
         if not await self.check_status(ctx):
@@ -243,7 +227,6 @@ class Snowball(commands.Cog):
 
         base_roll = random.randint(1, 6)
         
-        # Calculate Total
         total_balls = base_roll + item_bonus + weather_mod
         if total_balls < 1:
             total_balls = 1 
@@ -252,105 +235,109 @@ class Snowball(commands.Cog):
             data['snowballs'] += total_balls
             data['stat_snowballs_made'] += total_balls
             
-            # Reduce Durability of EQUIPPED item
             broke_msg = ""
             if booster_name and data['active_booster']:
                 data['active_booster']['current_durability'] -= 1
                 curr = data['active_booster']['current_durability']
                 
                 if curr <= 0:
-                    data['active_booster'] = {} # Clear slot
+                    data['active_booster'] = {} 
                     broke_msg = f"\n⚠️ **Your {booster_name} broke!**"
 
-        # Breakdown string
         calc_str = f"Base: {base_roll} + Items: {item_bonus} + Weather: {weather_mod}"
         
         booster_msg = ""
         if booster_name:
             booster_msg = f"\nUsed equipped **{booster_name}**."
         
-        # Send NEW message with mention
         await ctx.send(f"{ctx.author.mention} ☃️ You made **{total_balls}** snowballs! ({calc_str}){booster_msg}{broke_msg}")
 
-    # --- Commands: Consumables ---
+    # --- Commands: Consumables (Eat/Drink) ---
 
     @commands.command()
-    async def hotchocolate(self, ctx):
-        """Drink hot chocolate to heal."""
+    async def eat(self, ctx, *, item_name: str):
+        """Eat a cookie to regain HP."""
         if not await self.check_channel(ctx):
             return
         if not await self.check_status(ctx):
             return
 
-        user_inv = await self.config.member(ctx.author).inventory()
+        inventory = await self.config.member(ctx.author).inventory()
+        # Find exact casing
+        found_name = None
+        for k in inventory.keys():
+            if k.lower() == item_name.lower():
+                found_name = k
+                break
+
+        if not found_name:
+             return await ctx.send(f"You don't have any **{item_name}**.")
+
         guild_items = await self.config.guild(ctx.guild).items()
         
-        found_item_name = None
-        item_data = None
+        # Check type
+        if found_name not in guild_items or guild_items[found_name]['type'] != 'cookie':
+             return await ctx.send(f"**{found_name}** is not a cookie! You cannot eat this to heal.")
 
-        for name, count in user_inv.items():
-            if count > 0 and name in guild_items:
-                if guild_items[name]['type'] == 'chocolate':
-                    found_item_name = name
-                    item_data = guild_items[name]
-                    break
-        
-        if not found_item_name:
-            return await ctx.send("You don't have any Hot Chocolate! Buy some in the `[p]snowshop`.")
-
+        item_data = guild_items[found_name]
         heal_amount = random.randint(5, 15) + item_data['bonus']
         
         async with self.config.member(ctx.author).all() as data:
-            data['inventory'][found_item_name] -= 1
-            if data['inventory'][found_item_name] <= 0:
-                del data['inventory'][found_item_name]
+            data['inventory'][found_name] -= 1
+            if data['inventory'][found_name] <= 0:
+                del data['inventory'][found_name]
                 
             old_hp = data['hp']
             data['hp'] = min(100, old_hp + heal_amount)
-            data['stat_cocoa_drunk'] += 1
+            data['stat_cookies_eaten'] += 1
             data['stat_hp_gained'] += heal_amount
             actual_heal = data['hp'] - old_hp
 
-        await ctx.send(f"☕ You drank {found_item_name} and recovered **{actual_heal} HP**. Current HP: {data['hp']}")
+        await ctx.send(f"🍪 You ate **{found_name}** and recovered **{actual_heal} HP**. (Current: {data['hp']}/100)")
 
     @commands.command()
-    async def coffee(self, ctx):
-        """Drink coffee to boost damage."""
+    async def drink(self, ctx, *, item_name: str):
+        """Drink a beverage to gain a temporary damage boost."""
         if not await self.check_channel(ctx):
             return
         if not await self.check_status(ctx):
             return
 
-        user_inv = await self.config.member(ctx.author).inventory()
+        inventory = await self.config.member(ctx.author).inventory()
+        found_name = None
+        for k in inventory.keys():
+            if k.lower() == item_name.lower():
+                found_name = k
+                break
+
+        if not found_name:
+             return await ctx.send(f"You don't have any **{item_name}**.")
+
         guild_items = await self.config.guild(ctx.guild).items()
         
-        found_item_name = None
-        
-        for name, count in user_inv.items():
-            if count > 0 and name in guild_items:
-                if guild_items[name]['type'] == 'coffee':
-                    found_item_name = name
-                    break
-        
-        if not found_item_name:
-            return await ctx.send("You don't have any Coffee! Buy some in the `[p]snowshop`.")
+        # Check type
+        if found_name not in guild_items or guild_items[found_name]['type'] != 'drink':
+             return await ctx.send(f"**{found_name}** is not a drink!")
 
+        item_data = guild_items[found_name]
+        duration = item_data.get('duration', 60) # Default 60s
+        bonus = item_data['bonus']
+        
         async with self.config.member(ctx.author).all() as data:
-            data['inventory'][found_item_name] -= 1
-            if data['inventory'][found_item_name] <= 0:
-                del data['inventory'][found_item_name]
-
-            if data['coffee_drunk'] >= 3:
-                data['pooped_end'] = int(time.time()) + (15 * 60) # 15 mins
-                data['coffee_drunk'] = 0 
-                relative = f"<t:{data['pooped_end']}:R>"
-                return await ctx.send(f"💩 Oh no! You drank too much coffee and **Pooped Your Pants**! Come back {relative}.")
+            data['inventory'][found_name] -= 1
+            if data['inventory'][found_name] <= 0:
+                del data['inventory'][found_name]
             
-            data['coffee_drunk'] += 1
-            data['stat_coffee_drunk'] += 1
+            # Apply Buff
+            expires = int(time.time()) + duration
+            data['active_drink'] = {
+                "name": found_name,
+                "bonus": bonus,
+                "expires_at": expires
+            }
+            data['stat_drinks_drunk'] += 1
 
-        # FIX: Removed the +1 here
-        await ctx.send(f"☕ You act jittery! Damage bonus active. (Cups: {data['coffee_drunk']})")
+        await ctx.send(f"☕ You drank **{found_name}**! You feel powered up (+{bonus} Dmg) for {duration} seconds.")
 
     # --- Commands: Fighting ---
 
@@ -373,13 +360,27 @@ class Snowball(commands.Cog):
         if target_data['frostbite_end'] > int(time.time()):
             return await ctx.send(f"{target.display_name} is already frozen solid! Leave them alone.")
 
+        # Calculate Damage
         damage = random.randint(1, 6)
-        coffee_bonus = author_data['coffee_drunk'] 
-        total_damage = damage + coffee_bonus
+        
+        # Check Drink Bonus
+        drink_bonus = 0
+        drink_name = None
+        active_drink = author_data.get('active_drink')
+        
+        if active_drink and active_drink['expires_at'] > int(time.time()):
+            drink_bonus = active_drink['bonus']
+            drink_name = active_drink['name']
+        
+        total_damage = damage + drink_bonus
 
         async with self.config.member(ctx.author).all() as a_data:
             a_data['snowballs'] -= 1
             a_data['stat_damage_dealt'] += total_damage
+            
+            # Clear expired drink data if needed (lazy cleanup)
+            if active_drink and active_drink['expires_at'] <= int(time.time()):
+                 a_data['active_drink'] = {}
 
         async with self.config.member(target).all() as t_data:
             t_data['hp'] -= total_damage
@@ -388,6 +389,9 @@ class Snowball(commands.Cog):
             current_hp = t_data['hp']
 
         msg = f"☄️ **{ctx.author.display_name}** hit **{target.display_name}** for **{total_damage}** damage! (HP: {current_hp}/100)"
+        
+        if drink_bonus > 0:
+            msg += f"\n(Buffed by {drink_name})"
 
         if current_hp <= 0:
             minutes = 15 + abs(current_hp)
@@ -407,7 +411,9 @@ class Snowball(commands.Cog):
         
         pool = []
         for name, data in items.items():
-            for _ in range(data['rarity']):
+            # Inverted Rarity: 10 = Rare (1 ticket), 1 = Common (10 tickets)
+            weight = max(1, 11 - data['rarity'])
+            for _ in range(weight):
                 pool.append(name)
         
         if not pool:
@@ -460,9 +466,20 @@ class Snowball(commands.Cog):
                 
             item = all_items[item_name]
             price = item['price']
-            durability = item.get('durability', 1) 
+            i_type = item['type']
             
-            desc_str = f"Type: {item['type'].title()} | Bonus: +{item['bonus']} | Durability: {durability}"
+            # Dynamic Description based on type
+            if i_type == 'booster':
+                durability = item.get('durability', 1) 
+                desc_str = f"Type: Booster | Bonus: +{item['bonus']} Balls | Durability: {durability}"
+            elif i_type == 'drink':
+                duration = item.get('duration', 60)
+                desc_str = f"Type: Drink | Bonus: +{item['bonus']} Dmg | Duration: {duration}s"
+            elif i_type == 'cookie':
+                desc_str = f"Type: Cookie | Heals: 5-15 + {item['bonus']} HP"
+            else:
+                desc_str = f"Type: {i_type} | Bonus: {item['bonus']}"
+
             embed.add_field(name=f"{item_name} - {price} {currency}", value=desc_str, inline=False)
 
             async def button_callback(interaction, i_name=item_name, i_price=price):
@@ -488,7 +505,7 @@ class Snowball(commands.Cog):
 
         await ctx.send(embed=embed, view=view)
 
-    # --- Commands: Leaderboard ---
+    # --- Commands: Leaderboard & Stats ---
     
     @commands.command()
     async def snowstats(self, ctx):
@@ -506,7 +523,7 @@ class Snowball(commands.Cog):
             desc += (
                 f"**{index}. {name}**\n"
                 f"⚔️ Dmg: {data['stat_damage_dealt']} | 🤕 Taken: {data['stat_hits_taken']}\n"
-                f"☕ Coffee: {data['stat_coffee_drunk']} | 🍫 Cocoa: {data['stat_cocoa_drunk']}\n"
+                f"🍪 Cookies: {data.get('stat_cookies_eaten', 0)} | ☕ Drinks: {data.get('stat_drinks_drunk', 0)}\n"
                 f"❄️ Balls: {data['stat_snowballs_made']} | 💰 Spent: {data['stat_credits_spent']}\n\n"
             )
             
@@ -519,15 +536,13 @@ class Snowball(commands.Cog):
         data = await self.config.member(ctx.author).all()
         inv = data['inventory']
         
-        # Inventory List
         inv_str = humanize_list([f"{k} (x{v})" for k, v in inv.items() if v > 0])
         if not inv_str:
             inv_str = "Empty"
 
-        # Equipped Item
-        active = data.get('active_booster')
-        if active:
-            active_str = f"{active['name']} ({active['current_durability']}/{active['max_durability']} dur)"
+        active_booster = data.get('active_booster')
+        if active_booster:
+            active_str = f"{active_booster['name']} ({active_booster['current_durability']}/{active_booster['max_durability']} dur)"
         else:
             active_str = "None"
         
@@ -536,16 +551,17 @@ class Snowball(commands.Cog):
         embed = discord.Embed(title=f"{ctx.author.display_name}'s Snow Profile", color=discord.Color.green())
         embed.add_field(name="Health", value=f"{data['hp']}/100", inline=True)
         embed.add_field(name="Snowballs", value=data['snowballs'], inline=True)
-        embed.add_field(name="Equipped", value=active_str, inline=False)
+        embed.add_field(name="Equipped Booster", value=active_str, inline=False)
         embed.add_field(name="Inventory", value=inv_str, inline=False)
         embed.add_field(name="Weather Forecast", value=f"{snow_prob}% Chance of Snow", inline=False)
         
+        # Check active drink buff
+        active_drink = data.get('active_drink')
+        if active_drink and active_drink['expires_at'] > time.time():
+            embed.add_field(name="Active Effects", value=f"☕ **{active_drink['name']}** (+{active_drink['bonus']} Dmg) - Ends <t:{active_drink['expires_at']}:R>", inline=False)
+        
         if data['frostbite_end'] > time.time():
             embed.add_field(name="Status", value=f"🥶 Frostbite (<t:{data['frostbite_end']}:R>)", inline=False)
-        elif data['pooped_end'] > time.time():
-            embed.add_field(name="Status", value=f"💩 Pooped (<t:{data['pooped_end']}:R>)", inline=False)
-        else:
-             embed.add_field(name="Status", value="Healthy", inline=False)
 
         await ctx.send(embed=embed)
 
@@ -584,10 +600,16 @@ class Snowball(commands.Cog):
         if items:
             items_desc = ""
             for name, data in items.items():
+                extra = ""
+                if data['type'] == 'booster':
+                    extra = f" | Durability: {data.get('durability', 1)}"
+                elif data['type'] == 'drink':
+                    extra = f" | Duration: {data.get('duration', 60)}s"
+                
                 items_desc += (
-                    f"**{name}**\n"
-                    f"Type: {data['type']} | Cost: {data['price']}\n"
-                    f"Bonus: {data['bonus']} | Durability: {data.get('durability', 1)} | Rarity: {data['rarity']}\n\n"
+                    f"**{name}** ({data['type']})\n"
+                    f"Cost: {data['price']} | Bonus: {data['bonus']}{extra}\n"
+                    f"Rarity: {data['rarity']}\n\n"
                 )
             embed.add_field(name=f"Shop Items ({len(items)})", value=items_desc, inline=False)
         else:
@@ -601,22 +623,26 @@ class Snowball(commands.Cog):
         pass
 
     @snowballset_item.command(name="add")
-    async def item_add(self, ctx, type: str, rarity: int, name: str, bonus: int, price: int, durability: int = 1):
+    async def item_add(self, ctx, type: str, rarity: int, name: str, bonus: int, price: int, durability: int = 1, duration: int = 60):
         """
         Add an item to the store.
-        Type: booster, coffee, chocolate
-        Rarity: 1 (Rare) to 10 (Common)
-        Durability: Number of uses before it breaks.
+        Type: booster, drink, cookie
+        Rarity: 1 (Common) to 10 (Rare)
+        Durability: Uses (Boosters only)
+        Duration: Seconds (Drinks only)
         """
         type = type.lower()
-        if type not in ["booster", "coffee", "chocolate"]:
-            return await ctx.send("Type must be one of: booster, coffee, chocolate")
+        if type not in ["booster", "drink", "cookie"]:
+            return await ctx.send("Type must be one of: booster, drink, cookie")
         
         if not (1 <= rarity <= 10):
             return await ctx.send("Rarity must be between 1 and 10.")
         
         if durability < 1:
             return await ctx.send("Durability must be at least 1.")
+            
+        if duration < 10:
+             return await ctx.send("Duration must be at least 10 seconds.")
 
         async with self.config.guild(ctx.guild).items() as items:
             items[name] = {
@@ -624,10 +650,11 @@ class Snowball(commands.Cog):
                 "rarity": rarity,
                 "bonus": bonus,
                 "price": price,
-                "durability": durability
+                "durability": durability,
+                "duration": duration
             }
         
-        await ctx.send(f"Added item **{name}** ({type}) - Cost: {price}, Rarity: {rarity}, Durability: {durability}")
+        await ctx.send(f"Added item **{name}** ({type}) - Cost: {price}, Rarity: {rarity}")
 
     @snowballset_item.command(name="remove")
     async def item_remove(self, ctx, name: str):
