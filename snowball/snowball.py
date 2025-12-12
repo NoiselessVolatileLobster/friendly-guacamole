@@ -18,21 +18,99 @@ class Snowball(commands.Cog):
 
         # Default Settings
         default_guild = {
-            "items": {},  # Stores defined items
-            "shop_inventory": [], # Current 5 items in rotation
+            "shop_inventory": [], 
             "shop_last_refresh": 0,
-            "snowball_roll_time": 60, # Seconds to make snowballs
-            "channel_id": None, # The designated channel ID
-            "snowfall_probability": 50 # 0-100, defaults to average
+            "snowball_roll_time": 60,
+            "channel_id": None,
+            "snowfall_probability": 50,
+            "items": {
+                # --- DRINKS (Bonus Dmg, Duration) ---
+                "Tinsel Tea": {
+                    "type": "drink", "rarity": 1, "bonus": 1, "price": 1000, "duration": 60, "durability": 1
+                },
+                "Jingle Java": {
+                    "type": "drink", "rarity": 2, "bonus": 2, "price": 2500, "duration": 120, "durability": 1
+                },
+                "Lit up Latte": {
+                    "type": "drink", "rarity": 3, "bonus": 3, "price": 4000, "duration": 180, "durability": 1
+                },
+                "Peppermint Pour Over": {
+                    "type": "drink", "rarity": 4, "bonus": 4, "price": 6000, "duration": 240, "durability": 1
+                },
+                "Merry Mocha": {
+                    "type": "drink", "rarity": 5, "bonus": 5, "price": 8000, "duration": 300, "durability": 1
+                },
+                "Candy Cane Cappucino": {
+                    "type": "drink", "rarity": 6, "bonus": 6, "price": 10000, "duration": 360, "durability": 1
+                },
+                "Ho Ho Hot Chocolate": {
+                    "type": "drink", "rarity": 7, "bonus": 7, "price": 12500, "duration": 480, "durability": 1
+                },
+                "Jolly Joe": {
+                    "type": "drink", "rarity": 8, "bonus": 8, "price": 15000, "duration": 600, "durability": 1
+                },
+                "Glowing Glühwein": {
+                    "type": "drink", "rarity": 9, "bonus": 9, "price": 17500, "duration": 750, "durability": 1
+                },
+                "Excellent Eggnog": {
+                    "type": "drink", "rarity": 10, "bonus": 10, "price": 20000, "duration": 900, "durability": 1
+                },
+
+                # --- COOKIES (Heal HP) ---
+                "Sugar Cookie": {
+                    "type": "cookie", "rarity": 1, "bonus": 1, "price": 1000, "durability": 1, "duration": 0
+                },
+                "Shortbread": {
+                    "type": "cookie", "rarity": 2, "bonus": 2, "price": 2000, "durability": 1, "duration": 0
+                },
+                "Gingerbread": {
+                    "type": "cookie", "rarity": 3, "bonus": 3, "price": 3500, "durability": 1, "duration": 0
+                },
+                "Chocolate Chip": {
+                    "type": "cookie", "rarity": 4, "bonus": 4, "price": 5000, "durability": 1, "duration": 0
+                },
+                "Snickerdoodle": {
+                    "type": "cookie", "rarity": 5, "bonus": 5, "price": 7000, "durability": 1, "duration": 0
+                },
+                "Molasses Cookie": {
+                    "type": "cookie", "rarity": 6, "bonus": 6, "price": 9000, "durability": 1, "duration": 0
+                },
+                "Thumbprint Cookies": {
+                    "type": "cookie", "rarity": 7, "bonus": 7, "price": 11000, "durability": 1, "duration": 0
+                },
+                "Pecan Shortbread": {
+                    "type": "cookie", "rarity": 8, "bonus": 8, "price": 14000, "durability": 1, "duration": 0
+                },
+                "Cranberry Orange Cookies": {
+                    "type": "cookie", "rarity": 9, "bonus": 9, "price": 17000, "durability": 1, "duration": 0
+                },
+                "Peanut Butter Cookie": {
+                    "type": "cookie", "rarity": 10, "bonus": 10, "price": 20000, "durability": 1, "duration": 0
+                },
+
+                # --- BOOSTERS (Extra Balls + Speed) ---
+                "Ice Cream Scoop": {
+                    "type": "booster", "rarity": 7, "bonus": 1, "price": 5000, "durability": 2, "duration": 0
+                },
+                "Duck Mold": {
+                    "type": "booster", "rarity": 8, "bonus": 2, "price": 10000, "durability": 3, "duration": 0
+                },
+                "Garbage Mitts": {
+                    "type": "booster", "rarity": 9, "bonus": 3, "price": 15000, "durability": 4, "duration": 0
+                },
+                "Snow Shovel": {
+                    "type": "booster", "rarity": 10, "bonus": 4, "price": 20000, "durability": 5, "duration": 0
+                }
+            }
         }
 
         default_member = {
             "hp": 100,
             "snowballs": 0,
-            "inventory": {}, # {item_name: quantity}
-            "active_booster": {}, # {name, current_durability, max_durability}
-            "active_drink": {},   # {name, bonus, expires_at}
-            "frostbite_end": 0, # Timestamp
+            "inventory": {}, 
+            "active_booster": {}, 
+            "active_drink": {},   
+            "frostbite_end": 0, 
             
             # Stats
             "stat_damage_dealt": 0,
@@ -263,7 +341,6 @@ class Snowball(commands.Cog):
             return
 
         inventory = await self.config.member(ctx.author).inventory()
-        # Find exact casing
         found_name = None
         for k in inventory.keys():
             if k.lower() == item_name.lower():
@@ -275,7 +352,6 @@ class Snowball(commands.Cog):
 
         guild_items = await self.config.guild(ctx.guild).items()
         
-        # Check type
         if found_name not in guild_items or guild_items[found_name]['type'] != 'cookie':
              return await ctx.send(f"**{found_name}** is not a cookie! You cannot eat this to heal.")
 
@@ -315,12 +391,11 @@ class Snowball(commands.Cog):
 
         guild_items = await self.config.guild(ctx.guild).items()
         
-        # Check type
         if found_name not in guild_items or guild_items[found_name]['type'] != 'drink':
              return await ctx.send(f"**{found_name}** is not a drink!")
 
         item_data = guild_items[found_name]
-        duration = item_data.get('duration', 60) # Default 60s
+        duration = item_data.get('duration', 60)
         bonus = item_data['bonus']
         
         async with self.config.member(ctx.author).all() as data:
@@ -328,7 +403,6 @@ class Snowball(commands.Cog):
             if data['inventory'][found_name] <= 0:
                 del data['inventory'][found_name]
             
-            # Apply Buff
             expires = int(time.time()) + duration
             data['active_drink'] = {
                 "name": found_name,
@@ -360,10 +434,8 @@ class Snowball(commands.Cog):
         if target_data['frostbite_end'] > int(time.time()):
             return await ctx.send(f"{target.display_name} is already frozen solid! Leave them alone.")
 
-        # Calculate Damage
         damage = random.randint(1, 6)
         
-        # Check Drink Bonus
         drink_bonus = 0
         drink_name = None
         active_drink = author_data.get('active_drink')
@@ -378,7 +450,6 @@ class Snowball(commands.Cog):
             a_data['snowballs'] -= 1
             a_data['stat_damage_dealt'] += total_damage
             
-            # Clear expired drink data if needed (lazy cleanup)
             if active_drink and active_drink['expires_at'] <= int(time.time()):
                  a_data['active_drink'] = {}
 
@@ -441,7 +512,7 @@ class Snowball(commands.Cog):
         guild_conf = self.config.guild(ctx.guild)
         last_refresh = await guild_conf.shop_last_refresh()
         
-        if int(time.time()) - last_refresh > 3600:
+        if int(time.time()) - last_refresh > 600:
             shop_items = await self._refresh_shop(ctx.guild)
         else:
             shop_items = await guild_conf.shop_inventory()
@@ -455,7 +526,7 @@ class Snowball(commands.Cog):
         all_items = await guild_conf.items()
 
         embed = discord.Embed(title="❄️ The Snowball Shop", color=discord.Color.blue())
-        embed.description = f"Refreshes every hour. You have: {await bank.get_balance(ctx.author)} {currency}"
+        embed.description = f"Refreshes every 10 minutes. You have: {await bank.get_balance(ctx.author)} {currency}"
 
         view = View(timeout=600)
         unique_shop = list(set(shop_items))
@@ -468,7 +539,6 @@ class Snowball(commands.Cog):
             price = item['price']
             i_type = item['type']
             
-            # Dynamic Description based on type
             if i_type == 'booster':
                 durability = item.get('durability', 1) 
                 desc_str = f"Type: Booster | Bonus: +{item['bonus']} Balls | Durability: {durability}"
@@ -555,7 +625,6 @@ class Snowball(commands.Cog):
         embed.add_field(name="Inventory", value=inv_str, inline=False)
         embed.add_field(name="Weather Forecast", value=f"{snow_prob}% Chance of Snow", inline=False)
         
-        # Check active drink buff
         active_drink = data.get('active_drink')
         if active_drink and active_drink['expires_at'] > time.time():
             embed.add_field(name="Active Effects", value=f"☕ **{active_drink['name']}** (+{active_drink['bonus']} Dmg) - Ends <t:{active_drink['expires_at']}:R>", inline=False)
