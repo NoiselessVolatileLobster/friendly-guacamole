@@ -4,11 +4,12 @@ import random
 import time
 from redbot.core import commands, Config, bank
 from redbot.core.utils.chat_formatting import box, humanize_list
+from discord.ext import tasks
 from discord.ui import View, Button
 
 class Snowball(commands.Cog):
     """
-    A Snowball fighting system with items, health, and hilarity.
+    A Snowball fighting system with items, health, hilarity, and weather.
     """
 
     def __init__(self, bot):
@@ -21,7 +22,8 @@ class Snowball(commands.Cog):
             "shop_inventory": [], # Current 5 items in rotation
             "shop_last_refresh": 0,
             "snowball_roll_time": 60, # Seconds to make snowballs
-            "channel_id": None # The designated channel ID
+            "channel_id": None, # The designated channel ID
+            "snowfall_probability": 50 # 0-100, defaults to average
         }
 
         default_member = {
@@ -45,6 +47,35 @@ class Snowball(commands.Cog):
 
         self.config.register_guild(**default_guild)
         self.config.register_member(**default_member)
+        
+        # Start the snowfall loop
+        self.snowfall_loop.start()
+
+    def cog_unload(self):
+        self.snowfall_loop.cancel()
+
+    # --- Tasks ---
+
+    @tasks.loop(minutes=15)
+    async def snowfall_loop(self):
+        """Calculates snowfall probability every 15 minutes."""
+        for guild in self.bot.guilds:
+            # Generate probability 0-100
+            probability = random.randint(0, 100)
+            await self.config.guild(guild).snowfall_probability.set(probability)
+            
+            # Check for heavy snow
+            if probability > 85:
+                channel_id = await self.config.guild(guild).channel_id()
+                if channel_id:
+                    channel = guild.get_channel(channel_id)
+                    # Ensure bot can speak there and channel exists
+                    if channel and channel.permissions_for(guild.me).send_messages:
+                        await channel.send("🌨️**It's snowing!**❄️")
+
+    @snowfall_loop.before_loop
+    async def before_snowfall_loop(self):
+        await self.bot.wait_until_red_ready()
 
     # --- Helper Functions ---
 
@@ -52,11 +83,9 @@ class Snowball(commands.Cog):
         """Ensures the command is used in the allowed channel."""
         channel_id = await self.config.guild(ctx.guild).channel_id()
         
-        # If no channel is set, allow anywhere
         if not channel_id:
             return True
         
-        # If the channel is deleted or invalid, allow anywhere (or warn admin)
         channel = ctx.guild.get_channel(channel_id)
         if not channel:
             return True
@@ -68,24 +97,21 @@ class Snowball(commands.Cog):
         return True
 
     async def check_status(self, ctx):
-        """Checks if the user is frozen or pooped. Resets status if time passed."""
+        """Checks if the user is frozen or pooped."""
         member_conf = self.config.member(ctx.author)
         data = await member_conf.all()
         now = int(time.time())
 
-        # Check Pooped Status
         if data["pooped_end"] > now:
             relative = f"<t:{data['pooped_end']}:R>"
             await ctx.send(f"💩 You've pooped your pants. Come back in {relative}.")
             return False
 
-        # Check Frostbite Status
         if data["frostbite_end"] > now:
             relative = f"<t:{data['frostbite_end']}:R>"
             await ctx.send(f"🥶 You've got Frostbite. Chill for {relative}.")
             return False
         
-        # If Frostbite just ended but HP is still <= 0, reset HP
         if data["frostbite_end"] != 0 and data["frostbite_end"] <= now and data["hp"] <= 0:
             await member_conf.hp.set(100)
             await member_conf.frostbite_end.set(0)
@@ -94,7 +120,7 @@ class Snowball(commands.Cog):
         return True
 
     async def get_active_booster(self, user):
-        """Returns the best booster bonus (count, time_reduction) the user owns."""
+        """Returns the best booster bonus."""
         inventory = await self.config.member(user).inventory()
         items = await self.config.guild(user.guild).items()
         
@@ -121,29 +147,41 @@ class Snowball(commands.Cog):
         if not await self.check_status(ctx):
             return
 
-        bonus, time_reduction = await self.get_active_booster(ctx.author)
-        base_time = await self.config.guild(ctx.guild).snowball_roll_time()
+        # Boosters
+        item_bonus, time_reduction = await self.get_active_booster(ctx.author)
         
-        # Calculate actual time (min 5 seconds)
+        # Weather
+        snow_prob = await self.config.guild(ctx.guild).snowfall_probability()
+        # Calculation: (Prob - 50) / 10. 
+        # 100% -> +5 balls. 50% -> 0 balls. 0% -> -5 balls.
+        weather_mod = int((snow_prob - 50) / 10)
+
+        # Time
+        base_time = await self.config.guild(ctx.guild).snowfall_roll_time()
         actual_time = max(5, base_time - time_reduction)
         
-        msg = await ctx.send(f"❄️ gathering snow... (This will take {actual_time} seconds)")
+        msg = await ctx.send(f"❄️ gathering snow... (Probability: {snow_prob}% | Time: {actual_time}s)")
         
         async with ctx.typing():
             await asyncio.sleep(actual_time)
             
-        # Re-check status in case they got hit while making
         if not await self.check_status(ctx):
             return
 
         base_roll = random.randint(1, 6)
-        total_balls = base_roll + bonus
+        
+        # Calculate Total
+        total_balls = base_roll + item_bonus + weather_mod
+        if total_balls < 1:
+            total_balls = 1 # Minimum 1
         
         async with self.config.member(ctx.author).all() as data:
             data['snowballs'] += total_balls
             data['stat_snowballs_made'] += total_balls
 
-        await msg.edit(content=f"☃️ You made **{total_balls}** snowballs! (Roll: {base_roll} + Bonus: {bonus})")
+        # Breakdown string
+        calc_str = f"Base: {base_roll} + Items: {item_bonus} + Weather: {weather_mod}"
+        await msg.edit(content=f"☃️ You made **{total_balls}** snowballs! ({calc_str})")
 
     # --- Commands: Consumables ---
 
@@ -332,8 +370,6 @@ class Snowball(commands.Cog):
             embed.add_field(name=f"{item_name} - {price} {currency}", value=desc_str, inline=False)
 
             async def button_callback(interaction, i_name=item_name, i_price=price):
-                # We also assume shop interaction is only allowed if user is not frozen
-                # But since they opened the shop, they probably aren't.
                 if not await bank.can_spend(interaction.user, i_price):
                     return await interaction.response.send_message("You cannot afford this!", ephemeral=True)
                 
@@ -390,11 +426,14 @@ class Snowball(commands.Cog):
         inv_str = humanize_list([f"{k} (x{v})" for k, v in inv.items() if v > 0])
         if not inv_str:
             inv_str = "Empty"
+        
+        snow_prob = await self.config.guild(ctx.guild).snowfall_probability()
 
         embed = discord.Embed(title=f"{ctx.author.display_name}'s Snow Profile", color=discord.Color.green())
         embed.add_field(name="Health", value=f"{data['hp']}/100")
         embed.add_field(name="Snowballs", value=data['snowballs'])
         embed.add_field(name="Inventory", value=inv_str, inline=False)
+        embed.add_field(name="Weather Forecast", value=f"{snow_prob}% Chance of Snow", inline=False)
         
         if data['frostbite_end'] > time.time():
             embed.add_field(name="Status", value=f"🥶 Frostbite (<t:{data['frostbite_end']}:R>)", inline=False)
