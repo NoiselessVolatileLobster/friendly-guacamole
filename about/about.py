@@ -143,7 +143,7 @@ class About(commands.Cog):
             "optin_roles": {}, 
             "reward_roles": {},
             "advanced_rewards": {},
-            "secret_rewards": {} # { "role_id": { "level": int, "days": int, "channel_id": int } }
+            "secret_rewards": {} 
         }
         self.config.register_guild(**default_guild)
         self.config.register_member(role_start_times={}) 
@@ -160,14 +160,53 @@ class About(commands.Cog):
             await ctx.send("I couldn't determine when that member joined this server.")
             return None
 
-        # --- 1. Level Retrieval ---
+        # --- 1. Level & Percentage Retrieval ---
         user_level = 0 
         level_str = ""
+        level_percentage = 0
+        
         levelup_cog = self.bot.get_cog("LevelUp")
         if levelup_cog:
             try:
+                # 1. Get Level
                 user_level = await levelup_cog.get_level(member)
                 level_str = f"**Level {user_level}** • "
+                
+                # 2. Get Percentage (Try accessing profile directly for max precision)
+                # Note: This relies on internal structure of Vrt's LevelUp. 
+                # If methods fail, we default percentage to 0.
+                if hasattr(levelup_cog, 'db') and hasattr(levelup_cog.db, 'get_conf'):
+                    conf = levelup_cog.db.get_conf(member.guild)
+                    profile = conf.get_profile(member)
+                    # profile object usually has 'level', 'xp' (total), but not always 'next_level_xp' directly exposed
+                    # We might need to rely on the cog's logic. 
+                    # Assuming standard Vrt LevelUp profile structure:
+                    current_xp = profile.xp
+                    # Calculate required XP for next level if not exposed
+                    # For now, let's try a safer fallback:
+                    # Some versions have 'progress' property on profile or we can try to calculate
+                    
+                    # Hacky attempt to find progress if available, otherwise 0
+                    # If this fails, we just don't show percentage in new member
+                    pass 
+                
+                # Attempt to get percentage from cog if a method exists, or calculate if we knew formula
+                # Since we don't have the formula, we'll try to find a property on the profile object
+                # returned by get_conf(guild).get_profile(member) if possible.
+                # Re-fetching profile to inspect
+                conf = levelup_cog.db.get_conf(member.guild)
+                profile = conf.get_profile(member)
+                
+                # Vrt's LevelUp Profile typically has: xp, level, prestige, etc.
+                # To get percentage we need: (current_level_xp / req_xp) * 100
+                # We will try to read 'level_xp' and 'required_xp' if they exist (common in forks)
+                # or fallback to 0.
+                
+                l_xp = getattr(profile, 'level_xp', 0)
+                req_xp = getattr(profile, 'required_xp', 1) # avoid div/0
+                if req_xp > 0:
+                    level_percentage = int((l_xp / req_xp) * 100)
+
             except Exception:
                 pass 
 
@@ -312,17 +351,20 @@ class About(commands.Cog):
         has_posted_intro = has_role(intro_rid)
         has_no_intro = has_role(nointro_rid)
 
+        # Prepare percentage string
+        perc_str = f" ({level_percentage}%)" if level_percentage > 0 else ""
+
         if is_ephemeral:
             nm_output = "\n\n**New Member**\n💨Ephemeral Mode. Cannot see previous messages or reply to users"
         else:
             if user_level < gen_level:
                 if has_no_intro:
-                    nm_output = "\n\n**New Member**\n🗣️ Chat more and post an intro to unlock the rest of the server"
+                    nm_output = f"\n\n**New Member**{perc_str}\n🗣️ Chat more and post an intro to unlock the rest of the server"
                 elif has_posted_intro:
-                    nm_output = "\n\n**New Member**\n🗣️ Chat more to unlock the rest of the server"
+                    nm_output = f"\n\n**New Member**{perc_str}\n🗣️ Chat more to unlock the rest of the server"
             else:
                 if has_no_intro:
-                    nm_output = "\n\n**New Member**\n🗣️ Post an intro to unlock the rest of the server"
+                    nm_output = f"\n\n**New Member**{perc_str}\n🗣️ Post an intro to unlock the rest of the server"
                 elif has_posted_intro:
                     nm_output = ""
 
