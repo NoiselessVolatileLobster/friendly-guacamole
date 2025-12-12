@@ -171,7 +171,7 @@ class Snowball(commands.Cog):
             # Check if slot occupied
             if data['active_booster']:
                 current = data['active_booster']['name']
-                return await ctx.send(f"You already have **{current}** equipped! Run `[p]unequip` first.")
+                return await ctx.send(f"You already have **{current}** equipped! Run `[p]snowunequip` first.")
 
             # Move from inventory to active
             data['inventory'][found_name] -= 1
@@ -189,7 +189,7 @@ class Snowball(commands.Cog):
         await ctx.send(f"✅ You equipped **{found_name}**!")
 
     @commands.command()
-    async def unequip(self, ctx):
+    async def snowunequip(self, ctx):
         """Unequip your current booster and return it to inventory."""
         if not await self.check_channel(ctx):
             return
@@ -589,11 +589,6 @@ class Snowball(commands.Cog):
             embed.add_field(name=f"Shop Items ({len(items)})", value=items_desc, inline=False)
         else:
             embed.add_field(name="Shop Items", value="No items configured.", inline=False)
-
-        @snowballset.group(name="item")
-        async def snowballset_item(self, ctx):
-            """Manage items."""
-            pass
 
     @snowballset.group(name="item")
     async def snowballset_item(self, ctx):
