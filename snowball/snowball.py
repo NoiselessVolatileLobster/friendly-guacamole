@@ -590,6 +590,8 @@ class Snowball(commands.Cog):
         else:
             embed.add_field(name="Shop Items", value="No items configured.", inline=False)
 
+        await ctx.send(embed=embed)
+
     @snowballset.group(name="item")
     async def snowballset_item(self, ctx):
         """Manage items."""
