@@ -36,8 +36,19 @@ class NewGameView(discord.ui.View):
         super().__init__(timeout=120)
         self.cog = cog
 
-    @discord.ui.button(label="Start New Game & Deal Cards", style=discord.ButtonStyle.success, emoji="🎲")
+    @discord.ui.button(label="Start New Game & Deal Cards", style=discord.ButtonStyle.success, emoji="軸")
     async def start_new_game(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Check if active tileset is valid before resetting
+        active_set_name = await self.cog.config.guild(interaction.guild).active_tileset()
+        tilesets = await self.cog.config.guild(interaction.guild).tilesets()
+        
+        if active_set_name not in tilesets or len(tilesets[active_set_name]) < 24:
+             await interaction.response.send_message(
+                f"Cannot start game: The active tileset '{active_set_name}' has fewer than 24 tiles.",
+                ephemeral=True
+            )
+             return
+
         # Reset the game state (new seed, clear cards)
         await self.cog.reset_game_state(interaction.guild)
         
@@ -49,19 +60,21 @@ class NewGameView(discord.ui.View):
         
         # Announce the new game
         await interaction.response.send_message(
-            f"🔄 **{interaction.user.display_name}** has started a new game! All cards have been reset and reshuffled.",
+            f"売 **{interaction.user.display_name}** has started a new game using the **{active_set_name}** tileset! All cards have been reset and reshuffled.",
         )
         self.stop()
 
 class Bingo(commands.Cog):
-    __version__ = "1.2.6"
+    __version__ = "1.3.0"
     __author__ = ["TrustyJAID"]
 
     def __init__(self, bot):
         self.bot = bot
         self.config = Config.get_conf(self, 218773382617890828)
         self.config.register_guild(
-            tiles=[],
+            tiles=[], # Deprecated, kept for migration
+            tilesets={"Standard": []}, # New system: Dict[name, List[str]]
+            active_tileset="Standard",
             stamp_colour="#e6d705",
             text_colour="#FFF8E7",
             textborder_colour="#333333",
@@ -77,6 +90,25 @@ class Bingo(commands.Cog):
             game_type="STANDARD",
         )
         self.config.register_member(stamps=[])
+
+    async def cog_load(self):
+        """Perform migration of old tiles to the new tileset system."""
+        for guild_id in await self.config.all_guilds():
+            guild = self.bot.get_guild(guild_id)
+            if not guild:
+                continue
+            
+            # Check if old tiles exist
+            old_tiles = await self.config.guild(guild).tiles()
+            tilesets = await self.config.guild(guild).tilesets()
+            
+            # If we have old tiles, but 'Standard' is empty, migrate them
+            if old_tiles and not tilesets.get("Standard"):
+                tilesets["Standard"] = old_tiles
+                await self.config.guild(guild).tilesets.set(tilesets)
+                # Clear the old list to avoid re-migration
+                await self.config.guild(guild).tiles.set([])
+                log.info(f"Migrated {len(old_tiles)} tiles to 'Standard' tileset for guild {guild.name}")
 
     async def red_delete_data_for_user(self, **kwargs):
         """
@@ -99,6 +131,145 @@ class Bingo(commands.Cog):
         Commands for setting bingo settings
         """
         pass
+
+    # --- New Tileset Management Group ---
+    @bingoset.group(name="tileset", aliases=["tiles"])
+    async def bingoset_tileset(self, ctx: commands.Context):
+        """
+        Manage Bingo tilesets.
+        
+        Tilesets allow you to have different themes (e.g. 'Standard', 'Christmas')
+        that you can swap between.
+        """
+        pass
+
+    @bingoset_tileset.command(name="list")
+    async def tileset_list(self, ctx: commands.Context):
+        """List all available tilesets."""
+        tilesets = await self.config.guild(ctx.guild).tilesets()
+        active = await self.config.guild(ctx.guild).active_tileset()
+        
+        if not tilesets:
+            return await ctx.send("No tilesets found.")
+
+        msg = "## Available Tilesets\n"
+        for name, tiles in tilesets.items():
+            status = " (Active)" if name == active else ""
+            msg += f"* **{name}**: {len(tiles)} tiles{status}\n"
+        
+        await ctx.send(msg)
+
+    @bingoset_tileset.command(name="add", aliases=["create"])
+    async def tileset_add(self, ctx: commands.Context, name: str):
+        """Create a new empty tileset."""
+        tilesets = await self.config.guild(ctx.guild).tilesets()
+        
+        if name in tilesets:
+            return await ctx.send(f"A tileset named `{name}` already exists.")
+        
+        tilesets[name] = []
+        await self.config.guild(ctx.guild).tilesets.set(tilesets)
+        await ctx.send(f"Created new tileset: **{name}**. Use `{ctx.clean_prefix}bingoset tileset addtiles {name} <tiles>` to populate it.")
+
+    @bingoset_tileset.command(name="delete", aliases=["remove"])
+    async def tileset_delete(self, ctx: commands.Context, name: str):
+        """Delete a tileset."""
+        tilesets = await self.config.guild(ctx.guild).tilesets()
+        active = await self.config.guild(ctx.guild).active_tileset()
+
+        if name not in tilesets:
+            return await ctx.send(f"Tileset `{name}` does not exist.")
+        
+        if name == active:
+            return await ctx.send(f"You cannot delete the active tileset. Load a different one first using `{ctx.clean_prefix}bingoset tileset load`.")
+
+        del tilesets[name]
+        await self.config.guild(ctx.guild).tilesets.set(tilesets)
+        await ctx.send(f"Deleted tileset: **{name}**.")
+
+    @bingoset_tileset.command(name="load", aliases=["active"])
+    async def tileset_load(self, ctx: commands.Context, name: str):
+        """Set the active tileset for the next game."""
+        tilesets = await self.config.guild(ctx.guild).tilesets()
+        
+        if name not in tilesets:
+            return await ctx.send(f"Tileset `{name}` does not exist.")
+        
+        await self.config.guild(ctx.guild).active_tileset.set(name)
+        # We also reset the game state because switching tiles invalidates current cards
+        await self.reset_game_state(ctx.guild)
+        await ctx.send(f"**{name}** is now the active tileset! The game board has been reset.")
+
+    @bingoset_tileset.command(name="addtiles")
+    async def tileset_addtiles(self, ctx: commands.Context, name: str, *, tiles: str):
+        """
+        Add tiles to a specific tileset.
+        
+        `name`: The name of the tileset.
+        `tiles`: Semicolon separated list of tiles (e.g. "Tile 1; Tile 2").
+        """
+        tilesets = await self.config.guild(ctx.guild).tilesets()
+        
+        if name not in tilesets:
+            return await ctx.send(f"Tileset `{name}` does not exist.")
+
+        new_tiles = [t.strip() for t in tiles.split(";") if t.strip()]
+        tilesets[name].extend(new_tiles)
+        
+        # Remove duplicates while preserving order? No, set doesn't preserve order. 
+        # Just sort them to be clean.
+        tilesets[name] = sorted(list(set(tilesets[name])))
+        
+        await self.config.guild(ctx.guild).tilesets.set(tilesets)
+        await ctx.send(f"Added {len(new_tiles)} tiles to **{name}**. Total tiles: {len(tilesets[name])}.")
+
+    @bingoset_tileset.command(name="removetiles")
+    async def tileset_removetiles(self, ctx: commands.Context, name: str, *, tiles: str):
+        """
+        Remove tiles from a specific tileset.
+        
+        `name`: The name of the tileset.
+        `tiles`: Semicolon separated list of tiles to remove (exact match).
+        """
+        tilesets = await self.config.guild(ctx.guild).tilesets()
+        
+        if name not in tilesets:
+            return await ctx.send(f"Tileset `{name}` does not exist.")
+
+        to_remove = [t.strip() for t in tiles.split(";") if t.strip()]
+        original_count = len(tilesets[name])
+        
+        tilesets[name] = [t for t in tilesets[name] if t not in to_remove]
+        removed_count = original_count - len(tilesets[name])
+        
+        await self.config.guild(ctx.guild).tilesets.set(tilesets)
+        await ctx.send(f"Removed {removed_count} tiles from **{name}**.")
+
+    @bingoset_tileset.command(name="view", aliases=["show"])
+    async def tileset_view(self, ctx: commands.Context, name: Optional[str] = None):
+        """
+        View tiles in a tileset. Defaults to active set if name not provided.
+        """
+        if name is None:
+            name = await self.config.guild(ctx.guild).active_tileset()
+            
+        tilesets = await self.config.guild(ctx.guild).tilesets()
+        
+        if name not in tilesets:
+            return await ctx.send(f"Tileset `{name}` does not exist.")
+            
+        tiles = tilesets[name]
+        if not tiles:
+            return await ctx.send(f"Tileset **{name}** is empty.")
+            
+        # Chunk text to avoid hitting discord limits
+        msg = f"**Tiles in {name}** ({len(tiles)}):\n"
+        tile_str = "; ".join(tiles)
+        
+        for page in textwrap.wrap(tile_str, 1900):
+             await ctx.send(page)
+
+    # --- End New Tileset Management Group ---
 
     @bingoset.command(name="stamp")
     async def bingoset_stamp(self, ctx: commands.Context, colour: Optional[discord.Colour] = None):
@@ -370,14 +541,32 @@ class Bingo(commands.Cog):
         Starts a new game of bingo by resetting all player cards and shuffling
         the tiles for everyone using a new random seed.
         """
+        # Retrieve Active Tileset Info
+        active_set_name = await self.config.guild(ctx.guild).active_tileset()
+        tilesets = await self.config.guild(ctx.guild).tilesets()
+        
+        if active_set_name not in tilesets:
+            # Fallback for safety, though should be handled by migration
+            tilesets["Standard"] = []
+            await self.config.guild(ctx.guild).tilesets.set(tilesets)
+            await self.config.guild(ctx.guild).active_tileset.set("Standard")
+            active_set_name = "Standard"
+
+        tiles = tilesets[active_set_name]
+
+        if len(tiles) < 24:
+            return await ctx.send(
+                f"The active tileset '{active_set_name}' has fewer than 24 tiles. "
+                f"Please add more tiles using `{ctx.clean_prefix}bingoset tileset addtiles` before starting a game."
+            )
+
         await self.reset_game_state(ctx.guild)
         
-        # Manually generate seed for message if needed, but it's set in reset_game_state
-        # fetching it just for display
         new_seed = await self.config.guild(ctx.guild).seed()
         
         await ctx.send(
-            f"🎉 Starting a new bingo game! All player cards have been reset, and a new card arrangement has been generated using seed `{new_seed}`."
+            f"脂 Starting a new bingo game using the **{active_set_name}** tileset! "
+            f"All player cards have been reset, and a new card arrangement has been generated using seed `{new_seed}`."
         )
 
 
@@ -399,10 +588,18 @@ class Bingo(commands.Cog):
     @bingoset.command(name="clear")
     async def bingoset_clear(self, ctx: commands.Context):
         """
-        Clear out the current bingo cards tiles.
+        Clear out the ACTIVE tileset's tiles.
         """
-        await self.config.guild(ctx.guild).tiles.clear()
-        await ctx.send("I have reset the servers bingo card tiles.")
+        active_name = await self.config.guild(ctx.guild).active_tileset()
+        tilesets = await self.config.guild(ctx.guild).tilesets()
+        
+        if active_name in tilesets:
+            tilesets[active_name] = []
+            await self.config.guild(ctx.guild).tilesets.set(tilesets)
+            await ctx.send(f"I have cleared the tiles for the active tileset: **{active_name}**.")
+        else:
+             await ctx.send("Active tileset not found in configuration.")
+
 
     @bingoset.command(name="seed")
     async def bingoset_seed(self, ctx: commands.Context, seed: int):
@@ -427,20 +624,25 @@ class Bingo(commands.Cog):
         Show the current bingo card settings
         """
         settings = await self.get_card_options(ctx)
-        # Manually fetch tiles count and bank prize for display
-        tiles_count = len(await self.config.guild(ctx.guild).tiles())
+        
+        # Tiles info
+        active_set_name = await self.config.guild(ctx.guild).active_tileset()
+        tilesets = await self.config.guild(ctx.guild).tilesets()
+        tiles_count = len(tilesets.get(active_set_name, []))
+
         bank_prize = await self.config.guild(ctx.guild).bank_prize()
         game_type = await self.config.guild(ctx.guild).game_type()
         
         # Using the standard bank module for currency name
         currency_name = await bank.get_currency_name(ctx.guild)
         
-        msg = f"Tiles Set: `{tiles_count}`\n"
+        msg = f"Active Tileset: `{active_set_name}`\n"
+        msg += f"Tiles in Active Set: `{tiles_count}`\n"
         msg += f"Game Type: `{game_type}` ({GAME_TYPES.get(game_type, 'Unknown Type')})\n"
         msg += f"Bank Prize: `{bank_prize} {currency_name}`\n"
 
         for k, v in settings.items():
-            if k in ["bank_prize", "seed", "game_type"]: # Skip items already printed or not needed
+            if k in ["bank_prize", "seed", "game_type"]: 
                 continue
             
             if k == "watermark":
@@ -450,27 +652,9 @@ class Bingo(commands.Cog):
             if k == "background_tile":
                 v = await self.config.guild(ctx.guild).background_tile()
                 
-            name = k.replace("_", " ").title() # Use more readable names
+            name = k.replace("_", " ").title()
             msg += f"{name}: `{v}`\n"
         await ctx.maybe_send_embed(msg)
-
-    @bingoset.command(name="tiles")
-    async def bingoset_tiles(self, ctx: commands.Context, *, tiles: str):
-        """
-        Set the tiles for the servers bingo cards.
-
-        `tiles` - Separate each tile with `;`
-        """
-        options = set(tiles.split(";"))
-        if len(options) < 24:
-            await ctx.send("You must provide exactly 24 tile options to make a bingo card.")
-            return
-        options = sorted(options)
-        await self.config.guild(ctx.guild).tiles.set(options)
-        await self.config.clear_all_members(guild=ctx.guild)
-        card_settings = await self.get_card_options(ctx)
-        file = await self.create_bingo_card(options, guild_name=ctx.guild.name, **card_settings)
-        await ctx.send("Here's how your bingo cards will appear", file=file)
 
     async def check_stamps(self, stamps: List[List[int]], guild: discord.Guild) -> bool:
         """
@@ -539,7 +723,20 @@ class Bingo(commands.Cog):
         provided will just show your current bingo card.
         """
         # Fetching settings from config
-        tiles = await self.config.guild(ctx.guild).tiles()
+        active_set_name = await self.config.guild(ctx.guild).active_tileset()
+        tilesets = await self.config.guild(ctx.guild).tilesets()
+        
+        if active_set_name not in tilesets:
+             return await ctx.send("Error: The active tileset was not found. Please contact an admin.")
+             
+        tiles = tilesets[active_set_name]
+        
+        if len(tiles) < 24:
+            return await ctx.send(
+                f"The active tileset '{active_set_name}' has fewer than 24 tiles. "
+                "An admin needs to add more tiles before cards can be generated."
+            )
+
         stamps = await self.config.member(ctx.author).stamps()
         bank_prize = await self.config.guild(ctx.guild).bank_prize()
         msg = None
@@ -562,7 +759,7 @@ class Bingo(commands.Cog):
         if await self.check_stamps(stamps, ctx.guild):
             # Create Win Embed
             win_embed = discord.Embed(
-                title="🚨 BINGO! 🚨", 
+                title="圷 BINGO! 圷", 
                 description=f"Congratulations **{ctx.author.display_name}**! You have won the game!", 
                 color=discord.Color.green()
             )
@@ -574,7 +771,7 @@ class Bingo(commands.Cog):
                     # Using the standard Red V3 bank module, as confirmed by your working snippet
                     await bank.deposit_credits(ctx.author, bank_prize)
                     currency = await bank.get_currency_name(ctx.guild)
-                    win_embed.add_field(name="Prize Won", value=f"🏆 **{bank_prize}** {currency}", inline=False)
+                    win_embed.add_field(name="Prize Won", value=f"醇 **{bank_prize}** {currency}", inline=False)
                 except Exception as e:
                     # This will catch issues like Economy not being loaded or transaction failures
                     log.error("Failed to deposit bank prize using redbot.core.bank.", exc_info=True)
@@ -588,11 +785,16 @@ class Bingo(commands.Cog):
         # Step 3: Generate and send the card
         seed = int(await self.config.guild(ctx.guild).seed()) + ctx.author.id
         random.seed(seed)
-        random.shuffle(tiles)
+        
+        # We must assume the list of tiles is > 24, which we checked earlier.
+        # Create a local copy to shuffle
+        tiles_to_shuffle = tiles.copy()
+        random.shuffle(tiles_to_shuffle)
+        
         card_settings = await self.get_card_options(ctx)
         
         temp = await self.create_bingo_card(
-            tiles, stamps=stamps, guild_name=ctx.guild.name, **card_settings
+            tiles_to_shuffle, stamps=stamps, guild_name=ctx.guild.name, **card_settings
         )
         
         # Send the message and the generated card image
