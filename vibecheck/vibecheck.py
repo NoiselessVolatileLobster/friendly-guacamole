@@ -54,6 +54,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
             # New Member Thresholds (Kick/Level 3)
             new_member_age_seconds=None, # How long (seconds) user is considered "new"
             new_member_score_threshold=None, # Score that triggers kick for new members
+            new_member_kick_reason="VibeCheck: New member vibe score too low", # Reason for new member kick
             
             # WarnSystem Config
             warn_threshold=-100,       # Level 1
@@ -321,15 +322,16 @@ class VibeCheck(getattr(commands, "Cog", object)):
 
     @vibecheckset.command(name="newmember")
     @checks.admin_or_permissions(manage_guild=True)
-    async def set_new_member_threshold(self, ctx: commands.Context, minutes: int, threshold: int):
+    async def set_new_member_threshold(self, ctx: commands.Context, minutes: int, threshold: int, *, reason: str = "VibeCheck: New member vibe score too low"):
         """
         Sets strict thresholds for new members (triggers WarnSystem Level 3 / Kick).
         
         Args:
             minutes: How many minutes after joining a user is considered "new". (Set to 0 to disable).
             threshold: The negative vibe score that triggers a kick for new users (e.g. -10).
+            reason: (Optional) Custom reason for the kick.
             
-        Example: [p]vibecheckset newmember 60 -10
+        Example: [p]vibecheckset newmember 60 -10 Spamming bad vibes early
         (If user joined < 60 mins ago and reaches -10 score, they get Kicked).
         """
         if minutes <= 0:
@@ -342,11 +344,13 @@ class VibeCheck(getattr(commands, "Cog", object)):
             
         await self.conf.guild(ctx.guild).new_member_age_seconds.set(minutes * 60)
         await self.conf.guild(ctx.guild).new_member_score_threshold.set(threshold)
+        await self.conf.guild(ctx.guild).new_member_kick_reason.set(reason)
         
         await ctx.send(
             f"✅ **New Member Threshold Set**\n"
             f"Users who joined less than **{minutes} minutes** ago will trigger a **Level 3 Warning (Kick)** "
-            f"if their vibe score drops to **{threshold}**."
+            f"if their vibe score drops to **{threshold}**.\n"
+            f"Reason: *{reason}*"
         )
 
     @vibecheckset.command(name="role")
@@ -535,8 +539,9 @@ class VibeCheck(getattr(commands, "Cog", object)):
         # New Member
         new_mem_sec = settings.get('new_member_age_seconds')
         new_mem_score = settings.get('new_member_score_threshold')
+        new_mem_reason = settings.get('new_member_kick_reason', "Default Reason")
         if new_mem_sec and new_mem_score:
-            new_mem_str = f"Age < {new_mem_sec // 60}m & Score <= {new_mem_score} -> Kick"
+            new_mem_str = f"Age < {new_mem_sec // 60}m & Score <= {new_mem_score} -> Kick\nReason: {new_mem_reason}"
         else:
             new_mem_str = "Disabled"
 
@@ -798,36 +803,14 @@ class VibeCheck(getattr(commands, "Cog", object)):
                     age_seconds = (now - joined_at).total_seconds()
                     
                     if age_seconds < new_mem_age:
+                        # RETRIEVE REASON from CONFIG
+                        reason = await guild_conf.new_member_kick_reason()
                         await self._trigger_warnsystem(
                             target_guild, member_receiver, giver, 3, 
-                            f"VibeCheck: New member dropped below {new_mem_thresh} (Score: {new_vibes})"
+                            f"{reason} (Score: {new_vibes})"
                         )
-                        # We return/skip standard kick check if this triggered? 
-                        # Actually standard kick might be *lower* threshold (more severe). 
-                        # But standard kick logic is `new_vibes <= kick_thresh`. 
-                        # If NewMemberThreshold is -10 and Standard is -100. user is -15.
-                        # New member triggers. Standard does NOT.
-                        # If user is -150. New member triggers. Standard triggers.
-                        # To prevent double warn, we should use elif structure for the REST.
-                        # BUT we are inside the elif chain. So if New Member triggers, the rest won't.
-                        # That is correct behavior (take the highest priority matched action).
                         pass # placeholder to continue logic flow
-                    
-                    # If not new member (too old), fall through to standard kick
             
-            # Check Standard Kick (Medium Priority)
-            # Use separate if/elif chain if we didn't trigger new member above?
-            # The structure `if ban ... elif new_mem ... elif kick` implies MUTUAL EXCLUSIVITY.
-            # If New Member triggers, we do NOT check standard kick. This is good to prevent spam.
-            if kick_thresh is not None and new_vibes <= kick_thresh:
-                # Re-check to ensure we didn't already trigger above?
-                # Actually Python's elif ensures that.
-                # BUT wait. If I failed New Member check (because too old), I WANT to fall through to standard kick.
-                # My previous `elif` structure prevents that falling through if the *threshold* matched but *age* didn't.
-                # Let's restructure.
-                
-                pass # Logic refined below to handle this.
-
             # RESTRUCTURED LOGIC for correct fallback
             triggered = False
             
@@ -845,7 +828,9 @@ class VibeCheck(getattr(commands, "Cog", object)):
                         joined_at = joined_at.replace(tzinfo=datetime.timezone.utc)
                     now = datetime.now(datetime.timezone.utc)
                     if (now - joined_at).total_seconds() < new_mem_age:
-                        await self._trigger_warnsystem(target_guild, member_receiver, giver, 3, f"VibeCheck: New member dropped below {new_mem_thresh} (Score: {new_vibes})")
+                        # RETRIEVE REASON from CONFIG
+                        reason = await guild_conf.new_member_kick_reason()
+                        await self._trigger_warnsystem(target_guild, member_receiver, giver, 3, f"{reason} (Score: {new_vibes})")
                         triggered = True
 
             # 3. Standard Kick (If not banned and not already kicked as new member)
