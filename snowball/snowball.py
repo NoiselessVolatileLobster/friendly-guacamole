@@ -291,7 +291,6 @@ class Snowball(commands.Cog):
         if not await self.check_status(ctx):
             return
 
-        # --- FIX 1: Spam Prevention ---
         member_conf = self.config.member(ctx.author)
         gathering_end = await member_conf.gathering_end()
         if gathering_end > time.time():
@@ -353,6 +352,7 @@ class Snowball(commands.Cog):
             return
 
         inventory = await self.config.member(ctx.author).inventory()
+        # Find exact casing
         found_name = None
         for k in inventory.keys():
             if k.lower() == item_name.lower():
@@ -371,7 +371,6 @@ class Snowball(commands.Cog):
         heal_amount = random.randint(5, 15) + item_data['bonus']
         
         async with self.config.member(ctx.author).all() as data:
-            # --- FIX 2: Prevent Overeating ---
             if data['hp'] >= 100:
                 return await ctx.send("😋 You are already fully healthy! Save the cookie for later.")
 
@@ -441,7 +440,6 @@ class Snowball(commands.Cog):
         if not await self.check_status(ctx):
             return
         
-        # --- FIX 3: Bot Targeting ---
         if target.bot:
             return await ctx.send("🤖 Robots don't feel the cold. Save your ammo!")
         
@@ -494,16 +492,12 @@ class Snowball(commands.Cog):
             finish_time = int(time.time()) + (minutes * 60)
             
             # --- FROSTBITE LOGIC ---
-            # Update Target Stats (Taken)
             async with self.config.member(target).all() as t_stats:
                 t_stats['frostbite_end'] = finish_time
-                current_taken = t_stats.get('stat_frostbites_taken', 0)
-                t_stats['stat_frostbites_taken'] = current_taken + 1
+                t_stats['stat_frostbites_taken'] += 1
             
-            # Update Attacker Stats (Inflicted)
             async with self.config.member(ctx.author).all() as a_stats:
-                current_inflicted = a_stats.get('stat_frostbites_inflicted', 0)
-                a_stats['stat_frostbites_inflicted'] = current_inflicted + 1
+                a_stats['stat_frostbites_inflicted'] += 1
             
             msg += f"\n🥶 **{target.display_name}** has succumbed to **Frostbite**! They are out for {minutes} minutes."
 
@@ -657,16 +651,31 @@ class Snowball(commands.Cog):
         snow_prob = await self.config.guild(ctx.guild).snowfall_probability()
 
         embed = discord.Embed(title=f"{ctx.author.display_name}'s Snow Profile", color=discord.Color.green())
+        
+        # Row 1
         embed.add_field(name="Health", value=f"{data['hp']}/100", inline=True)
         embed.add_field(name="Snowballs", value=data['snowballs'], inline=True)
-        embed.add_field(name="Equipped Booster", value=active_str, inline=False)
+        embed.add_field(name="Weather", value=f"{snow_prob}% Chance", inline=True)
+        
+        # Row 2
+        embed.add_field(name="Equipped", value=active_str, inline=False)
         embed.add_field(name="Inventory", value=inv_str, inline=False)
         
+        # Row 3: Frostbite Stats
         inflicted = data.get("stat_frostbites_inflicted", 0)
         taken = data.get("stat_frostbites_taken", 0)
         embed.add_field(name="Frostbite Stats", value=f"❄️ Inflicted: {inflicted}\n🥶 Received: {taken}", inline=True)
-
-        embed.add_field(name="Weather Forecast", value=f"{snow_prob}% Chance of Snow", inline=False)
+        
+        # Row 4: Career Stats
+        career_stats = (
+            f"⚔️ Damage Dealt: {data['stat_damage_dealt']}\n"
+            f"🤕 Hits Taken: {data['stat_hits_taken']}\n"
+            f"🍪 Cookies Eaten: {data.get('stat_cookies_eaten', 0)}\n"
+            f"☕ Drinks Drunk: {data.get('stat_drinks_drunk', 0)}\n"
+            f"❄️ Total Balls Made: {data['stat_snowballs_made']}\n"
+            f"💰 Credits Spent: {data['stat_credits_spent']}"
+        )
+        embed.add_field(name="Career Stats", value=career_stats, inline=True)
         
         active_drink = data.get('active_drink')
         if active_drink and active_drink['expires_at'] > time.time():
