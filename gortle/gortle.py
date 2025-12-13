@@ -219,7 +219,12 @@ class Gortle(commands.Cog):
                 next_game_ts = await self.config.next_game_timestamp()
                 auto_freq = await self.config.schedule_auto_freq()
                 
-                if auto_freq > 0:
+                # Check Sleep Status:
+                # If we have 3 or more games with 0 guesses, we are "asleep".
+                # We do NOT schedule new games until a manual game is started.
+                sleep_streak = await self.config.consecutive_no_guesses()
+                
+                if auto_freq > 0 and sleep_streak < 3:
                     if next_game_ts == 0 or timestamp >= next_game_ts:
                         # Swap order: Calculate next time FIRST, then start game.
                         # This allows start_new_game to see the valid FUTURE timestamp for the embed.
@@ -348,6 +353,9 @@ class Gortle(commands.Cog):
             # Add expiration timestamp if schedule is active
             next_ts = await self.config.next_game_timestamp()
             now_ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+            
+            # Note: If we just woke up from sleep manually, next_ts might be 0 here because
+            # the loop hasn't run yet to set the new schedule. That is intended behavior.
             if next_ts > now_ts:
                  keyboard_view += f"\n\n**Next Game:** <t:{next_ts}:R>"
             
