@@ -42,8 +42,6 @@ class VibeCheck(getattr(commands, "Cog", object)):
         
         # Guild settings
         self.conf.register_guild(
-            vibe_check_role_id=None,
-            vibe_threshold=-10,
             log_channel_id=None,
             good_vibes_cooldown=3600,  # Default 60 minutes (in seconds)
             bad_vibes_cooldown=3600,   # Default 60 minutes (in seconds)
@@ -388,31 +386,6 @@ class VibeCheck(getattr(commands, "Cog", object)):
             f"will be granted **{xp} XP**."
         )
 
-    @vibecheckset.command(name="role")
-    @checks.admin_or_permissions(manage_roles=True)
-    async def set_vibe_role(self, ctx: commands.Context, *, role: discord.Role = None):
-        """Sets the role to be assigned when a user's vibes drop below threshold."""
-        if role is None:
-            await self.conf.guild(ctx.guild).vibe_check_role_id.set(None)
-            await ctx.send("Automatic Vibe Check role assignment has been **disabled**.")
-            return
-
-        await self.conf.guild(ctx.guild).vibe_check_role_id.set(role.id)
-        await ctx.send(f"The Vibe Check role has been set to **{role.name}**.")
-            
-    @vibecheckset.command(name="threshold")
-    @checks.admin_or_permissions(manage_guild=True)
-    async def set_vibe_threshold(self, ctx: commands.Context, threshold: int):
-        """Sets the negative vibes score threshold for assigning the Vibe Check role."""
-        if threshold >= 0:
-            return await ctx.send("The threshold must be a negative integer (e.g., `-15`).")
-            
-        await self.conf.guild(ctx.guild).vibe_threshold.set(threshold)
-        await ctx.send(
-            f"✅ The Vibe Check role threshold for this server is now set to **{threshold}**."
-            f" Users will receive the role if their score drops to or below this value."
-        )
-
     @vibecheckset.command(name="logchannel")
     @checks.admin_or_permissions(manage_guild=True)
     async def set_vibe_log_channel(self, ctx: commands.Context, channel: discord.TextChannel = None):
@@ -559,9 +532,6 @@ class VibeCheck(getattr(commands, "Cog", object)):
         """Shows the current VibeCheck configuration for this server."""
         settings = await self.conf.guild(ctx.guild).all()
         
-        # Thresholds
-        threshold = settings.get('vibe_threshold')
-        
         warn_thresh = settings.get('warn_threshold')
         warn_thresh_str = f"{warn_thresh} ({settings.get('warn_reason')})" if warn_thresh is not None else "Disabled"
         
@@ -589,14 +559,6 @@ class VibeCheck(getattr(commands, "Cog", object)):
         else:
             new_mem_xp_str = "Disabled"
 
-        # Role
-        role_id = settings.get('vibe_check_role_id')
-        if role_id is None:
-            role_text = "Not Set (Disabled)"
-        else:
-            role = ctx.guild.get_role(role_id)
-            role_text = role.name if role else f"Deleted Role ({role_id})"
-            
         # Log Channel
         log_id = settings.get('log_channel_id')
         if log_id is None:
@@ -619,8 +581,6 @@ class VibeCheck(getattr(commands, "Cog", object)):
         hard_rt_str = str(hard_rt) if hard_rt is not None else "Disabled"
 
         embed = discord.Embed(title=f"VibeCheck Settings for {ctx.guild.name}", color=discord.Color.blue())
-        embed.add_field(name="Role Threshold", value=str(threshold), inline=True)
-        embed.add_field(name="Vibe Check Role", value=role_text, inline=True)
         embed.add_field(name="Log Channel", value=log_text, inline=False)
         
         embed.add_field(name="Good Vibes Cooldown", value=good_cd_str, inline=True)
@@ -847,10 +807,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
         if not member_receiver or not target_guild:
             return 
             
-        # 4. Run Role Assignment Check
-        await self._vibe_check_role_assignment(member_receiver, new_vibes)
-
-        # --- 4.5 NEW: Check for New Member XP Reward ---
+        # 4. Check for New Member XP Reward
         # Logic: If they just crossed the threshold UPWARDS, are "new", and haven't got it yet.
         if new_vibes > current_vibes: # Only on gain
             guild_conf = self.conf.guild(target_guild)
@@ -976,65 +933,12 @@ class VibeCheck(getattr(commands, "Cog", object)):
         embed.add_field(name="Old Score", value=old_vibes, inline=True)
         embed.add_field(name="New Score", value=new_vibes, inline=True)
         
-        # Logging for Role Threshold Breach
-        VIBE_THRESHOLD = await self.conf.guild(guild).vibe_threshold()
-        
-        threshold_breach_message = None
-        
-        if new_vibes <= VIBE_THRESHOLD < old_vibes:
-            threshold_breach_message = f"**{receiver.mention}** has failed the Vibe Check! Score dropped to **{new_vibes}** (Threshold: {VIBE_THRESHOLD})."
-            embed.color = discord.Color.dark_red()
-        elif new_vibes > VIBE_THRESHOLD and old_vibes <= VIBE_THRESHOLD:
-            threshold_breach_message = f"**{receiver.mention}** has passed the Vibe Check and recovered! Score is now **{new_vibes}** (Threshold: {VIBE_THRESHOLD})."
-            embed.color = discord.Color.dark_green()
-            
         try:
             await log_channel.send(embed=embed)
-            
-            if threshold_breach_message:
-                await log_channel.send(threshold_breach_message)
-                
         except discord.Forbidden:
             log.error(f"Bot lacks permissions to send messages in log channel {log_channel.name}.")
         except discord.HTTPException as e:
             log.error(f"HTTP error sending log message: {e}")
-
-    async def _vibe_check_role_assignment(self, member: discord.Member, new_vibes: int):
-        """Checks the vibes score and assigns/removes the Vibe Check role."""
-        
-        VIBE_THRESHOLD = await self.conf.guild(member.guild).vibe_threshold()
-        VIBE_CHECK_ROLE_ID = await self.conf.guild(member.guild).vibe_check_role_id()
-        
-        if VIBE_CHECK_ROLE_ID is None:
-            return
-
-        vibe_role = member.guild.get_role(VIBE_CHECK_ROLE_ID)
-
-        if vibe_role is None:
-            log.warning(f"Configured Role ID {VIBE_CHECK_ROLE_ID} not found in guild {member.guild.name}.")
-            return
-
-        has_role = vibe_role in member.roles
-
-        # Add Role: Score is less than or EQUAL TO threshold
-        if new_vibes <= VIBE_THRESHOLD and not has_role:
-            try:
-                await member.add_roles(vibe_role, reason=f"Vibes score dropped to or below {VIBE_THRESHOLD} (Automatic Vibe Check).")
-                log.info(f"Assigned Vibe Check role to {member.display_name}.")
-            except discord.Forbidden:
-                log.error(f"Bot lacks permissions to assign role {vibe_role.name} in {member.guild.name}. Check hierarchy.")
-            except discord.HTTPException as e:
-                log.error(f"HTTP error assigning role: {e}")
-
-        # Remove Role: Score is strictly GREATER THAN threshold (recovered)
-        elif new_vibes > VIBE_THRESHOLD and has_role:
-            try:
-                await member.remove_roles(vibe_role, reason=f"Vibes score recovered to above {VIBE_THRESHOLD}.")
-                log.info(f"Removed Vibe Check role from {member.display_name}.")
-            except discord.Forbidden:
-                log.error(f"Bot lacks permissions to remove role {vibe_role.name} in {member.guild.name}. Check hierarchy.")
-            except discord.HTTPException as e:
-                log.error(f"HTTP error removing role: {e}")
                 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
