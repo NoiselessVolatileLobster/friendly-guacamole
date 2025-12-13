@@ -45,6 +45,7 @@ class Gortle(commands.Cog):
             "game_number": 0,
             "game_active": False,
             "cooldown_reset_timestamp": 0, # Timestamp when cooldowns were last "cleared" (new game start)
+            "consecutive_no_guesses": 0, # Tracks how many games in a row had zero interaction
             "game_state": {
                 "solved_indices": [],
                 "found_letters": [], # Letters found (Yellow or Green)
@@ -239,7 +240,7 @@ class Gortle(commands.Cog):
             # Update Reset Timestamp for Cooldowns (Everyone starts fresh)
             await self.config.cooldown_reset_timestamp.set(int(datetime.datetime.now(datetime.timezone.utc).timestamp()))
 
-            # Check if previous game needs revealing
+            # Check if previous game needs revealing or counting for sleep
             active = await self.config.game_active()
             old_word = await self.config.current_word()
             
@@ -259,11 +260,48 @@ class Gortle(commands.Cog):
                 return
 
             if active and old_word:
+                # Handle Expiration of previous game
                 embed = discord.Embed(title="Gortle Expired!", description=f"The word was **{old_word.upper()}**.", color=discord.Color.red())
                 thumb = await self.config.guild(target_channel.guild).thumbnail_url()
                 if thumb:
                     embed.set_thumbnail(url=thumb)
                 await target_channel.send(embed=embed)
+
+                # SLEEP LOGIC: Check if the expired game had 0 guesses
+                state = await self.config.game_state()
+                history = state.get("history", [])
+                
+                if len(history) == 0:
+                    # No guesses made, increment sleep counter
+                    current_streak = await self.config.consecutive_no_guesses() + 1
+                    await self.config.consecutive_no_guesses.set(current_streak)
+                    
+                    if current_streak >= 3 and not manual:
+                        # Go to sleep
+                        prefixes = await self.bot.get_valid_prefixes(target_channel.guild)
+                        prefix = prefixes[0] if prefixes else "[p]"
+                        
+                        sleep_embed = discord.Embed(
+                            title="Gortle's Gone To Sleep", 
+                            description=f"Three games with no guesses. Zzz...\nType `{prefix}newgortle` to wake me up!",
+                            color=discord.Color.dark_grey()
+                        )
+                        if thumb:
+                            sleep_embed.set_thumbnail(url=thumb)
+                            
+                        await target_channel.send(embed=sleep_embed)
+                        
+                        # Disable auto-scheduler and mark inactive
+                        await self.config.next_game_timestamp.set(0)
+                        await self.config.game_active.set(False)
+                        return
+                else:
+                    # Guesses were made, reset counter
+                    await self.config.consecutive_no_guesses.set(0)
+
+            # If starting manually, always wake up (reset sleep counter)
+            if manual:
+                await self.config.consecutive_no_guesses.set(0)
 
             # Pick new word
             used = await self.config.used_words()
@@ -453,7 +491,7 @@ class Gortle(commands.Cog):
         for i, char in enumerate(guess_chars):
             if char == sol_chars[i]:
                 guess_visual[i] = self._get_emoji_str(char, self.EMOJI_CORRECT)
-                sol_remaining[i] = None
+                sol_remaining[i] = None 
                 
                 # Mark this instance as matched in this guess
                 matched_in_guess[char] += 1
@@ -587,6 +625,8 @@ class Gortle(commands.Cog):
             await self.handle_loss(message.channel, solution)
 
     async def handle_win(self, winner, channel, game_num):
+        # Game finished, so reset streak of no-guesses
+        await self.config.consecutive_no_guesses.set(0)
         await self.config.game_active.set(False)
         
         state = await self.config.game_state()
@@ -672,6 +712,8 @@ class Gortle(commands.Cog):
         await channel.send(embed=embed)
 
     async def handle_loss(self, channel, solution):
+        # Game finished (lost), so reset streak of no-guesses
+        await self.config.consecutive_no_guesses.set(0)
         await self.config.game_active.set(False)
         embed = discord.Embed(title="Gortle Failed!", 
                               description=f"Max guesses reached! The word was **{solution.upper()}**.", 
