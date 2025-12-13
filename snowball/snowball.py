@@ -492,12 +492,16 @@ class Snowball(commands.Cog):
             finish_time = int(time.time()) + (minutes * 60)
             
             # --- FROSTBITE LOGIC ---
+            # Update Target Stats (Taken)
             async with self.config.member(target).all() as t_stats:
                 t_stats['frostbite_end'] = finish_time
-                t_stats['stat_frostbites_taken'] += 1
+                current_taken = t_stats.get('stat_frostbites_taken', 0)
+                t_stats['stat_frostbites_taken'] = current_taken + 1
             
+            # Update Attacker Stats (Inflicted)
             async with self.config.member(ctx.author).all() as a_stats:
-                a_stats['stat_frostbites_inflicted'] += 1
+                current_inflicted = a_stats.get('stat_frostbites_inflicted', 0)
+                a_stats['stat_frostbites_inflicted'] = current_inflicted + 1
             
             msg += f"\n🥶 **{target.display_name}** has succumbed to **Frostbite**! They are out for {minutes} minutes."
 
