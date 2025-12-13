@@ -807,7 +807,7 @@ class Snowball(commands.Cog):
     @snowballset.command(name="channel")
     async def set_channel(self, ctx, channel: discord.TextChannel = None):
         """
-        Set the channel where snowball fights are allowed. 
+        Set the channel where snowball fights are allowed..
         Leave blank to allow fights in all channels.
         """
         if channel is None:
