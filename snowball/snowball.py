@@ -111,6 +111,7 @@ class Snowball(commands.Cog):
             "active_booster": {}, # {name, current_durability, max_durability}
             "active_drink": {},   # {name, bonus, expires_at}
             "frostbite_end": 0, # Timestamp
+            "gathering_end": 0, # Timestamp to prevent spam
             
             # Stats
             "stat_damage_dealt": 0,
@@ -290,6 +291,12 @@ class Snowball(commands.Cog):
         if not await self.check_status(ctx):
             return
 
+        # --- FIX 1: Spam Prevention ---
+        member_conf = self.config.member(ctx.author)
+        gathering_end = await member_conf.gathering_end()
+        if gathering_end > time.time():
+            return await ctx.send(f"❄️ You are already busy gathering snow! Done <t:{int(gathering_end)}:R>.")
+
         item_bonus, time_reduction, booster_name = await self.get_equipped_booster_bonus(ctx.author)
         
         snow_prob = await self.config.guild(ctx.guild).snowfall_probability()
@@ -297,6 +304,9 @@ class Snowball(commands.Cog):
 
         base_time = await self.config.guild(ctx.guild).snowball_roll_time()
         actual_time = max(5, base_time - time_reduction)
+        
+        # Lock the user
+        await member_conf.gathering_end.set(int(time.time() + actual_time))
         
         await ctx.send(f"❄️ gathering snow... (Probability: {snow_prob}% | Time: {actual_time}s)")
         
@@ -343,7 +353,6 @@ class Snowball(commands.Cog):
             return
 
         inventory = await self.config.member(ctx.author).inventory()
-        # Find exact casing
         found_name = None
         for k in inventory.keys():
             if k.lower() == item_name.lower():
@@ -355,7 +364,6 @@ class Snowball(commands.Cog):
 
         guild_items = await self.config.guild(ctx.guild).items()
         
-        # Check type
         if found_name not in guild_items or guild_items[found_name]['type'] != 'cookie':
              return await ctx.send(f"**{found_name}** is not a cookie! You cannot eat this to heal.")
 
@@ -363,6 +371,10 @@ class Snowball(commands.Cog):
         heal_amount = random.randint(5, 15) + item_data['bonus']
         
         async with self.config.member(ctx.author).all() as data:
+            # --- FIX 2: Prevent Overeating ---
+            if data['hp'] >= 100:
+                return await ctx.send("😋 You are already fully healthy! Save the cookie for later.")
+
             data['inventory'][found_name] -= 1
             if data['inventory'][found_name] <= 0:
                 del data['inventory'][found_name]
@@ -429,6 +441,10 @@ class Snowball(commands.Cog):
         if not await self.check_status(ctx):
             return
         
+        # --- FIX 3: Bot Targeting ---
+        if target.bot:
+            return await ctx.send("🤖 Robots don't feel the cold. Save your ammo!")
+        
         if target.id == ctx.author.id:
             return await ctx.send("Don't hit yourself.")
 
@@ -481,7 +497,6 @@ class Snowball(commands.Cog):
             # Update Target Stats (Taken)
             async with self.config.member(target).all() as t_stats:
                 t_stats['frostbite_end'] = finish_time
-                # Safely get current value in case of weird state, default 0
                 current_taken = t_stats.get('stat_frostbites_taken', 0)
                 t_stats['stat_frostbites_taken'] = current_taken + 1
             
@@ -647,7 +662,6 @@ class Snowball(commands.Cog):
         embed.add_field(name="Equipped Booster", value=active_str, inline=False)
         embed.add_field(name="Inventory", value=inv_str, inline=False)
         
-        # --- FIXED FROSTBITE STATS DISPLAY ---
         inflicted = data.get("stat_frostbites_inflicted", 0)
         taken = data.get("stat_frostbites_taken", 0)
         embed.add_field(name="Frostbite Stats", value=f"❄️ Inflicted: {inflicted}\n🥶 Received: {taken}", inline=True)
