@@ -121,8 +121,8 @@ class Snowball(commands.Cog):
             "stat_hp_lost": 0,
             "stat_hp_gained": 0,
             "stat_credits_spent": 0,
-            "stat_frostbites_inflicted": 0, # NEW
-            "stat_frostbites_taken": 0      # NEW
+            "stat_frostbites_inflicted": 0,
+            "stat_frostbites_taken": 0
         }
 
         self.config.register_guild(**default_guild)
@@ -477,15 +477,19 @@ class Snowball(commands.Cog):
             minutes = 15 + abs(current_hp)
             finish_time = int(time.time()) + (minutes * 60)
             
-            # --- FROSTBITE LOGIC START ---
+            # --- FROSTBITE LOGIC ---
+            # Update Target Stats (Taken)
             async with self.config.member(target).all() as t_stats:
                 t_stats['frostbite_end'] = finish_time
-                t_stats['stat_frostbites_taken'] += 1
+                # Safely get current value in case of weird state, default 0
+                current_taken = t_stats.get('stat_frostbites_taken', 0)
+                t_stats['stat_frostbites_taken'] = current_taken + 1
             
+            # Update Attacker Stats (Inflicted)
             async with self.config.member(ctx.author).all() as a_stats:
-                a_stats['stat_frostbites_inflicted'] += 1
-            # --- FROSTBITE LOGIC END ---
-
+                current_inflicted = a_stats.get('stat_frostbites_inflicted', 0)
+                a_stats['stat_frostbites_inflicted'] = current_inflicted + 1
+            
             msg += f"\n🥶 **{target.display_name}** has succumbed to **Frostbite**! They are out for {minutes} minutes."
 
         await ctx.send(msg)
@@ -643,7 +647,7 @@ class Snowball(commands.Cog):
         embed.add_field(name="Equipped Booster", value=active_str, inline=False)
         embed.add_field(name="Inventory", value=inv_str, inline=False)
         
-        # New Frostbite Stats Field
+        # --- FIXED FROSTBITE STATS DISPLAY ---
         inflicted = data.get("stat_frostbites_inflicted", 0)
         taken = data.get("stat_frostbites_taken", 0)
         embed.add_field(name="Frostbite Stats", value=f"❄️ Inflicted: {inflicted}\n🥶 Received: {taken}", inline=True)
