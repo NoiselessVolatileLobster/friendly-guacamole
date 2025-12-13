@@ -438,10 +438,9 @@ class Gortle(commands.Cog):
         state = await self.config.game_state()
         solved_indices = set(state['solved_indices'])
         
-        # Use Counter to track how many instances of each letter we have ALREADY found
-        # This helps distinguish between finding a 'new' letter vs upgrading a 'known' one
-        # specifically for double-letter cases.
-        previously_found = Counter(state['found_letters'])
+        # Track how many of each letter we have matched IN THIS GUESS
+        # This is critical for double-letter logic (e.g. matching 2nd 'A' vs 1st 'A')
+        matched_in_guess = Counter()
         
         guess_visual = [""] * 6
         points = 0
@@ -454,17 +453,25 @@ class Gortle(commands.Cog):
         for i, char in enumerate(guess_chars):
             if char == sol_chars[i]:
                 guess_visual[i] = self._get_emoji_str(char, self.EMOJI_CORRECT)
-                sol_remaining[i] = None 
+                sol_remaining[i] = None
+                
+                # Mark this instance as matched in this guess
+                matched_in_guess[char] += 1
                 
                 if i not in solved_indices:
-                    # Point Calculation Logic
-                    if previously_found[char] > 0:
-                        # We knew this letter existed (Yellow), now we know placement (Green) -> Upgrade
+                    # Determine if this is a "new" instance or an "upgrade"
+                    # k is the K-th instance of 'char' we found in this guess
+                    k = matched_in_guess[char]
+                    current_known = state['found_letters'].count(char)
+                    
+                    if current_known >= k:
+                        # We already knew about K instances. Since this is Green, it's an Upgrade.
+                        # Upgrading from Yellow -> Green = 1 point
                         points += 1
-                        previously_found[char] -= 1
-                        # Do NOT append to found_letters, we are just upgrading the status of a known instance
+                        # Do NOT append to found_letters (count remains same)
                     else:
-                        # New discovery (Green)
+                        # We didn't know about K instances. New discovery.
+                        # Finding new Green = 2 points
                         points += 2
                         state['found_letters'].append(char)
                     
@@ -480,11 +487,19 @@ class Gortle(commands.Cog):
                 guess_visual[i] = self._get_emoji_str(char, self.EMOJI_PRESENT)
                 sol_remaining[sol_remaining.index(char)] = None 
                 
-                total_in_sol = solution.count(char)
-                known_count = state['found_letters'].count(char)
+                # Mark match
+                matched_in_guess[char] += 1
+                k = matched_in_guess[char]
+                current_known = state['found_letters'].count(char)
                 
-                if known_count < total_in_sol:
-                    # Finding a yellow letter
+                # Point Logic
+                if current_known >= k:
+                    # We already knew about K instances of this letter.
+                    # Since this is just Yellow (re-finding), NO POINTS.
+                    points += 0
+                else:
+                    # New instance found.
+                    # Finding new Yellow = 1 point
                     points += 1
                     state['found_letters'].append(char)
             else:
