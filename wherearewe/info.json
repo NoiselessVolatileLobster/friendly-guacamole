@@ -1,5 +1,5 @@
 {
-    "author": "NoiselessVolatileLobster",
+    "author": ["NoiselessVolatileLobster"],
     "version": "0.0.1",
     "min_bot_version": "3.5.0",
     "description": "Shows where server members are located, based on their location roles",

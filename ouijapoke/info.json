@@ -1,5 +1,5 @@
 {
-    "author": "NoiselessVolatileLobster",
+    "author": ["NoiselessVolatileLobster"],
     "version": "0.0.1",
     "min_bot_version": "3.5.0",
     "description": "Summon and poke members who have not been around for a while",
