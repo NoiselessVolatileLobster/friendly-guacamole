@@ -2,10 +2,10 @@ import discord
 import asyncio
 import random
 import logging
+import time
 from typing import Optional, Literal
-from redbot.core import commands, Config, checks
-from redbot.core.utils.chat_formatting import box, pagify
-from redbot.core.utils.menus import start_adding_reactions
+from redbot.core import commands, Config, checks, bank
+from redbot.core.utils.chat_formatting import box, pagify, humanize_timedelta
 from redbot.core.utils.predicates import ReactionPredicate
 
 log = logging.getLogger("red.bang")
@@ -46,9 +46,12 @@ class Bang(commands.Cog):
             "keyword": "bang",
             "min_interval": 600,  # 10 minutes
             "max_interval": 3600, # 1 hour
+            "bang_timeout": 60,   # 60 seconds to kill it
             "base_hit_chance": 75, # Percent
+            "reward": 0,          # Credits reward
             "creatures": default_creatures, 
-            "enabled": False
+            "enabled": False,
+            "next_spawn_timestamp": 0
         }
 
         default_member = {
@@ -60,7 +63,7 @@ class Bang(commands.Cog):
         self.config.register_guild(**default_guild)
         self.config.register_member(**default_member)
         
-        # Temp storage for active hunts: {guild_id: creature_dict}
+        # Temp storage for active hunts: {guild_id: {'creature': dict, 'task': task}}
         self.active_creatures = {}
         # Locks to prevent race conditions on "first" bang
         self.locks = {}
@@ -70,6 +73,10 @@ class Bang(commands.Cog):
     def cog_unload(self):
         if self.spawn_loop_task:
             self.spawn_loop_task.cancel()
+        # Cancel any active fleeing tasks
+        for data in self.active_creatures.values():
+            if 'task' in data:
+                data['task'].cancel()
 
     async def spawn_loop(self):
         """
@@ -78,9 +85,7 @@ class Bang(commands.Cog):
         await self.bot.wait_until_ready()
         while True:
             try:
-                # We check every minute if a guild is ready to spawn
-                # This is a simplified approach; a more complex one would schedule per guild.
-                # To keep it efficient, we just iterate enabled guilds.
+                now = time.time()
                 all_guilds = await self.config.all_guilds()
                 
                 for guild_id, data in all_guilds.items():
@@ -90,17 +95,38 @@ class Bang(commands.Cog):
                     # Skip if something is already alive there
                     if guild_id in self.active_creatures:
                         continue
+                    
+                    # Check schedule
+                    next_spawn = data.get("next_spawn_timestamp", 0)
+                    
+                    # If not initialized, schedule it now
+                    if next_spawn == 0:
+                        await self.schedule_next_spawn(guild_id, data)
+                        continue
 
-                    # Random chance to spawn this tick? 
-                    if random.randint(1, 20) == 1: # ~5% chance per minute check
+                    if now >= next_spawn:
                         await self.spawn_creature(guild_id, data)
+                        # Schedule the next one immediately after spawning
+                        await self.schedule_next_spawn(guild_id, data)
 
-                await asyncio.sleep(60) 
+                await asyncio.sleep(5) 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 log.error("Error in spawn loop", exc_info=e)
                 await asyncio.sleep(60)
+
+    async def schedule_next_spawn(self, guild_id, data):
+        """Calculates and saves the next spawn timestamp."""
+        mn = data["min_interval"]
+        mx = data["max_interval"]
+        if mn > mx: mn = mx
+        
+        # Seconds until next spawn
+        delay = random.randint(mn, mx)
+        next_ts = time.time() + delay
+        
+        await self.config.guild_from_id(guild_id).next_spawn_timestamp.set(next_ts)
 
     async def spawn_creature(self, guild_id, data):
         guild = self.bot.get_guild(guild_id)
@@ -116,18 +142,49 @@ class Bang(commands.Cog):
             return
 
         creature = random.choice(creature_list)
+        timeout = data.get("bang_timeout", 60)
         
         # Post the cry
         try:
             embed = discord.Embed(
                 title=f"{creature['emoji']} A wild {creature['name']} appears!",
-                description=f"{creature['cry']}",
+                description=f"{creature['cry']}\n\n*You have {timeout} seconds to hunt it!*",
                 color=discord.Color.green() if creature['type'] == 'normal' else discord.Color.red()
             )
             await channel.send(embed=embed)
-            self.active_creatures[guild_id] = creature
+            
+            # Start despawn timer
+            task = self.bot.loop.create_task(self.despawn_creature(guild_id, timeout))
+            
+            self.active_creatures[guild_id] = {
+                "creature": creature,
+                "task": task,
+                "channel_id": channel.id
+            }
         except discord.Forbidden:
             log.warning(f"Missing permissions to send to {channel.id} in {guild.name}")
+
+    async def despawn_creature(self, guild_id, timeout):
+        """Waits for timeout then removes creature if not hunted."""
+        try:
+            await asyncio.sleep(timeout)
+            if guild_id in self.active_creatures:
+                data = self.active_creatures.pop(guild_id)
+                creature = data['creature']
+                
+                guild = self.bot.get_guild(guild_id)
+                if guild:
+                    channel = guild.get_channel(data["channel_id"])
+                    if channel:
+                        embed = discord.Embed(
+                            description=f"The **{creature['name']}** got away!",
+                            color=discord.Color.dark_grey()
+                        )
+                        await channel.send(embed=embed)
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            log.error(f"Error in despawn task for guild {guild_id}", exc_info=e)
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -154,8 +211,13 @@ class Bang(commands.Cog):
             async with self.locks[guild_id]:
                 # Double check inside lock
                 if guild_id in self.active_creatures:
-                    creature = self.active_creatures.pop(guild_id)
-                    await self.process_bang(message, creature, conf)
+                    creature_data = self.active_creatures.pop(guild_id)
+                    
+                    # Cancel the flee timer
+                    if 'task' in creature_data:
+                        creature_data['task'].cancel()
+                        
+                    await self.process_bang(message, creature_data['creature'], conf)
 
     async def process_bang(self, message, creature, conf):
         user = message.author
@@ -192,9 +254,21 @@ class Bang(commands.Cog):
             new_score = user_conf['score'] + points
             await self.config.member(user).score.set(new_score)
             
+            reward_msg = f"**+ {points} points**"
+            
+            # Currency Reward
+            reward_amt = conf.get("reward", 0)
+            if reward_amt > 0:
+                try:
+                    await bank.deposit_credits(user, reward_amt)
+                    currency_name = await bank.get_currency_name(message.guild)
+                    reward_msg += f"\n**+ {reward_amt} {currency_name}**"
+                except Exception as e:
+                    log.error(f"Failed to deposit credits to {user.id}", exc_info=e)
+            
             embed = discord.Embed(
                 title="🎯 BANG!",
-                description=f"{user.mention} successfully hunted the **{creature['name']}**!\n\n**+ {points} points**",
+                description=f"{user.mention} successfully hunted the **{creature['name']}**!\n\n{reward_msg}",
                 color=discord.Color.gold()
             )
             await message.channel.send(embed=embed)
@@ -219,6 +293,109 @@ class Bang(commands.Cog):
         Settings for the Bang game.
         """
         pass
+
+    @bangset.command(name="start")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def bangset_start(self, ctx, channel: discord.TextChannel):
+        """
+        Set the hunting channel and ensure the game is ready.
+        Note: Game must be toggled ON for this to spawn creatures.
+        """
+        await self.config.guild(ctx.guild).channel_id.set(channel.id)
+        
+        conf = await self.config.guild(ctx.guild).all()
+        if not conf["enabled"]:
+            await ctx.send(f"Channel set to {channel.mention}.\n**Warning:** The game is currently disabled. Use `{ctx.clean_prefix}bangset toggle` to turn it on.")
+        else:
+            # If enabled, reset the timestamp to 0 to trigger a schedule check immediately
+            await self.config.guild(ctx.guild).next_spawn_timestamp.set(0)
+            await ctx.send(f"Hunt enabled in {channel.mention}! Use `{ctx.clean_prefix}bangset next` to see when the creature arrives.")
+
+    @bangset.command(name="timing")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def bangset_timing(self, ctx, min_interval: int, max_interval: int, bang_timeout: int):
+        """
+        Set the spawn intervals and flee timeout (in seconds).
+        
+        <min_interval>: Minimum seconds between spawns (e.g. 600)
+        <max_interval>: Maximum seconds between spawns (e.g. 3600)
+        <bang_timeout>: Seconds before the creature runs away (e.g. 60)
+        """
+        if min_interval < 60:
+            return await ctx.send("Minimum interval must be at least 60 seconds.")
+        if min_interval > max_interval:
+            return await ctx.send("Minimum interval cannot be larger than maximum interval.")
+            
+        await self.config.guild(ctx.guild).min_interval.set(min_interval)
+        await self.config.guild(ctx.guild).max_interval.set(max_interval)
+        await self.config.guild(ctx.guild).bang_timeout.set(bang_timeout)
+        
+        # Reset schedule
+        await self.config.guild(ctx.guild).next_spawn_timestamp.set(0)
+        
+        await ctx.send(f"Timing updated:\nSpawns every {min_interval}-{max_interval}s.\nCreatures flee after {bang_timeout}s.")
+
+    @bangset.command(name="reward")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def bangset_reward(self, ctx, amount: int):
+        """
+        Set the credit reward for a successful hunt. Set to 0 to disable.
+        """
+        if amount < 0:
+            return await ctx.send("Reward cannot be negative.")
+            
+        await self.config.guild(ctx.guild).reward.set(amount)
+        currency = await bank.get_currency_name(ctx.guild)
+        await ctx.send(f"Reward set to {amount} {currency}.")
+
+    @bangset.command(name="resetall")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def bangset_resetall(self, ctx):
+        """
+        Resets ALL user scores and rifle levels.
+        """
+        msg = await ctx.send("Are you sure you want to reset **ALL** user stats for this guild? This cannot be undone.")
+        start_adding_reactions(msg, ReactionPredicate.YES_OR_NO_EMOJIS)
+        pred = ReactionPredicate.yes_or_no(msg, ctx.author)
+        try:
+            await self.bot.wait_for("reaction_add", check=pred, timeout=30)
+        except asyncio.TimeoutError:
+            return await ctx.send("Action cancelled.")
+
+        if pred.result is True:
+            await self.config.clear_all_members(ctx.guild)
+            await ctx.send("All stats have been reset.")
+        else:
+            await ctx.send("Action cancelled.")
+
+    @bangset.command(name="next")
+    async def bangset_next(self, ctx):
+        """
+        Shows time remaining until the next creature spawn.
+        """
+        if ctx.guild.id in self.active_creatures:
+            creature = self.active_creatures[ctx.guild.id]['creature']
+            return await ctx.send(f"There is a **{creature['name']}** active RIGHT NOW! Find it!")
+
+        conf = await self.config.guild(ctx.guild).all()
+        if not conf["enabled"]:
+            return await ctx.send("The game is currently disabled.")
+            
+        timestamp = conf["next_spawn_timestamp"]
+        now = time.time()
+        
+        if timestamp == 0:
+            return await ctx.send("Scheduling next spawn...")
+            
+        remaining = timestamp - now
+        if remaining < 0:
+            return await ctx.send("Any second now...")
+            
+        # Format seconds to string
+        delta = discord.utils.utcnow() + discord.utils.timedelta(seconds=remaining)
+        relative = discord.utils.format_dt(delta, 'R')
+        
+        await ctx.send(f"Next creature expected {relative}.")
 
     @bangset.command(name="keyword")
     @checks.admin_or_permissions(manage_guild=True)
@@ -245,8 +422,14 @@ class Bang(commands.Cog):
         Toggle the game on or off.
         """
         current = await self.config.guild(ctx.guild).enabled()
-        await self.config.guild(ctx.guild).enabled.set(not current)
-        state = "enabled" if not current else "disabled"
+        new_state = not current
+        await self.config.guild(ctx.guild).enabled.set(new_state)
+        
+        if new_state:
+             # Reset timestamp to trigger immediate schedule
+             await self.config.guild(ctx.guild).next_spawn_timestamp.set(0)
+        
+        state = "enabled" if new_state else "disabled"
         await ctx.send(f"Bang game is now **{state}**.")
 
     @bangset.group(name="creature")
@@ -311,11 +494,14 @@ class Bang(commands.Cog):
         """
         conf = await self.config.guild(ctx.guild).all()
         channel = ctx.guild.get_channel(conf['channel_id']) if conf['channel_id'] else "Not Set"
+        currency = await bank.get_currency_name(ctx.guild)
         
         embed = discord.Embed(title="Bang! Settings", color=discord.Color.blue())
         embed.add_field(name="Status", value="Enabled" if conf['enabled'] else "Disabled")
         embed.add_field(name="Channel", value=getattr(channel, 'mention', channel))
         embed.add_field(name="Keyword", value=conf['keyword'])
+        embed.add_field(name="Timing", value=f"Spawn: {conf['min_interval']}-{conf['max_interval']}s\nFlee Timeout: {conf['bang_timeout']}s")
+        embed.add_field(name="Reward", value=f"{conf['reward']} {currency}")
         embed.add_field(name="Creature Count", value=len(conf['creatures']))
         embed.add_field(name="Base Hit Chance", value=f"{conf['base_hit_chance']}%")
         
