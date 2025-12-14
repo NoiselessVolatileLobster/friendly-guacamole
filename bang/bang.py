@@ -20,13 +20,34 @@ class Bang(commands.Cog):
         self.bot = bot
         self.config = Config.get_conf(self, identifier=9876543210, force_registration=True)
 
+        default_creatures = {
+            "dove": {"name": "Dove", "type": "normal", "emoji": ":dove:", "cry": "**_Coo!_**", "difficulty": 1},
+            "penguin": {"name": "Penguin", "type": "normal", "emoji": ":penguin:", "cry": "**_Noot!_**", "difficulty": 1},
+            "chicken": {"name": "Chicken", "type": "normal", "emoji": ":chicken:", "cry": "**_Bah-gawk!_**", "difficulty": 1},
+            "duck": {"name": "Duck", "type": "normal", "emoji": ":duck:", "cry": "**_Quack!_**", "difficulty": 1},
+            "turkey": {"name": "Turkey", "type": "normal", "emoji": ":turkey:", "cry": "**_Gobble-Gobble!_**", "difficulty": 1},
+            "owl": {"name": "Owl", "type": "normal", "emoji": ":owl:", "cry": "**_Hoo-Hooo!_**", "difficulty": 1},
+            "parrot": {"name": "Parrot", "type": "normal", "emoji": ":parrot:", "cry": "**CACAOOOOOO**", "difficulty": 1},
+            "bee": {"name": "Bee", "type": "normal", "emoji": ":bee:", "cry": "**BUZZ OFF**", "difficulty": 1},
+            "flamingo": {"name": "Flamingo", "type": "normal", "emoji": ":flamingo:", "cry": "**_SQUONK_**", "difficulty": 1},
+            "rabbit_god": {"name": "Dude with a god complex wearing a rabbit costume", "type": "normal", "emoji": ":rabbit:", "cry": "**_I CAN FIX YOU_**", "difficulty": 1},
+            "peacock": {"name": "Peacock", "type": "normal", "emoji": ":peacock:", "cry": "**_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA_**", "difficulty": 1},
+            "goose": {"name": "Goose", "type": "normal", "emoji": "<:canadagoose:1325943169279332443>", "cry": "**_HONK HONK MOTHERHONKERS_**", "difficulty": 1},
+            "normal_goose": {"name": "Totally Normal Goose", "type": "normal", "emoji": ":goose:", "cry": "**_HONK HONK FELLOW NORMAL GOOSE PEOPLE_**", "difficulty": 1},
+            "australian_chef": {"name": "Australian Chef", "type": "normal", "emoji": ":cook:", "cry": "**g'day mate!**", "difficulty": 1},
+            "ostrich": {"name": "Ostrich", "type": "normal", "emoji": "<:ostrich:1211039583173615686>", "cry": "**HI! I don't know what sound an ostrich makes!**", "difficulty": 1},
+            "santaur": {"name": "Santaur", "type": "normal", "emoji": "<:santaur:1321157516289376322>", "cry": "**HO HO HO** Hoes hoes hoes! All of you!", "difficulty": 1},
+            "harambe": {"name": "Harambe", "type": "normal", "emoji": ":gorilla:", "cry": "**_LISTEN CLOSELY, I ONLY HAVE A FEW MINUTES. YOU SHOULD START STOCKING UP TOILET PAPER AND HAND SANITIZER...._**", "difficulty": 1},
+            "dodo": {"name": "Dodo", "type": "normal", "emoji": ":dodo:", "cry": "**_Squak!_**", "difficulty": 1},
+        }
+
         default_guild = {
             "channel_id": None,
             "keyword": "bang",
             "min_interval": 600,  # 10 minutes
             "max_interval": 3600, # 1 hour
             "base_hit_chance": 75, # Percent
-            "creatures": {}, # Dict of creature data
+            "creatures": default_creatures, 
             "enabled": False
         }
 
@@ -71,15 +92,6 @@ class Bang(commands.Cog):
                         continue
 
                     # Random chance to spawn this tick? 
-                    # To make intervals work, we'd usually use timestamps. 
-                    # For simplicity in this implementation, we rely on a global low-freq tick 
-                    # and individual probability, OR we just sleep random times per guild.
-                    # Since this is a single loop, we'll randomize a sleep.
-                    
-                    # Logic: We actually want to spawn rarely. 
-                    # Let's verify if we should spawn.
-                    # (In a production env, I'd use specific timestamps, but here we roll dice).
-                    
                     if random.randint(1, 20) == 1: # ~5% chance per minute check
                         await self.spawn_creature(guild_id, data)
 
@@ -109,7 +121,7 @@ class Bang(commands.Cog):
         try:
             embed = discord.Embed(
                 title=f"{creature['emoji']} A wild {creature['name']} appears!",
-                description=f"**{creature['cry']}**",
+                description=f"{creature['cry']}",
                 color=discord.Color.green() if creature['type'] == 'normal' else discord.Color.red()
             )
             await channel.send(embed=embed)
@@ -161,8 +173,6 @@ class Bang(commands.Cog):
         roll = random.randint(1, 100)
         hit_success = roll <= hit_chance
 
-        # Illegal Logic: You ALWAYS hit illegal targets (penalty) or normal hit logic?
-        # Standard trope: You accidentally shot the civilian.
         if is_illegal:
             # Penalty
             penalty = 50
@@ -184,7 +194,7 @@ class Bang(commands.Cog):
             
             embed = discord.Embed(
                 title="🎯 BANG!",
-                description=f"{user.mention} successfully hunted the **{creature['name']}**!\n\n_{creature['message']}_\n\n**+ {points} points**",
+                description=f"{user.mention} successfully hunted the **{creature['name']}**!\n\n**+ {points} points**",
                 color=discord.Color.gold()
             )
             await message.channel.send(embed=embed)
@@ -248,11 +258,11 @@ class Bang(commands.Cog):
         pass
 
     @bangset_creature.command(name="add")
-    async def creature_add(self, ctx, name: str, type: Literal["normal", "illegal"], emoji: str, cry: str, *, message: str):
+    async def creature_add(self, ctx, name: str, type: Literal["normal", "illegal"], emoji: str, *, cry: str):
         """
         Add a creature.
         
-        Usage: [p]bangset creature add <name> <type> <emoji> <cry> <message>
+        Usage: [p]bangset creature add <name> <type> <emoji> <cry>
         Type must be 'normal' or 'illegal'.
         """
         async with self.config.guild(ctx.guild).creatures() as creatures:
@@ -261,7 +271,6 @@ class Bang(commands.Cog):
                 "type": type,
                 "emoji": emoji,
                 "cry": cry,
-                "message": message,
                 "difficulty": 1 # Placeholder for future expansion
             }
         await ctx.send(f"Added creature **{name}** ({type}).")
