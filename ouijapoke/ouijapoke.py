@@ -283,12 +283,11 @@ class OuijaPoke(commands.Cog):
                     
                     # Schedule next run regardless of success to prevent loop spam
                     await self._schedule_next_auto_event(guild)
-                    
             except Exception as e:
                 log.error(f"Error in auto_poke_loop for guild {guild.id}: {e}", exc_info=True)
 
-    async def _run_daily_lottery(self, guild: discord.Guild, channel: discord.TextChannel, settings: OuijaSettings):
-        """Runs the 10/10/80 probability logic."""
+    async def _run_daily_lottery(self, guild: discord.Guild, channel: discord.TextChannel, settings: OuijaSettings) -> str:
+        """Runs the 10/10/80 probability logic. Returns a status string."""
         roll = random.random() # 0.0 to 1.0
         
         # 10% Chance Summon (0.0 <= roll < 0.1)
@@ -303,6 +302,9 @@ class OuijaPoke(commands.Cog):
                 await self._set_last_action_time(guild, target.id, "last_summoned")
                 await self._send_activity_message_channel(channel, target, settings.summon_message, settings.summon_gifs)
                 log.info(f"OuijaPoke: Automatically summoned {target} in {guild.name}")
+                return f"🎲 Roll: {roll:.3f} (< 0.10) -> **SUMMONED** {target.display_name} in {channel.mention}."
+            else:
+                return f"🎲 Roll: {roll:.3f} (< 0.10) -> Summon triggered, but **NO ELIGIBLE CANDIDATES** found."
 
         # 10% Chance Poke (0.1 <= roll < 0.2)
         elif roll < 0.20:
@@ -316,11 +318,13 @@ class OuijaPoke(commands.Cog):
                 await self._set_last_action_time(guild, target.id, "last_poked")
                 await self._send_activity_message_channel(channel, target, settings.poke_message, settings.poke_gifs)
                 log.info(f"OuijaPoke: Automatically poked {target} in {guild.name}")
+                return f"🎲 Roll: {roll:.3f} (< 0.20) -> **POKED** {target.display_name} in {channel.mention}."
+            else:
+                return f"🎲 Roll: {roll:.3f} (< 0.20) -> Poke triggered, but **NO ELIGIBLE CANDIDATES** found."
 
         # 80% Chance Nothing (0.2 <= roll <= 1.0)
         else:
-            # The spirits are quiet today.
-            pass
+            return f"🎲 Roll: {roll:.3f} (>= 0.20) -> **The spirits are quiet.** (No action taken)."
 
     async def _send_activity_message_channel(self, channel: discord.TextChannel, member: discord.Member, message_text: str, gif_list: list[str]):
         """Sends the message text and the GIF URL as two separate messages to a specific channel."""
@@ -867,8 +871,8 @@ class OuijaPoke(commands.Cog):
         if not channel:
             return await ctx.send("The configured auto channel no longer exists.")
             
-        await ctx.send("Rolling the dice... (Check the auto channel)")
-        await self._run_daily_lottery(ctx.guild, channel, settings)
+        result = await self._run_daily_lottery(ctx.guild, channel, settings)
+        await ctx.send(result)
         await self._schedule_next_auto_event(ctx.guild)
 
     @ouijaset.command(name="pokedays")
