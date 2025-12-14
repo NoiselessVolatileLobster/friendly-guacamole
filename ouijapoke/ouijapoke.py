@@ -1,16 +1,18 @@
 import discord
 from redbot.core import Config, commands, checks
 from redbot.core.utils.chat_formatting import humanize_list
+from discord.ext import tasks
 from datetime import datetime, timedelta, timezone
 import random
 import re
+import logging
 from typing import Union, List, Tuple, Dict, Optional
 
 # Pydantic is used for structured configuration in modern Red cogs
 try:
     from pydantic import BaseModel, Field
 except ImportError:
-    # Fallback if pydantic is not available (though highly recommended)
+    # Fallback if pydantic is not available
     class BaseModel:
         def model_dump(self):
             return self.__dict__
@@ -20,6 +22,8 @@ except ImportError:
                 
     def Field(default, **kwargs):
         return default
+
+log = logging.getLogger("red.ouijapoke")
 
 # --- Configuration Schema (Settings) ---
 
@@ -45,6 +49,9 @@ class OuijaSettings(BaseModel):
     
     poke_gifs: list[str] = Field(default=[], description="List of URLs for 'poke' GIFs.")
     summon_gifs: list[str] = Field(default=[], description="List of URLs for 'summon' GIFs.")
+    
+    # Auto Poke Settings
+    auto_channel_id: Optional[int] = Field(default=None, description="Channel ID for automatic pokes/summons.")
 
 # --- Cog Class ---
 
@@ -63,19 +70,25 @@ class OuijaPoke(commands.Cog):
             excluded_channels=[], # [channel_id, ...]
             ouija_settings=OuijaSettings().model_dump(),
             inactive_roles={}, # {role_id: days_inactive}
+            next_auto_event=None, # ISO_DATETIME_STRING for the next scheduled auto run
         )
         # In-memory tracker for voice channel connections
         self.voice_connect_times = {} # {member_id: datetime_object}
         
         # In-memory cache for message bursts: {user_id: [timestamp1, timestamp2, ...]}
         self.recent_activity_cache: Dict[int, List[datetime]] = {}
+        
+        # Start the loop
+        self.auto_poke_loop.start()
+
+    def cog_unload(self):
+        self.auto_poke_loop.cancel()
 
     # --- Utility Methods ---
 
     async def _get_settings(self, guild: discord.Guild) -> OuijaSettings:
         """Retrieves and parses the guild settings."""
         settings_data = await self.config.guild(guild).ouija_settings()
-        # Handle cases where existing config might not match new schema immediately
         return OuijaSettings(**settings_data)
 
     async def _set_settings(self, guild: discord.Guild, settings: OuijaSettings):
@@ -83,9 +96,7 @@ class OuijaPoke(commands.Cog):
         await self.config.guild(guild).ouija_settings.set(settings.model_dump())
     
     async def _update_last_seen(self, guild: discord.Guild, user_id: int):
-        """
-        Updates the last_seen time for a user in the guild config.
-        """
+        """Updates the last_seen time for a user in the guild config."""
         user_id_str = str(user_id)
         current_time_utc = datetime.now(timezone.utc).isoformat()
         
@@ -120,12 +131,11 @@ class OuijaPoke(commands.Cog):
                 excluded_names.append(role.name)
         return excluded_names
 
-    async def _get_eligible_members(self, ctx: commands.Context, days_inactive: int, last_action_key: str) -> Tuple[List[discord.Member], List[discord.Member]]:
+    async def _get_eligible_members(self, guild: discord.Guild, days_inactive: int, last_action_key: str) -> Tuple[List[discord.Member], List[discord.Member]]:
         """
         Gets a list of members eligible for action, prioritized by whether they have been acted upon.
         Returns: (priority_1_members, priority_2_members)
         """
-        guild = ctx.guild
         cutoff_dt = self._get_inactivity_cutoff(days_inactive)
         
         data = await self.config.guild(guild).all()
@@ -166,6 +176,41 @@ class OuijaPoke(commands.Cog):
         
         return priority_1, priority_2_members
     
+    async def _filter_spam_protected(self, guild: discord.Guild, members: List[discord.Member]) -> List[discord.Member]:
+        """
+        Filters out members who have been poked OR summoned in the last 14 days.
+        """
+        data = await self.config.guild(guild).all()
+        last_poked = data.get("last_poked", {})
+        last_summoned = data.get("last_summoned", {})
+        
+        safe_cutoff = datetime.now(timezone.utc) - timedelta(days=14)
+        filtered_members = []
+        
+        for member in members:
+            uid = str(member.id)
+            poked_ts = last_poked.get(uid)
+            summoned_ts = last_summoned.get(uid)
+            
+            recent_activity = False
+            
+            if poked_ts:
+                try:
+                    dt = datetime.fromisoformat(poked_ts).replace(tzinfo=timezone.utc)
+                    if dt > safe_cutoff: recent_activity = True
+                except ValueError: pass
+            
+            if not recent_activity and summoned_ts:
+                try:
+                    dt = datetime.fromisoformat(summoned_ts).replace(tzinfo=timezone.utc)
+                    if dt > safe_cutoff: recent_activity = True
+                except ValueError: pass
+                
+            if not recent_activity:
+                filtered_members.append(member)
+                
+        return filtered_members
+    
     async def _set_last_action_time(self, guild: discord.Guild, user_id: int, key: str):
         """Updates the last_poked or last_summoned time for a user."""
         user_id_str = str(user_id)
@@ -185,18 +230,118 @@ class OuijaPoke(commands.Cog):
             except ValueError:
                 return "Invalid Date"
         return "Never"
+        
+    async def _schedule_next_auto_event(self, guild: discord.Guild):
+        """Schedules the next auto event for ~24 hours from now with randomness."""
+        # 24 hours +/- up to 2 hours of variance for "random time" feel
+        base_time = datetime.now(timezone.utc) + timedelta(hours=24)
+        variance = random.randint(-7200, 7200) # +/- 2 hours in seconds
+        next_run = base_time + timedelta(seconds=variance)
+        
+        await self.config.guild(guild).next_auto_event.set(next_run.isoformat())
+        return next_run
+
+    # --- Automated Task Loop ---
+
+    @tasks.loop(minutes=5)
+    async def auto_poke_loop(self):
+        """Background loop to handle automatic pokes and summons."""
+        for guild in self.bot.guilds:
+            try:
+                # 1. Check if configured
+                settings_data = await self.config.guild(guild).ouija_settings()
+                settings = OuijaSettings(**settings_data)
+                
+                # If no auto channel is set, we can't do anything.
+                # However, we should still manage the schedule so it doesn't get stuck attempting constantly if set later.
+                
+                # 2. Check Schedule
+                next_run_str = await self.config.guild(guild).next_auto_event()
+                now = datetime.now(timezone.utc)
+                
+                should_run = False
+                
+                if not next_run_str:
+                    # First time init: Schedule for random time in next 24h
+                    await self._schedule_next_auto_event(guild)
+                    continue
+                else:
+                    try:
+                        next_run_dt = datetime.fromisoformat(next_run_str).replace(tzinfo=timezone.utc)
+                        if now >= next_run_dt:
+                            should_run = True
+                    except ValueError:
+                        await self._schedule_next_auto_event(guild)
+                        continue
+                
+                if should_run:
+                    # Execute logic
+                    if settings.auto_channel_id:
+                        channel = guild.get_channel(settings.auto_channel_id)
+                        if channel and channel.permissions_for(guild.me).send_messages:
+                            await self._run_daily_lottery(guild, channel, settings)
+                    
+                    # Schedule next run regardless of success to prevent loop spam
+                    await self._schedule_next_auto_event(guild)
+                    
+            except Exception as e:
+                log.error(f"Error in auto_poke_loop for guild {guild.id}: {e}", exc_info=True)
+
+    async def _run_daily_lottery(self, guild: discord.Guild, channel: discord.TextChannel, settings: OuijaSettings):
+        """Runs the 10/10/80 probability logic."""
+        roll = random.random() # 0.0 to 1.0
+        
+        # 10% Chance Summon (0.0 <= roll < 0.1)
+        if roll < 0.10:
+            p1, p2 = await self._get_eligible_members(guild, settings.summon_days, "last_summoned")
+            candidates = p1 + p2
+            # Spam filter: Remove anyone poked/summoned in last 14 days
+            candidates = await self._filter_spam_protected(guild, candidates)
+            
+            if candidates:
+                target = random.choice(candidates)
+                await self._set_last_action_time(guild, target.id, "last_summoned")
+                await self._send_activity_message_channel(channel, target, settings.summon_message, settings.summon_gifs)
+                log.info(f"OuijaPoke: Automatically summoned {target} in {guild.name}")
+
+        # 10% Chance Poke (0.1 <= roll < 0.2)
+        elif roll < 0.20:
+            p1, p2 = await self._get_eligible_members(guild, settings.poke_days, "last_poked")
+            candidates = p1 + p2
+            # Spam filter: Remove anyone poked/summoned in last 14 days
+            candidates = await self._filter_spam_protected(guild, candidates)
+            
+            if candidates:
+                target = random.choice(candidates)
+                await self._set_last_action_time(guild, target.id, "last_poked")
+                await self._send_activity_message_channel(channel, target, settings.poke_message, settings.poke_gifs)
+                log.info(f"OuijaPoke: Automatically poked {target} in {guild.name}")
+
+        # 80% Chance Nothing (0.2 <= roll <= 1.0)
+        else:
+            # The spirits are quiet today.
+            pass
+
+    async def _send_activity_message_channel(self, channel: discord.TextChannel, member: discord.Member, message_text: str, gif_list: list[str]):
+        """Sends the message text and the GIF URL as two separate messages to a specific channel."""
+        final_message = message_text.replace("{user_mention}", member.mention)
+        try:
+            await channel.send(content=final_message)
+            if gif_list:
+                gif_url = random.choice(gif_list)
+                await channel.send(content=gif_url)
+        except discord.Forbidden:
+            log.warning(f"OuijaPoke: Missing permissions to send message in {channel.name}")
+
+    @auto_poke_loop.before_loop
+    async def before_auto_poke_loop(self):
+        await self.bot.wait_until_ready()
 
     # --- PUBLIC API FOR EXTERNAL COGS ---
     
     async def get_member_activity_state(self, member: discord.Member) -> Dict[str, Union[str, bool, int, None]]:
         """
         Public API method to retrieve the status of a specific member.
-        
-        Returns a dict containing:
-        - 'status': str ("active", "poke_eligible", "summon_eligible", "unknown")
-        - 'is_hibernating': bool (True if they have a Hibernating role)
-        - 'days_inactive': int (or None if never seen)
-        - 'last_seen': datetime (or None if never seen)
         """
         if member.bot:
             return {"status": "unknown", "is_hibernating": True, "days_inactive": None, "last_seen": None}
@@ -401,12 +546,10 @@ class OuijaPoke(commands.Cog):
         if message.guild is None or message.author.bot or message.webhook_id:
             return
         
-        # --- NEW: Ignore valid commands ---
-        # Get context to check if this message triggers a command
+        # Ignore valid commands
         ctx = await self.bot.get_context(message)
         if ctx.command:
             return
-        # ----------------------------------
         
         guild = message.guild
         user_id = message.author.id
@@ -428,33 +571,22 @@ class OuijaPoke(commands.Cog):
         should_update = False
         
         if settings.required_messages <= 1 or settings.required_window_hours <= 0:
-            # Default behavior: Every message counts
             should_update = True
         else:
-            # Burst logic
             now = datetime.now(timezone.utc)
-            
             if user_id not in self.recent_activity_cache:
                 self.recent_activity_cache[user_id] = []
             
-            # Add current message timestamp
             self.recent_activity_cache[user_id].append(now)
-            
-            # Prune timestamps older than the window
             window_delta = timedelta(hours=settings.required_window_hours)
             min_time = now - window_delta
             
-            # Keep only timestamps within the window
             self.recent_activity_cache[user_id] = [
                 t for t in self.recent_activity_cache[user_id] if t > min_time
             ]
             
-            # Check if threshold is met
             if len(self.recent_activity_cache[user_id]) >= settings.required_messages:
                 should_update = True
-                # Optional: clear cache to reset the burst counter? 
-                # For "last_seen", strictly speaking, we just want to know the last time they met the criteria.
-                # We won't clear it, so sustained activity keeps updating the time.
 
         # 5. Update if criteria met
         if should_update:
@@ -477,15 +609,10 @@ class OuijaPoke(commands.Cog):
         if member.bot:
             return
         
-        # Check excluded channels for voice? 
-        # Typically voice exclusion is per-channel, but for simplicity we respect the general ID list if possible,
-        # but VoiceChannel IDs are different. If channel exclusion is desired for voice, we check the channel ID.
         excluded_channels = await self.config.guild(member.guild).excluded_channels()
-        
         member_id = member.id
         
         if after.channel is not None and before.channel != after.channel:
-            # User joined a channel
             if after.channel.id in excluded_channels:
                 return
             
@@ -493,7 +620,6 @@ class OuijaPoke(commands.Cog):
                 self.voice_connect_times[member_id] = datetime.now(timezone.utc)
         
         if before.channel is not None and after.channel is None:
-            # User left a channel
             if member_id in self.voice_connect_times:
                 join_time = self.voice_connect_times.pop(member_id)
                 duration = datetime.now(timezone.utc) - join_time
@@ -561,7 +687,7 @@ class OuijaPoke(commands.Cog):
         """Pokes a random eligible member."""
         async with ctx.typing():
             settings = await self._get_settings(ctx.guild)
-            p1_members, p2_members = await self._get_eligible_members(ctx, settings.poke_days, "last_poked")
+            p1_members, p2_members = await self._get_eligible_members(ctx.guild, settings.poke_days, "last_poked")
             member_to_poke = random.choice(p1_members) if p1_members else (random.choice(p2_members) if p2_members else None)
             
             if member_to_poke is None:
@@ -575,7 +701,7 @@ class OuijaPoke(commands.Cog):
         """Summons a random eligible member."""
         async with ctx.typing():
             settings = await self._get_settings(ctx.guild)
-            p1_members, p2_members = await self._get_eligible_members(ctx, settings.summon_days, "last_summoned")
+            p1_members, p2_members = await self._get_eligible_members(ctx.guild, settings.summon_days, "last_summoned")
             member_to_summon = random.choice(p1_members) if p1_members else (random.choice(p2_members) if p2_members else None)
             
             if member_to_summon is None:
@@ -599,6 +725,7 @@ class OuijaPoke(commands.Cog):
         """Displays the full settings page for the guild."""
         settings = await self._get_settings(ctx.guild)
         data = await self.config.guild(ctx.guild).all()
+        next_auto = await self.config.guild(ctx.guild).next_auto_event()
         
         embed = discord.Embed(
             title="🔮 OuijaPoke Configuration",
@@ -629,8 +756,33 @@ class OuijaPoke(commands.Cog):
             ),
             inline=False
         )
+
+        # 3. Auto Poke Settings
+        if next_auto:
+            try:
+                dt = datetime.fromisoformat(next_auto).replace(tzinfo=timezone.utc)
+                diff = dt - datetime.now(timezone.utc)
+                hours_left = int(diff.total_seconds() // 3600)
+                mins_left = int((diff.total_seconds() % 3600) // 60)
+                next_run_str = f"In {hours_left}h {mins_left}m"
+            except:
+                next_run_str = "Error parsing time"
+        else:
+            next_run_str = "Not Scheduled (Needs Init)"
+
+        auto_chan_mention = f"<#{settings.auto_channel_id}>" if settings.auto_channel_id else "Not Set"
+
+        embed.add_field(
+            name="🤖 Automatic Actions (Daily)",
+            value=(
+                f"**Auto Channel:** {auto_chan_mention}\n"
+                f"**Next Run:** {next_run_str}\n"
+                f"**Odds:** 10% Poke / 10% Summon / 80% Idle"
+            ),
+            inline=False
+        )
         
-        # 3. Exclusions & Hibernation
+        # 4. Exclusions & Hibernation
         excl_roles = []
         for rid in data["excluded_roles"]:
             role = ctx.guild.get_role(rid)
@@ -650,7 +802,7 @@ class OuijaPoke(commands.Cog):
             inline=False
         )
         
-        # 4. Inactive Awards
+        # 5. Inactive Awards
         awards = []
         # sort by days
         sorted_awards = sorted(data["inactive_roles"].items(), key=lambda x: x[1])
@@ -665,7 +817,7 @@ class OuijaPoke(commands.Cog):
             inline=False
         )
 
-        # 5. Messages & Assets (Truncated for display)
+        # 6. Messages & Assets (Truncated for display)
         poke_msg_preview = (settings.poke_message[:45] + '..') if len(settings.poke_message) > 45 else settings.poke_message
         summon_msg_preview = (settings.summon_message[:45] + '..') if len(settings.summon_message) > 45 else settings.summon_message
 
@@ -682,6 +834,42 @@ class OuijaPoke(commands.Cog):
         await ctx.send(embed=embed)
 
     # --- Configuration Commands ---
+
+    @ouijaset.command(name="autochannel")
+    async def ouijaset_autochannel(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+        """
+        Sets the channel for automatic daily pokes and summons.
+        Leave blank to disable automatic actions.
+        """
+        settings = await self._get_settings(ctx.guild)
+        if channel:
+            settings.auto_channel_id = channel.id
+            await ctx.send(f"Automatic actions will now appear in {channel.mention}.")
+        else:
+            settings.auto_channel_id = None
+            await ctx.send("Automatic actions disabled.")
+        
+        await self._set_settings(ctx.guild, settings)
+
+    @ouijaset.command(name="forcerun")
+    async def ouijaset_forcerun(self, ctx: commands.Context):
+        """
+        [Debug] Forces the automatic daily routine to run immediately.
+        
+        Note: This ignores the schedule but still respects the probability (10/10/80) and spam filters.
+        It will reschedule the next run after completion.
+        """
+        settings = await self._get_settings(ctx.guild)
+        if not settings.auto_channel_id:
+            return await ctx.send("No auto channel set. Run `[p]ouijaset autochannel` first.")
+        
+        channel = ctx.guild.get_channel(settings.auto_channel_id)
+        if not channel:
+            return await ctx.send("The configured auto channel no longer exists.")
+            
+        await ctx.send("Rolling the dice... (Check the auto channel)")
+        await self._run_daily_lottery(ctx.guild, channel, settings)
+        await self._schedule_next_auto_event(ctx.guild)
 
     @ouijaset.command(name="pokedays")
     async def ouijaset_pokedays(self, ctx: commands.Context, days: int):
