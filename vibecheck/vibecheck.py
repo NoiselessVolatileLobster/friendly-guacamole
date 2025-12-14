@@ -192,13 +192,41 @@ class VibeCheck(getattr(commands, "Cog", object)):
         await ctx.send("You sent bad vibes to {}!".format(user.name))
 
     @commands.command(name="vibes")
+    @checks.mod_or_permissions(manage_messages=True)
     @commands.guild_only()
     async def get_vibes(self, ctx: commands.Context, user: discord.Member = None):
-        """Check a user's vibes."""
+        """Check a user's vibes (Mods/Admins only)."""
         if user is None:
             user = ctx.author
         vibes = await self.conf.user(user).vibes()
         await ctx.send("{0} vibe score is: {1}".format(user.display_name, vibes))
+
+    @commands.command(name="myvibes")
+    @commands.guild_only()
+    async def my_vibes(self, ctx: commands.Context):
+        """Check your own vibe statistics."""
+        user = ctx.author
+        data = await self.conf.user(user).all()
+        
+        vibes = data.get("vibes", 0)
+        good_sent = data.get("good_vibes_sent", 0)
+        bad_sent = data.get("bad_vibes_sent", 0)
+        ratio = good_sent - bad_sent
+        
+        embed = discord.Embed(
+            title="My Vibes",
+            color=await ctx.embed_color()
+        )
+        
+        if user.display_avatar:
+            embed.set_thumbnail(url=user.display_avatar.url)
+            
+        embed.add_field(name="**My Vibe Score:**", value=str(vibes), inline=False)
+        embed.add_field(name="**My Vibe Ratio:**", value=str(ratio), inline=False)
+        
+        embed.set_footer(text=ctx.guild.name)
+        
+        await ctx.send(embed=embed, ephemeral=True)
 
     # --- COMMAND GROUP: VIBECHECKSET ---
 
