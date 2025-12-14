@@ -798,32 +798,38 @@ class VibeCheck(getattr(commands, "Cog", object)):
             return False, req_level
 
     async def _get_user_level(self, guild: discord.Guild, member: discord.Member) -> int:
-        """
-        Attempts to retrieve a user's level from the LevelUp cog.
-        Returns 0 if cog not found or level cannot be determined.
-        """
-        levelup = self.bot.get_cog("LevelUp")
-        if not levelup:
-            return 0
-        
-        try:
-            # Method 1: Config based (Red standard)
-            # Accessing conf data is usually safest if public methods aren't obvious
-            # structure usually: data[guild_id][user_id]["level"]
-            data = await levelup.config.guild(guild).users.get(str(member.id))
-            if data and "level" in data:
-                return data["level"]
-                
-            # Method 2: Check for database object (Vertyco's LevelUp)
-            if hasattr(levelup, "db"):
-                 # This usually requires imports we don't have, or async access
-                 # We rely on Config access mostly for compatibility
-                 pass
-                 
-        except Exception as e:
-            log.debug(f"Could not retrieve level for {member.id}: {e}")
+            """
+            Attempts to retrieve a user's level from the LevelUp cog.
+            Returns 0 if cog not found or level cannot be determined.
+            """
+            levelup = self.bot.get_cog("LevelUp")
+            if not levelup:
+                return 0
             
-        return 0
+            # Method 1: Vertyco's LevelUp (Access via internal cache)
+            # Vertyco's cogs usually cache data in self.data for performance
+            if hasattr(levelup, "data") and isinstance(levelup.data, dict):
+                try:
+                    # Structure is typically: data[guild_id]["users"][user_id]["level"]
+                    # We check both int and str keys to be safe across versions
+                    g_data = levelup.data.get(guild.id) or levelup.data.get(str(guild.id))
+                    if g_data:
+                        users = g_data.get("users", {})
+                        u_data = users.get(member.id) or users.get(str(member.id))
+                        if u_data:
+                            return int(u_data.get("level", 0))
+                except Exception as e:
+                    log.debug(f"Failed to access Vertyco LevelUp data: {e}")
+
+            # Method 2: Config based (Standard Red / Original LevelUp)
+            try:
+                data = await levelup.config.guild(guild).users.get(str(member.id))
+                if data and "level" in data:
+                    return data["level"]
+            except AttributeError:
+                log.debug("Could not retrieve level via Config.")
+                
+            return 0
 
     async def _give_levelup_xp(self, guild: discord.Guild, member: discord.Member, amount: int):
         """
