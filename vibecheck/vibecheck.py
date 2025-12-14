@@ -198,8 +198,27 @@ class VibeCheck(getattr(commands, "Cog", object)):
         """Check a user's vibes (Mods/Admins only)."""
         if user is None:
             user = ctx.author
-        vibes = await self.conf.user(user).vibes()
-        await ctx.send("{0} vibe score is: {1}".format(user.display_name, vibes))
+
+        data = await self.conf.user(user).all()
+        vibes = data.get("vibes", 0)
+        good_sent = data.get("good_vibes_sent", 0)
+        bad_sent = data.get("bad_vibes_sent", 0)
+        ratio = good_sent - bad_sent
+
+        embed = discord.Embed(
+            title="VibeCheck",
+            color=await ctx.embed_color(),
+            description=f"**User ID:** `{user.id}`\n"
+                        f"**Vibe Score:** {vibes}\n"
+                        f"**Vibe Ratio:** {ratio}"
+        )
+        
+        if user.display_avatar:
+            embed.set_thumbnail(url=user.display_avatar.url)
+            
+        embed.set_footer(text=ctx.guild.name)
+        
+        await ctx.send(embed=embed)
 
     @commands.command(name="myvibes")
     @commands.guild_only()
