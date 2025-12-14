@@ -798,38 +798,66 @@ class VibeCheck(getattr(commands, "Cog", object)):
             return False, req_level
 
     async def _get_user_level(self, guild: discord.Guild, member: discord.Member) -> int:
-            """
-            Attempts to retrieve a user's level from the LevelUp cog.
-            Returns 0 if cog not found or level cannot be determined.
-            """
-            levelup = self.bot.get_cog("LevelUp")
-            if not levelup:
-                return 0
-            
-            # Method 1: Vertyco's LevelUp (Access via internal cache)
-            # Vertyco's cogs usually cache data in self.data for performance
-            if hasattr(levelup, "data") and isinstance(levelup.data, dict):
-                try:
-                    # Structure is typically: data[guild_id]["users"][user_id]["level"]
-                    # We check both int and str keys to be safe across versions
-                    g_data = levelup.data.get(guild.id) or levelup.data.get(str(guild.id))
-                    if g_data:
-                        users = g_data.get("users", {})
-                        u_data = users.get(member.id) or users.get(str(member.id))
-                        if u_data:
-                            return int(u_data.get("level", 0))
-                except Exception as e:
-                    log.debug(f"Failed to access Vertyco LevelUp data: {e}")
-
-            # Method 2: Config based (Standard Red / Original LevelUp)
-            try:
-                data = await levelup.config.guild(guild).users.get(str(member.id))
-                if data and "level" in data:
-                    return data["level"]
-            except AttributeError:
-                log.debug("Could not retrieve level via Config.")
-                
+        """
+        Attempts to retrieve a user's level from the LevelUp cog.
+        Supports: Vertyco (Data/DB/API) and Standard Red (Config).
+        """
+        levelup = self.bot.get_cog("LevelUp")
+        if not levelup:
             return 0
+        
+        uid_str = str(member.id)
+        gid = guild.id
+        
+        # --- Method 1: Vertyco's New DB Structure (Pydantic) ---
+        # Checks if the cog uses a 'db' object with specific attributes
+        if hasattr(levelup, "db"):
+            try:
+                # Common path: levelup.db.get_conf(guild_id).users[user_id].level
+                if hasattr(levelup.db, "get_conf"):
+                    conf = levelup.db.get_conf(gid)
+                    if conf:
+                        # Pydantic models usually access users via dict-like get or attribute
+                        users = getattr(conf, "users", {})
+                        if isinstance(users, dict):
+                            user_data = users.get(member.id) or users.get(uid_str)
+                            if user_data:
+                                # user_data might be an object or dict
+                                if isinstance(user_data, dict):
+                                    return int(user_data.get("level", 0))
+                                else:
+                                    return int(getattr(user_data, "level", 0))
+            except Exception as e:
+                log.debug(f"VibeCheck: Failed to read Vertyco DB: {e}")
+
+        # --- Method 2: Vertyco's Old Data Cache (Dict) ---
+        # Checks direct dictionary access used in older versions
+        if hasattr(levelup, "data") and isinstance(levelup.data, dict):
+            try:
+                g_data = levelup.data.get(gid) or levelup.data.get(str(gid))
+                if g_data:
+                    users = g_data.get("users", {})
+                    u_data = users.get(member.id) or users.get(uid_str)
+                    if u_data:
+                        return int(u_data.get("level", 0))
+            except Exception as e:
+                log.debug(f"VibeCheck: Failed to access Vertyco LevelUp data: {e}")
+
+        # --- Method 3: Standard Red Config (Fallback) ---
+        # Uses the official async Config API
+        try:
+            # FIX: Use .all() or specific value access, .get() does not exist on Config Group
+            # We try to fetch just the level value directly for efficiency
+            level = await levelup.config.guild(guild).users(uid_str).level()
+            if level:
+                return int(level)
+        except AttributeError:
+            # If 'users' group doesn't exist or structure is vastly different
+            log.debug("VibeCheck: LevelUp Config structure mismatch.")
+        except Exception as e:
+            log.debug(f"VibeCheck: Config access failed: {e}")
+            
+        return 0
 
     async def _give_levelup_xp(self, guild: discord.Guild, member: discord.Member, amount: int):
         """
