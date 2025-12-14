@@ -3,6 +3,7 @@ import asyncio
 import random
 import logging
 import time
+import datetime
 from typing import Optional, Literal
 from redbot.core import commands, Config, checks, bank
 from redbot.core.utils.chat_formatting import box, pagify, humanize_timedelta
@@ -392,7 +393,7 @@ class Bang(commands.Cog):
             return await ctx.send("Any second now...")
             
         # Format seconds to string
-        delta = discord.utils.utcnow() + discord.utils.timedelta(seconds=remaining)
+        delta = discord.utils.utcnow() + datetime.timedelta(seconds=remaining)
         relative = discord.utils.format_dt(delta, 'R')
         
         await ctx.send(f"Next creature expected {relative}.")
