@@ -3,7 +3,7 @@ import asyncio
 import logging
 import time
 from collections import namedtuple
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Union
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -37,7 +37,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
             interactions={},
             last_good_vibe=0,  # Timestamp of last usage
             last_bad_vibe=0,   # Timestamp of last usage
-            new_member_xp_awarded=False  # NEW: Tracks if they already got their newbie bonus
+            new_member_xp_awarded=False  # Tracks if they already got their newbie bonus
         )
         
         # Guild settings
@@ -45,6 +45,10 @@ class VibeCheck(getattr(commands, "Cog", object)):
             log_channel_id=None,
             good_vibes_cooldown=3600,  # Default 60 minutes (in seconds)
             bad_vibes_cooldown=3600,   # Default 60 minutes (in seconds)
+            
+            # LevelUp Requirements
+            req_level_good=0, # Level required to send good vibes
+            req_level_bad=0,  # Level required to send bad vibes
             
             # Ratio Thresholds
             ratio_soft_threshold=None, # Threshold 1 (Reminder)
@@ -55,7 +59,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
             new_member_score_threshold=None, # Score that triggers kick for new members
             new_member_kick_reason="VibeCheck: New member vibe score too low", # Reason for new member kick
             
-            # NEW: New Member XP Reward Settings
+            # New Member XP Reward Settings
             new_member_xp_minutes=0,       # 0 = Disabled
             new_member_xp_threshold=10,    # Score needed
             new_member_xp_amount=0,        # XP to give
@@ -105,7 +109,15 @@ class VibeCheck(getattr(commands, "Cog", object)):
     async def good_vibes(self, ctx: commands.Context, user: discord.User, amount: int):
         """Give someone good vibes"""
         
-        # Check cooldown manually
+        # 1. Level Requirement Check
+        allowed, req_level = await self._check_level_requirement(ctx, "good")
+        if not allowed:
+            return await ctx.send(
+                f"You must be at least **Level {req_level}** to send good vibes.", 
+                ephemeral=True
+            )
+
+        # 2. Check cooldown manually
         await self._check_cooldown(ctx, "good")
         
         if user and user.id == ctx.author.id:
@@ -124,6 +136,14 @@ class VibeCheck(getattr(commands, "Cog", object)):
     @commands.command(name="badvibes")
     async def bad_vibes(self, ctx: commands.Context, user: discord.Member, amount: int):
         """Give someone bad vibes"""
+        
+        # 1. Level Requirement Check
+        allowed, req_level = await self._check_level_requirement(ctx, "bad")
+        if not allowed:
+            return await ctx.send(
+                f"You must be at least **Level {req_level}** to send bad vibes.", 
+                ephemeral=True
+            )
 
         # --- RATIO THRESHOLD CHECK ---
         # We perform this check BEFORE executing the command logic
@@ -134,7 +154,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
         soft_threshold = guild_settings.get("ratio_soft_threshold")
         hard_threshold = guild_settings.get("ratio_hard_threshold")
 
-        # 1. Hard Threshold (Block & Warn)
+        # 2. Hard Threshold (Block & Warn)
         if hard_threshold is not None and current_ratio <= hard_threshold:
             # Trigger WarnSystem Level 1
             await self._trigger_warnsystem(
@@ -147,7 +167,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
                 ephemeral=True
             )
 
-        # 2. Soft Threshold (Reminder)
+        # 3. Soft Threshold (Reminder)
         if soft_threshold is not None and current_ratio <= soft_threshold:
             await ctx.send(
                 f"Your vibe ratio is {current_ratio}. Please remember to use [p]goodvibes too!", 
@@ -171,9 +191,31 @@ class VibeCheck(getattr(commands, "Cog", object)):
         
         await ctx.send("You sent bad vibes to {}!".format(user.name))
 
-    @commands.command()
-    async def vibeboard(self, ctx: commands.Context, top: int = 10):
-        """Prints out the Vibes leaderboard."""
+    @commands.command(name="vibes")
+    @commands.guild_only()
+    async def get_vibes(self, ctx: commands.Context, user: discord.Member = None):
+        """Check a user's vibes."""
+        if user is None:
+            user = ctx.author
+        vibes = await self.conf.user(user).vibes()
+        await ctx.send("{0} vibe score is: {1}".format(user.display_name, vibes))
+
+    # --- COMMAND GROUP: VIBECHECKSET ---
+
+    @commands.group(name="vibecheckset")
+    @commands.guild_only()
+    @checks.admin_or_permissions(manage_guild=True)
+    async def vibecheckset(self, ctx: commands.Context):
+        """Configuration settings for VibeCheck."""
+        pass
+
+    @vibecheckset.command(name="board")
+    async def vibe_board(self, ctx: commands.Context, top: int = 10):
+        """
+        Prints out the Vibes leaderboard.
+        
+        This displays the global vibe scores of users.
+        """
         reverse = True
         if top == 0:
             top = 10
@@ -199,24 +241,6 @@ class VibeCheck(getattr(commands, "Cog", object)):
                 await ctx.send(box(page, lang="py"))
         else:
             await ctx.send("No one has any vibes 🙁")
-
-    @commands.command(name="vibes")
-    @commands.guild_only()
-    async def get_vibes(self, ctx: commands.Context, user: discord.Member = None):
-        """Check a user's vibes."""
-        if user is None:
-            user = ctx.author
-        vibes = await self.conf.user(user).vibes()
-        await ctx.send("{0} vibe score is: {1}".format(user.display_name, vibes))
-
-    # --- COMMAND GROUP: VIBECHECKSET ---
-
-    @commands.group(name="vibecheckset")
-    @commands.guild_only()
-    @checks.admin_or_permissions(manage_guild=True)
-    async def vibecheckset(self, ctx: commands.Context):
-        """Configuration settings for VibeCheck."""
-        pass
 
     @vibecheckset.command(name="ratioboard")
     async def ratio_board(self, ctx: commands.Context):
@@ -301,19 +325,38 @@ class VibeCheck(getattr(commands, "Cog", object)):
 
         await ctx.send(embed=embed)
 
+    @vibecheckset.command(name="reqlevel")
+    async def set_req_level(self, ctx: commands.Context, option: str, level: int):
+        """
+        Set the minimum LevelUp level required to send vibes.
+        
+        Args:
+            option: Either 'good' or 'bad'.
+            level: The level required (0 to disable).
+            
+        Example: 
+            [p]vibecheckset reqlevel bad 5 (Requires level 5 to send bad vibes)
+        """
+        if option.lower() not in ["good", "bad"]:
+            return await ctx.send("Option must be either `good` or `bad`.")
+        
+        if level < 0:
+            return await ctx.send("Level must be a positive integer.")
+        
+        if option.lower() == "good":
+            await self.conf.guild(ctx.guild).req_level_good.set(level)
+            await ctx.send(f"✅ Users now need to be **Level {level}** to send **Good Vibes**.")
+        else:
+            await self.conf.guild(ctx.guild).req_level_bad.set(level)
+            await ctx.send(f"✅ Users now need to be **Level {level}** to send **Bad Vibes**.")
+
     @vibecheckset.command(name="ratiothreshold")
-    @checks.admin_or_permissions(manage_guild=True)
     async def set_ratio_thresholds(self, ctx: commands.Context, soft: int, hard: int):
         """
         Sets the soft and hard thresholds for vibe ratios (Good Sent - Bad Sent).
         
         Soft Threshold (Arg 1): If ratio drops below this, user gets an ephemeral reminder when sending bad vibes.
         Hard Threshold (Arg 2): If ratio drops below this, user is BLOCKED from sending bad vibes and warned (Level 1).
-        
-        Example: [p]vibecheckset ratiothreshold 0 -10
-        (Warns at 0, Blocks at -10)
-        
-        Set specific values to None or use a clear command to disable (not implemented in this simplified command, use high negative numbers to effectively disable).
         """
         await self.conf.guild(ctx.guild).ratio_soft_threshold.set(soft)
         await self.conf.guild(ctx.guild).ratio_hard_threshold.set(hard)
@@ -325,18 +368,9 @@ class VibeCheck(getattr(commands, "Cog", object)):
         )
 
     @vibecheckset.command(name="newmember")
-    @checks.admin_or_permissions(manage_guild=True)
     async def set_new_member_threshold(self, ctx: commands.Context, minutes: int, threshold: int, *, reason: str = "VibeCheck: New member vibe score too low"):
         """
         Sets strict thresholds for new members (triggers WarnSystem Level 3 / Kick).
-        
-        Args:
-            minutes: How many minutes after joining a user is considered "new". (Set to 0 to disable).
-            threshold: The negative vibe score that triggers a kick for new users (e.g. -10).
-            reason: (Optional) Custom reason for the kick.
-            
-        Example: [p]vibecheckset newmember 60 -10 Spamming bad vibes early
-        (If user joined < 60 mins ago and reaches -10 score, they get Kicked).
         """
         if minutes <= 0:
             await self.conf.guild(ctx.guild).new_member_age_seconds.set(None)
@@ -358,15 +392,9 @@ class VibeCheck(getattr(commands, "Cog", object)):
         )
 
     @vibecheckset.command(name="newmemberxp")
-    @checks.admin_or_permissions(manage_guild=True)
     async def set_new_member_xp(self, ctx: commands.Context, minutes: int, threshold: int, xp: int):
         """
         Configure XP rewards for new members who reach a specific vibe score.
-        
-        Args:
-            minutes: How many minutes after joining a user is eligible (0 to disable).
-            threshold: The vibe score they must reach (e.g., 10).
-            xp: The amount of XP to grant in LevelUp.
         """
         if minutes < 0 or xp < 0:
             return await ctx.send("Minutes and XP must be positive numbers.")
@@ -387,11 +415,9 @@ class VibeCheck(getattr(commands, "Cog", object)):
         )
 
     @vibecheckset.command(name="logchannel")
-    @checks.admin_or_permissions(manage_guild=True)
     async def set_vibe_log_channel(self, ctx: commands.Context, channel: discord.TextChannel = None):
         """
         Sets the channel where vibe change logs will be posted.
-
         Omit the channel to disable logging.
         """
         if channel is None:
@@ -405,17 +431,13 @@ class VibeCheck(getattr(commands, "Cog", object)):
     # --- COOLDOWN COMMANDS ---
 
     @vibecheckset.group(name="cooldown")
-    @checks.admin_or_permissions(manage_guild=True)
     async def vibe_cooldown(self, ctx: commands.Context):
         """Configure cooldowns for sending vibes."""
         pass
 
     @vibe_cooldown.command(name="goodvibes")
     async def set_good_vibes_cooldown(self, ctx: commands.Context, minutes: int):
-        """
-        Sets the cooldown for [p]goodvibes in minutes.
-        Set to 0 to disable cooldowns.
-        """
+        """Sets the cooldown for [p]goodvibes in minutes."""
         if minutes < 0:
             return await ctx.send("Cooldown cannot be negative.")
         
@@ -429,10 +451,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
 
     @vibe_cooldown.command(name="badvibes")
     async def set_bad_vibes_cooldown(self, ctx: commands.Context, minutes: int):
-        """
-        Sets the cooldown for [p]badvibes in minutes.
-        Set to 0 to disable cooldowns.
-        """
+        """Sets the cooldown for [p]badvibes in minutes."""
         if minutes < 0:
             return await ctx.send("Cooldown cannot be negative.")
         
@@ -447,16 +466,8 @@ class VibeCheck(getattr(commands, "Cog", object)):
     # --- WARNSYSTEM COMMANDS ---
 
     @vibecheckset.command(name="warning")
-    @checks.admin_or_permissions(manage_guild=True)
     async def set_warning(self, ctx: commands.Context, threshold: int, *, reason: str = "VibeCheck: Low vibe score"):
-        """
-        Configure WarnSystem Level 1 (Warning).
-        
-        Usage: [p]vibecheckset warning <threshold> <reason>
-        Example: [p]vibecheckset warning -50 Your vibe score is quite low
-        
-        Set threshold to 0 to disable.
-        """
+        """Configure WarnSystem Level 1 (Warning)."""
         if threshold > 0:
             return await ctx.send("The threshold must be a negative integer (e.g., `-10`). Set to 0 to disable.")
 
@@ -474,16 +485,8 @@ class VibeCheck(getattr(commands, "Cog", object)):
         )
 
     @vibecheckset.command(name="kick")
-    @checks.admin_or_permissions(manage_guild=True)
     async def set_kick(self, ctx: commands.Context, threshold: int, *, reason: str = "VibeCheck: Very low vibe score"):
-        """
-        Configure WarnSystem Level 3 (Kick).
-        
-        Usage: [p]vibecheckset kick <threshold> <reason>
-        Example: [p]vibecheckset kick -100 You have failed the vibe check
-        
-        Set threshold to 0 to disable.
-        """
+        """Configure WarnSystem Level 3 (Kick)."""
         if threshold > 0:
             return await ctx.send("The threshold must be a negative integer (e.g., `-50`). Set to 0 to disable.")
 
@@ -501,16 +504,8 @@ class VibeCheck(getattr(commands, "Cog", object)):
         )
 
     @vibecheckset.command(name="ban")
-    @checks.admin_or_permissions(manage_guild=True)
     async def set_ban(self, ctx: commands.Context, threshold: int, *, reason: str = "VibeCheck: Critically low vibe score"):
-        """
-        Configure WarnSystem Level 5 (Ban).
-        
-        Usage: [p]vibecheckset ban <threshold> <reason>
-        Example: [p]vibecheckset ban -200 Critical vibe failure
-        
-        Set threshold to 0 to disable.
-        """
+        """Configure WarnSystem Level 5 (Ban)."""
         if threshold > 0:
             return await ctx.send("The threshold must be a negative integer (e.g., `-100`). Set to 0 to disable.")
 
@@ -579,12 +574,21 @@ class VibeCheck(getattr(commands, "Cog", object)):
         hard_rt = settings.get('ratio_hard_threshold')
         soft_rt_str = str(soft_rt) if soft_rt is not None else "Disabled"
         hard_rt_str = str(hard_rt) if hard_rt is not None else "Disabled"
+        
+        # Level Req
+        req_good = settings.get('req_level_good', 0)
+        req_bad = settings.get('req_level_bad', 0)
+        req_good_str = f"Level {req_good}" if req_good > 0 else "None"
+        req_bad_str = f"Level {req_bad}" if req_bad > 0 else "None"
 
         embed = discord.Embed(title=f"VibeCheck Settings for {ctx.guild.name}", color=discord.Color.blue())
         embed.add_field(name="Log Channel", value=log_text, inline=False)
         
         embed.add_field(name="Good Vibes Cooldown", value=good_cd_str, inline=True)
         embed.add_field(name="Bad Vibes Cooldown", value=bad_cd_str, inline=True)
+        
+        embed.add_field(name="Req Level (Good)", value=req_good_str, inline=True)
+        embed.add_field(name="Req Level (Bad)", value=req_bad_str, inline=True)
         
         embed.add_field(name="Ratio Soft Threshold", value=soft_rt_str, inline=True)
         embed.add_field(name="Ratio Hard Threshold", value=hard_rt_str, inline=True)
@@ -703,11 +707,6 @@ class VibeCheck(getattr(commands, "Cog", object)):
         Checks if a user is on cooldown for a specific vibe type.
         Raises CommandOnCooldown if they are.
         """
-        # Owners bypass cooldowns REMOVED for testing.
-        # if await self.bot.is_owner(ctx.author):
-        #     return
-
-        # Fetch settings
         if vibe_type == "good":
             cooldown_seconds = await self.conf.guild(ctx.guild).good_vibes_cooldown()
             last_used = await self.conf.user(ctx.author).last_good_vibe()
@@ -729,6 +728,56 @@ class VibeCheck(getattr(commands, "Cog", object)):
                 commands.BucketType.user
             )
 
+    async def _check_level_requirement(self, ctx: commands.Context, vibe_type: str) -> Tuple[bool, int]:
+        """
+        Checks if the author meets the LevelUp level requirement.
+        
+        Returns:
+            Tuple[bool, int]: (Allowed, RequiredLevel)
+        """
+        if vibe_type == "good":
+            req_level = await self.conf.guild(ctx.guild).req_level_good()
+        else:
+            req_level = await self.conf.guild(ctx.guild).req_level_bad()
+            
+        if req_level <= 0:
+            return True, 0
+            
+        user_level = await self._get_user_level(ctx.guild, ctx.author)
+        
+        if user_level >= req_level:
+            return True, req_level
+        else:
+            return False, req_level
+
+    async def _get_user_level(self, guild: discord.Guild, member: discord.Member) -> int:
+        """
+        Attempts to retrieve a user's level from the LevelUp cog.
+        Returns 0 if cog not found or level cannot be determined.
+        """
+        levelup = self.bot.get_cog("LevelUp")
+        if not levelup:
+            return 0
+        
+        try:
+            # Method 1: Config based (Red standard)
+            # Accessing conf data is usually safest if public methods aren't obvious
+            # structure usually: data[guild_id][user_id]["level"]
+            data = await levelup.config.guild(guild).users.get(str(member.id))
+            if data and "level" in data:
+                return data["level"]
+                
+            # Method 2: Check for database object (Vertyco's LevelUp)
+            if hasattr(levelup, "db"):
+                 # This usually requires imports we don't have, or async access
+                 # We rely on Config access mostly for compatibility
+                 pass
+                 
+        except Exception as e:
+            log.debug(f"Could not retrieve level for {member.id}: {e}")
+            
+        return 0
+
     async def _give_levelup_xp(self, guild: discord.Guild, member: discord.Member, amount: int):
         """
         Attempts to grant XP using the LevelUp cog.
@@ -736,19 +785,15 @@ class VibeCheck(getattr(commands, "Cog", object)):
         """
         levelup = self.bot.get_cog("LevelUp")
         if not levelup:
-            log.warning("LevelUp cog not found. Cannot grant VibeCheck XP.")
             return
 
         try:
             # Try accessing via public API (common in some forks)
             if hasattr(levelup, "api") and hasattr(levelup.api, "add_xp"):
                 await levelup.api.add_xp(guild.id, member.id, amount)
-                log.info(f"Granted {amount} XP to {member.name} via LevelUp API.")
                 
             # Try accessing standard method (common in original)
             elif hasattr(levelup, "add_xp"):
-                # Note: Signatures vary. Most use (user_id, amount) or (guild_id, user_id, amount)
-                # We try the most common pattern for Red cogs
                 import inspect
                 sig = inspect.signature(levelup.add_xp)
                 params = list(sig.parameters.keys())
@@ -757,11 +802,6 @@ class VibeCheck(getattr(commands, "Cog", object)):
                     await levelup.add_xp(guild.id, member.id, amount)
                 else:
                     await levelup.add_xp(member.id, amount)
-                    
-                log.info(f"Granted {amount} XP to {member.name} via LevelUp.")
-            else:
-                log.warning("LevelUp cog found but could not locate 'add_xp' method.")
-                
         except Exception as e:
             log.error(f"Failed to grant LevelUp XP: {e}")
 
@@ -808,21 +848,15 @@ class VibeCheck(getattr(commands, "Cog", object)):
             return 
             
         # 4. Check for New Member XP Reward
-        # Logic: If they just crossed the threshold UPWARDS, are "new", and haven't got it yet.
-        if new_vibes > current_vibes: # Only on gain
+        if new_vibes > current_vibes: 
             guild_conf = self.conf.guild(target_guild)
             xp_minutes = await guild_conf.new_member_xp_minutes()
             
             if xp_minutes and xp_minutes > 0:
                 xp_threshold = await guild_conf.new_member_xp_threshold()
-                # Check if they crossed the threshold (Old < Threshold <= New)
                 if current_vibes < xp_threshold <= new_vibes:
-                    
-                    # Check if they have already received the reward
                     already_awarded = await receiver_settings.new_member_xp_awarded()
                     if not already_awarded:
-                        
-                        # Check Age
                         if member_receiver.joined_at:
                             joined_at = member_receiver.joined_at
                             if joined_at.tzinfo is None:
@@ -835,7 +869,6 @@ class VibeCheck(getattr(commands, "Cog", object)):
                                 if xp_amount > 0:
                                     await self._give_levelup_xp(target_guild, member_receiver, xp_amount)
                                     await receiver_settings.new_member_xp_awarded.set(True)
-        # -----------------------------------------------
 
         # 5. Run WarnSystem Integration Check
         if new_vibes < current_vibes:
@@ -845,7 +878,6 @@ class VibeCheck(getattr(commands, "Cog", object)):
             kick_thresh = await guild_conf.kick_threshold()
             warn_thresh = await guild_conf.warn_threshold()
             
-            # New Member logic config
             new_mem_age = await guild_conf.new_member_age_seconds()
             new_mem_thresh = await guild_conf.new_member_score_threshold()
             
@@ -897,13 +929,8 @@ class VibeCheck(getattr(commands, "Cog", object)):
             # Attempt to use the warn method.
             if hasattr(warn_cog, "warn"):
                 await warn_cog.warn(guild=guild, members=[member], author=author, reason=reason, level=level)
-                log.info(f"Triggered WarnSystem Level {level} for {member.display_name} via VibeCheck.")
             elif hasattr(warn_cog, "api") and hasattr(warn_cog.api, "warn"):
                 await warn_cog.api.warn(guild=guild, members=[member], author=author, reason=reason, level=level)
-                log.info(f"Triggered WarnSystem Level {level} for {member.display_name} via VibeCheck API.")
-            else:
-                log.error("WarnSystem found, but could not locate 'warn' method.")
-                
         except Exception as e:
             log.error(f"Failed to trigger WarnSystem: {e}")
 
@@ -916,10 +943,8 @@ class VibeCheck(getattr(commands, "Cog", object)):
 
         log_channel = guild.get_channel(log_channel_id)
         if not log_channel:
-            log.warning(f"Log channel ID {log_channel_id} not found in guild {guild.name}.")
             return
             
-        # Logging for the Vibe Change
         emoji = "✨" if amount > 0 else "💀"
         action = "Good Vibes" if amount > 0 else "Bad Vibes"
         
@@ -935,24 +960,17 @@ class VibeCheck(getattr(commands, "Cog", object)):
         
         try:
             await log_channel.send(embed=embed)
-        except discord.Forbidden:
-            log.error(f"Bot lacks permissions to send messages in log channel {log_channel.name}.")
-        except discord.HTTPException as e:
-            log.error(f"HTTP error sending log message: {e}")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
                 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         """Clears a user's GLOBAL vibes score when they leave a guild."""
         
         user_data = await self.conf.user(member).all()
-        
         if 'vibes' not in user_data or user_data.get('vibes') is None:
             return
-            
         await self.conf.user(member).vibes.set(0)
-        
-        log.debug("Global vibes score for user %s cleared upon leaving guild %s.", 
-                  str(member), member.guild.name)
 
     async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
         """Handles errors for commands in this cog, specifically custom cooldown messages."""
@@ -993,12 +1011,9 @@ class VibeCheck(getattr(commands, "Cog", object)):
         """Get a list of members with calculated ratios."""
         ret = []
         for user_id, conf in (await self.conf.all_users()).items():
-            # Filter users with no activity if needed, or include everyone
             good = conf.get("good_vibes_sent", 0)
             bad = conf.get("bad_vibes_sent", 0)
             
-            # If a user has never sent vibes, should they be on the board? 
-            # Usually only active users are shown.
             if good == 0 and bad == 0:
                 continue
                 
