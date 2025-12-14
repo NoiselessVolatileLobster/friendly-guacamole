@@ -204,7 +204,7 @@ class Bang(commands.Cog):
             return
 
         # Check keyword
-        if message.content.lower().strip() == conf["keyword"].lower():
+        if conf["keyword"].lower() in message.content.lower():
             # Use lock to ensure only one person claims the kill
             if guild_id not in self.locks:
                 self.locks[guild_id] = asyncio.Lock()
