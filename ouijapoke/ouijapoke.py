@@ -401,6 +401,13 @@ class OuijaPoke(commands.Cog):
         if message.guild is None or message.author.bot or message.webhook_id:
             return
         
+        # --- NEW: Ignore valid commands ---
+        # Get context to check if this message triggers a command
+        ctx = await self.bot.get_context(message)
+        if ctx.command:
+            return
+        # ----------------------------------
+        
         guild = message.guild
         user_id = message.author.id
 
