@@ -1,5 +1,6 @@
 import discord
 import logging
+import asyncio  # <--- Added import
 from redbot.core import commands, Config
 from redbot.core.utils.chat_formatting import box, pagify
 
@@ -23,7 +24,7 @@ class ServerBadge(commands.Cog):
             try:
                 await channel.send(message)
             except discord.HTTPException:
-                pass # Fail silently if discord is having issues
+                pass 
 
     async def _check_and_assign(self, member: discord.Member):
         """
@@ -52,6 +53,9 @@ class ServerBadge(commands.Cog):
                     await member.add_roles(role, reason="User has Server Badge (Primary Guild).")
                     self.log.info(f"Assigned Server Badge role '{role.name}' to {member} ({member.id}) in guild '{guild.name}'.")
                     await self._notify(guild, f"✅ **Server Badge Added:** Assigned {role.mention} to {member.mention} (`{member.id}`).")
+                    
+                    # Wait to prevent rate limits
+                    await asyncio.sleep(1.5) 
                     return True
                 except discord.Forbidden:
                     self.log.warning(f"Failed to assign role to {member.id} in {guild.name}: Missing Permissions.")
@@ -62,6 +66,9 @@ class ServerBadge(commands.Cog):
                     await member.remove_roles(role, reason="User no longer has Server Badge.")
                     self.log.info(f"Removed Server Badge role '{role.name}' from {member} ({member.id}) in guild '{guild.name}'.")
                     await self._notify(guild, f"❌ **Server Badge Removed:** Removed {role.mention} from {member.mention} (`{member.id}`).")
+                    
+                    # Wait to prevent rate limits
+                    await asyncio.sleep(1.5)
                     return True
                 except discord.Forbidden:
                     self.log.warning(f"Failed to remove role from {member.id} in {guild.name}: Missing Permissions.")
@@ -166,12 +173,15 @@ class ServerBadge(commands.Cog):
 
     @serverbadgeset.command(name="scan")
     async def serverbadgeset_scan(self, ctx):
-        """Manually scan all guild members and assign/remove the role."""
+        """Manually scan all guild members and assign/remove the role.
+        
+        This process includes a delay between changes to avoid rate limits.
+        """
         role_id = await self.config.guild(ctx.guild).role_id()
         if not role_id:
             return await ctx.send("No role configured. Please set a role first using `[p]serverbadgeset role`.")
 
-        msg = await ctx.send("Scanning members... This may take a moment.")
+        msg = await ctx.send("Scanning members... This may take a while depending on the number of updates required.")
         
         updates = 0
         checked = 0
