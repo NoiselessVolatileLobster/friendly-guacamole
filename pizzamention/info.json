@@ -1,0 +1,11 @@
+{
+    "author": ["NoiselessVolatileLobster"],
+    "install_msg": "PizzaMention has been installed. usage: `[p]pizzamentionset view` to see current settings, or `[p]pizzamentionset word <word>` to change the tracked keyword.",
+    "name": "PizzaMention",
+    "short": "Tracks the time since a specific keyword was last mentioned.",
+    "description": "Tracks how many days, hours, and minutes have passed since a specific keyword was mentioned in the server. Displays the streak in ANSI colored text.",
+    "tags": ["fun", "counter", "streak", "keyword"],
+    "requirements": [],
+    "min_bot_version": "3.5.22",
+    "end_user_data_statement": "This cog stores the configured keyword and the timestamp of the last mention for each guild. It does not store personal user data."
+}
