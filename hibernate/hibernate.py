@@ -4,8 +4,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 
 from redbot.core import commands, Config, checks
-from redbot.core.utils.chat_formatting import humanize_list, humanize_timedelta
+from redbot.core.utils.chat_formatting import humanize_list, humanize_timedelta, box
 from redbot.core.utils.predicates import MessagePredicate
+
+# Tabulate is available in the Red environment
+from tabulate import tabulate
 
 class Hibernate(commands.Cog):
     """
@@ -22,7 +25,6 @@ class Hibernate(commands.Cog):
             "min_days_joined": 0,
             "required_role_ids": [],
             "duration_days": 30,
-            # New Settings
             "min_level": 0,
             "req_level_enabled": False,
             "req_roles_enabled": True
@@ -110,7 +112,6 @@ class Hibernate(commands.Cog):
         req_role_ids = settings["required_role_ids"]
         duration = settings["duration_days"]
         
-        # New Settings
         min_level = settings["min_level"]
         req_level_enabled = settings["req_level_enabled"]
         req_roles_enabled = settings["req_roles_enabled"]
@@ -167,7 +168,6 @@ class Hibernate(commands.Cog):
                 reasons.append("• The LevelUp cog is required for eligibility but is not loaded. Please contact an admin.")
             else:
                 try:
-                    # Async call based on provided screenshot
                     user_level = await levelup_cog.get_level(member)
                     if user_level < min_level:
                         reasons.append(f"• Your level is too low. (Required: Level {min_level}, You: Level {user_level})")
@@ -201,14 +201,77 @@ class Hibernate(commands.Cog):
         )
         await ctx.send(embed=embed, ephemeral=True)
 
-    # --- Admin Configuration ---
+    # --- Admin Configuration & Management ---
 
     @commands.group()
     @commands.guild_only()
     @commands.admin_or_permissions(administrator=True)
     async def hibernateset(self, ctx):
-        """Configuration for user hibernation."""
+        """Configuration and management for user hibernation."""
         pass
+
+    @hibernateset.command(name="view")
+    async def view_settings(self, ctx):
+        """Show current configuration."""
+        data = await self.config.guild(ctx.guild).all()
+        
+        role = ctx.guild.get_role(data['target_role_id']) if data['target_role_id'] else "Not Set"
+        req_roles_names = []
+        for rid in data['required_role_ids']:
+            r = ctx.guild.get_role(rid)
+            if r: req_roles_names.append(r.name)
+            else: req_roles_names.append(f"Deleted-Role({rid})")
+
+        msg = (
+            f"**Target Role:** {role.mention if isinstance(role, discord.Role) else role}\n"
+            f"**Duration:** {data['duration_days']} days\n"
+            f"**Min Join Days:** {data['min_days_joined']}\n\n"
+            
+            f"__**Requirements**__\n"
+            f"**Roles Required:** {'✅ Yes' if data['req_roles_enabled'] else '❌ No'}\n"
+            f"**List (Any of):** {humanize_list(req_roles_names) if req_roles_names else 'None Set'}\n\n"
+            
+            f"**Level Required:** {'✅ Yes' if data['req_level_enabled'] else '❌ No'}\n"
+            f"**Min Level:** {data['min_level']}"
+        )
+        embed = discord.Embed(title="Hibernate Settings", description=msg, color=discord.Color.blue())
+        await ctx.send(embed=embed)
+
+    @hibernateset.command(name="list")
+    async def list_hibernating(self, ctx):
+        """List all users currently tracking a hibernation end date."""
+        members_data = await self.config.all_members(ctx.guild)
+        
+        table_data = []
+        for member_id, data in members_data.items():
+            end = data.get("hibernation_end")
+            if end:
+                member = ctx.guild.get_member(member_id)
+                name = member.display_name if member else f"Left-User({member_id})"
+                
+                # Calculate time left
+                now = datetime.now(timezone.utc).timestamp()
+                remaining = end - now
+                
+                # Format remaining time
+                if remaining < 0:
+                    time_left = "Expired"
+                else:
+                    days = int(remaining // 86400)
+                    hours = int((remaining % 86400) // 3600)
+                    time_left = f"{days}d {hours}h"
+
+                end_dt = datetime.fromtimestamp(end, timezone.utc).strftime("%Y-%m-%d")
+                table_data.append([name, end_dt, time_left])
+
+        if not table_data:
+            return await ctx.send("No users are currently recorded as hibernating.")
+
+        headers = ["User", "End Date", "Time Left"]
+        # Using tabulate within a code block for the table preference
+        output = tabulate(table_data, headers=headers, tablefmt="presto")
+        
+        await ctx.send(box(output, lang="text"))
 
     @hibernateset.command(name="role")
     async def set_role(self, ctx, role: discord.Role):
@@ -280,69 +343,7 @@ class Hibernate(commands.Cog):
         status = "Enabled" if toggle else "Disabled"
         await ctx.send(f"Required Roles check is now **{status}**.")
 
-    @hibernateset.command(name="settings")
-    async def show_settings(self, ctx):
-        """Show current configuration."""
-        data = await self.config.guild(ctx.guild).all()
-        
-        role = ctx.guild.get_role(data['target_role_id']) if data['target_role_id'] else "Not Set"
-        req_roles_names = []
-        for rid in data['required_role_ids']:
-            r = ctx.guild.get_role(rid)
-            if r: req_roles_names.append(r.name)
-            else: req_roles_names.append(f"Deleted-Role({rid})")
-
-        msg = (
-            f"**Target Role:** {role.mention if isinstance(role, discord.Role) else role}\n"
-            f"**Duration:** {data['duration_days']} days\n"
-            f"**Min Join Days:** {data['min_days_joined']}\n\n"
-            
-            f"__**Requirements**__\n"
-            f"**Roles Required:** {'✅ Yes' if data['req_roles_enabled'] else '❌ No'}\n"
-            f"**List (Any of):** {humanize_list(req_roles_names) if req_roles_names else 'None Set'}\n\n"
-            
-            f"**Level Required:** {'✅ Yes' if data['req_level_enabled'] else '❌ No'}\n"
-            f"**Min Level:** {data['min_level']}"
-        )
-        embed = discord.Embed(title="Hibernate Settings", description=msg, color=discord.Color.blue())
-        await ctx.send(embed=embed)
-
-    # --- Admin Management ---
-
-    @commands.group()
-    @commands.guild_only()
-    @commands.admin_or_permissions(administrator=True)
-    async def hibernatemanage(self, ctx):
-        """Manage active hibernations."""
-        pass
-
-    @hibernatemanage.command(name="list")
-    async def list_hibernating(self, ctx):
-        """List all users currently tracking a hibernation end date."""
-        members_data = await self.config.all_members(ctx.guild)
-        
-        active_list = []
-        for member_id, data in members_data.items():
-            end = data.get("hibernation_end")
-            if end:
-                # Basic check if user is still in server
-                member = ctx.guild.get_member(member_id)
-                name = member.display_name if member else f"Left-User({member_id})"
-                active_list.append(f"{name}: Ends <t:{int(end)}:R>")
-
-        if not active_list:
-            return await ctx.send("No users are currently recorded as hibernating.")
-
-        # Simple pagination for discord limits
-        chunked = "\n".join(active_list)
-        if len(chunked) > 2000:
-            await ctx.send("Too many users to list in one message. Showing first 2000 chars.")
-            await ctx.send(chunked[:2000])
-        else:
-            embed = discord.Embed(title="Hibernating Users", description=chunked, color=discord.Color.blue())
-            await ctx.send(embed=embed)
-
-    @hibernatemanage.command(name="extend")
+    @hibernateset.command(name="extend")
     async def extend_user(self, ctx, member: discord.Member, days: int):
         """Extend a user's hibernation by X days."""
         current_end = await self.config.member(member).hibernation_end()
@@ -356,7 +357,7 @@ class Hibernate(commands.Cog):
         await self.config.member(member).hibernation_end.set(new_ts)
         await ctx.send(f"Extended {member.display_name}'s hibernation by {days} days.\nNew End: <t:{int(new_ts)}:F>")
 
-    @hibernatemanage.command(name="cancel")
+    @hibernateset.command(name="cancel")
     async def cancel_user(self, ctx, member: discord.Member):
         """Immediately cancels a user's active hibernation."""
         current_end = await self.config.member(member).hibernation_end()
@@ -368,7 +369,6 @@ class Hibernate(commands.Cog):
         target_role_id = settings["target_role_id"]
         role_removed = False
 
-        # Attempt to remove the role if configured
         if target_role_id:
             target_role = ctx.guild.get_role(target_role_id)
             if target_role and target_role in member.roles:
@@ -380,7 +380,6 @@ class Hibernate(commands.Cog):
                 except discord.HTTPException:
                     pass
 
-        # Clear the config tracking regardless of role removal success
         await self.config.member(member).hibernation_end.set(None)
 
         status_msg = "Hibernation tracking cleared."
