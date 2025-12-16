@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 
 from redbot.core import commands, Config, checks
-from redbot.core.utils.chat_formatting import humanize_list, humanize_timedelta, box
+from redbot.core.utils.chat_formatting import box
 from redbot.core.utils.predicates import MessagePredicate
 
 # Tabulate is available in the Red environment
@@ -23,11 +23,9 @@ class Hibernate(commands.Cog):
         default_guild = {
             "target_role_id": None,
             "min_days_joined": 0,
-            "required_role_ids": [],
             "duration_days": 30,
             "min_level": 0,
-            "req_level_enabled": False,
-            "req_roles_enabled": True
+            "req_level_enabled": False
         }
 
         # Default Member Settings
@@ -100,7 +98,7 @@ class Hibernate(commands.Cog):
     async def hibernate(self, ctx: commands.Context):
         """
         Request to enter hibernation. 
-        Checks eligibility based on server join date, required roles, and LevelUp level.
+        Checks eligibility based on server join date and LevelUp level.
         """
         guild = ctx.guild
         member = ctx.author
@@ -109,12 +107,10 @@ class Hibernate(commands.Cog):
         settings = await self.config.guild(guild).all()
         target_role_id = settings["target_role_id"]
         min_days = settings["min_days_joined"]
-        req_role_ids = settings["required_role_ids"]
         duration = settings["duration_days"]
         
         min_level = settings["min_level"]
         req_level_enabled = settings["req_level_enabled"]
-        req_roles_enabled = settings["req_roles_enabled"]
 
         # 1. Configuration Check
         if not target_role_id:
@@ -148,18 +144,6 @@ class Hibernate(commands.Cog):
                     reasons.append(f"• You have not been a member long enough. (Required: {min_days} days, You: {days_joined} days)")
             else:
                 reasons.append("• Could not determine your join date.")
-
-        # --- Required Roles Check ---
-        if req_roles_enabled and req_role_ids:
-            member_role_ids = {r.id for r in member.roles}
-            has_required_role = bool(set(req_role_ids) & member_role_ids)
-            
-            if not has_required_role:
-                required_role_names = [r.name for rid in req_role_ids if (r := guild.get_role(rid))]
-                if required_role_names:
-                    reasons.append(f"• You must have at least one of these roles: {humanize_list(required_role_names)}")
-                else:
-                    reasons.append("• Required roles are configured but invalid. Please contact an admin.")
 
         # --- LevelUp Check ---
         if req_level_enabled:
@@ -220,11 +204,6 @@ class Hibernate(commands.Cog):
         active_count = sum(1 for m_data in all_members.values() if m_data.get("hibernation_end"))
 
         role = ctx.guild.get_role(data['target_role_id']) if data['target_role_id'] else "Not Set"
-        req_roles_names = []
-        for rid in data['required_role_ids']:
-            r = ctx.guild.get_role(rid)
-            if r: req_roles_names.append(r.name)
-            else: req_roles_names.append(f"Deleted-Role({rid})")
 
         msg = (
             f"**Target Role:** {role.mention if isinstance(role, discord.Role) else role}\n"
@@ -233,9 +212,6 @@ class Hibernate(commands.Cog):
             f"**Current Hibernating Users:** {active_count}\n\n"
             
             f"__**Requirements**__\n"
-            f"**Roles Required:** {'✅ Yes' if data['req_roles_enabled'] else '❌ No'}\n"
-            f"**List (Any of):** {humanize_list(req_roles_names) if req_roles_names else 'None Set'}\n\n"
-            
             f"**Level Required:** {'✅ Yes' if data['req_level_enabled'] else '❌ No'}\n"
             f"**Min Level:** {data['min_level']}"
         )
@@ -300,24 +276,6 @@ class Hibernate(commands.Cog):
         await self.config.guild(ctx.guild).min_days_joined.set(days)
         await ctx.send(f"Minimum join days set to: {days} days.")
 
-    @hibernateset.command(name="addreqrole")
-    async def add_req_role(self, ctx, role: discord.Role):
-        """Add a role to the list of required roles to be eligible."""
-        async with self.config.guild(ctx.guild).required_role_ids() as roles:
-            if role.id in roles:
-                return await ctx.send("That role is already required.")
-            roles.append(role.id)
-        await ctx.send(f"Added {role.name} to required roles.")
-
-    @hibernateset.command(name="removereqrole")
-    async def remove_req_role(self, ctx, role: discord.Role):
-        """Remove a role from the list of required roles."""
-        async with self.config.guild(ctx.guild).required_role_ids() as roles:
-            if role.id not in roles:
-                return await ctx.send("That role is not in the required list.")
-            roles.remove(role.id)
-        await ctx.send(f"Removed {role.name} from required roles.")
-
     @hibernateset.command(name="level")
     async def set_level(self, ctx, level: int):
         """Set minimum level required to hibernate (requires LevelUp cog)."""
@@ -336,17 +294,6 @@ class Hibernate(commands.Cog):
         await self.config.guild(ctx.guild).req_level_enabled.set(toggle)
         status = "Enabled" if toggle else "Disabled"
         await ctx.send(f"Level requirement is now **{status}**.")
-
-    @hibernateset.command(name="toggleroles")
-    async def toggle_roles(self, ctx, toggle: bool = None):
-        """Enable or disable the Required Roles requirement."""
-        if toggle is None:
-            current = await self.config.guild(ctx.guild).req_roles_enabled()
-            toggle = not current
-        
-        await self.config.guild(ctx.guild).req_roles_enabled.set(toggle)
-        status = "Enabled" if toggle else "Disabled"
-        await ctx.send(f"Required Roles check is now **{status}**.")
 
     @hibernateset.command(name="extend")
     async def extend_user(self, ctx, member: discord.Member, days: int):
