@@ -148,40 +148,13 @@ class Suggestions(commands.Cog):
         self.config.register_guild(**default_guild)
 
     async def get_user_level(self, member: discord.Member) -> int:
-        """Integrates with Vertyco's LevelUp cog to get user level."""
-        levelup = self.bot.get_cog("LevelUp")
-        if not levelup:
+        """Integrates with LevelUp cog to get user level."""
+        cog = self.bot.get_cog("LevelUp")
+        if not cog:
             return 0
-        
-        # Attempt to access Vertyco's LevelUp data structure
         try:
-            # Vertyco's LevelUp stores data in a 'data' attribute or 'db' object
-            # accessing data[guild_id]['users'][user_id]['level']
-            # IDs are typically stored as strings in his JSON backing
-            if hasattr(levelup, "data"):
-                guild_id = str(member.guild.id)
-                user_id = str(member.id)
-                
-                # Navigate the data structure safely
-                if guild_id in levelup.data and "users" in levelup.data[guild_id]:
-                    users_data = levelup.data[guild_id]["users"]
-                    if user_id in users_data:
-                        return int(users_data[user_id].get("level", 0))
-            
-            # Fallback for newer API versions using shared library
-            if hasattr(levelup, "get_member_stats"):
-                # Some versions expose this helper
-                stats = await levelup.get_member_stats(member.id, member.guild.id)
-                return stats.level
-
-        except Exception as e:
-            # Log error if needed, for now fail safe to 0
-            pass
-
-        # Final Fallback to standard config if the above failed
-        try:
-            return await levelup.config.member(member).level()
-        except:
+            return cog.get_level(member)
+        except AttributeError:
             return 0
 
     async def update_suggestion_message(self, guild, data):
