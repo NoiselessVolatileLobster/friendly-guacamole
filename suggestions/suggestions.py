@@ -164,12 +164,10 @@ class Suggestions(commands.Cog):
         if not cog:
             return 0
         try:
-            # FIX: Added 'await' here because get_level is async
             return await cog.get_level(member)
         except AttributeError:
             return 0
         except TypeError:
-            # Fallback in case it's not awaitable in some version (unlikely based on error)
             return 0
 
     async def update_suggestion_message(self, guild, data):
@@ -211,9 +209,12 @@ class Suggestions(commands.Cog):
 
     async def process_suggestion(self, interaction, channel_id, title, text):
         guild = interaction.guild
-        async with self.config.guild(guild).next_id() as nid:
-            s_id = nid
-            await self.config.guild(guild).next_id.set(nid + 1)
+        
+        # FIX: Cannot use 'async with' on an integer config value.
+        # Use get/set instead.
+        nid = await self.config.guild(guild).next_id()
+        s_id = nid
+        await self.config.guild(guild).next_id.set(nid + 1)
         
         emoji_up = await self.config.guild(guild).emoji_up()
         emoji_down = await self.config.guild(guild).emoji_down()
