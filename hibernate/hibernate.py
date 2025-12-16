@@ -212,9 +212,13 @@ class Hibernate(commands.Cog):
 
     @hibernateset.command(name="view")
     async def view_settings(self, ctx):
-        """Show current configuration."""
+        """Show current configuration and active stats."""
         data = await self.config.guild(ctx.guild).all()
         
+        # Count active hibernations
+        all_members = await self.config.all_members(ctx.guild)
+        active_count = sum(1 for m_data in all_members.values() if m_data.get("hibernation_end"))
+
         role = ctx.guild.get_role(data['target_role_id']) if data['target_role_id'] else "Not Set"
         req_roles_names = []
         for rid in data['required_role_ids']:
@@ -225,7 +229,8 @@ class Hibernate(commands.Cog):
         msg = (
             f"**Target Role:** {role.mention if isinstance(role, discord.Role) else role}\n"
             f"**Duration:** {data['duration_days']} days\n"
-            f"**Min Join Days:** {data['min_days_joined']}\n\n"
+            f"**Min Join Days:** {data['min_days_joined']}\n"
+            f"**Current Hibernating Users:** {active_count}\n\n"
             
             f"__**Requirements**__\n"
             f"**Roles Required:** {'✅ Yes' if data['req_roles_enabled'] else '❌ No'}\n"
@@ -387,3 +392,50 @@ class Hibernate(commands.Cog):
             status_msg = f"Hibernation role **{target_role.name}** removed and tracking cleared."
         
         await ctx.send(f"**{member.display_name}**'s hibernation has been cancelled. {status_msg}")
+
+    @hibernateset.command(name="force")
+    async def force_hibernate(self, ctx, member: discord.Member):
+        """
+        Force a user into hibernation mode.
+        
+        This bypasses all eligibility checks (Level, Roles, Join Date) 
+        and immediately applies the hibernation role and timer.
+        """
+        guild = ctx.guild
+        settings = await self.config.guild(guild).all()
+        target_role_id = settings["target_role_id"]
+        duration = settings["duration_days"]
+
+        # 1. Basic Config Checks
+        if not target_role_id:
+            return await ctx.send("Hibernation role is not configured.")
+        
+        target_role = guild.get_role(target_role_id)
+        if not target_role:
+            return await ctx.send("The configured hibernation role no longer exists.")
+
+        # 2. Check if already hibernating (Optional: You could allow overwriting)
+        if target_role in member.roles:
+            return await ctx.send(f"{member.display_name} is already hibernating.")
+
+        # 3. Apply Role
+        try:
+            await member.add_roles(target_role, reason=f"Hibernation forced by admin {ctx.author.name}")
+        except discord.Forbidden:
+            return await ctx.send("I do not have permission to assign the hibernation role.")
+        except discord.HTTPException as e:
+            return await ctx.send(f"An error occurred assigning the role: {e}")
+
+        # 4. Set Timer
+        end_date = datetime.now(timezone.utc) + timedelta(days=duration)
+        await self.config.member(member).hibernation_end.set(end_date.timestamp())
+
+        # 5. Confirm
+        embed = discord.Embed(
+            title="Hibernation Forced",
+            description=f"**{member.display_name}** has been put into hibernation.\n"
+                        f"**Role:** {target_role.mention}\n"
+                        f"**Ends:** <t:{int(end_date.timestamp())}:F>",
+            color=discord.Color.green()
+        )
+        await ctx.send(embed=embed)
