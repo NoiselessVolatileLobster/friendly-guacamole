@@ -458,9 +458,8 @@ Current ID:     {cfg['next_id']}
         
         await ctx.send(embed=embed)
 
-    @commands.command()
-    @commands.guild_only()
-    async def dashboard(self, ctx):
+    @suggestionsset.command(name="dashboard")
+    async def ss_dashboard(self, ctx):
         """View suggestion dashboard."""
         suggestions = await self.config.guild(ctx.guild).suggestions()
         if not suggestions:
