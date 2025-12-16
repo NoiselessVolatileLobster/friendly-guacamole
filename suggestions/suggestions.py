@@ -152,11 +152,7 @@ class Suggestions(commands.Cog):
         levelup = self.bot.get_cog("LevelUp")
         if not levelup:
             return 0
-        # Check if LevelUp has a get_user_data or similar; relying on cache/config usually
-        # Assuming standard Vrt or Star implementation:
         try:
-            # Typical method to fetch data, might vary based on specific LevelUp version
-            # defaulting to 0 if fails to prevent crash
             user_data = await levelup.config.member(member).level()
             return user_data
         except:
@@ -167,11 +163,9 @@ class Suggestions(commands.Cog):
         channel = guild.get_channel(channel_id)
         if not channel: return
 
-        # Need to find the thread
         try:
             thread = guild.get_thread(data['thread_id'])
             if not thread:
-                # Fallback if thread is archived
                 thread = await guild.fetch_channel(data['thread_id'])
         except:
             return
@@ -195,7 +189,6 @@ class Suggestions(commands.Cog):
         view.children[1].label = str(down_count)
         view.children[1].emoji = emoji_down
         
-        # Disable buttons if not open
         if data['status'] != 'open':
             for child in view.children:
                 child.disabled = True
@@ -236,7 +229,6 @@ class Suggestions(commands.Cog):
 
         msg = await thread.send(embed=embed, view=view)
         
-        # Save Data
         s_data = {
             "id": s_id,
             "author_id": interaction.user.id,
@@ -259,23 +251,9 @@ class Suggestions(commands.Cog):
                 f"Link: {thread.jump_url}"
             )
         except:
-            pass # DM closed
+            pass 
         
         await interaction.response.send_message(f"Suggestion created in {thread.mention}", ephemeral=True)
-
-    async def restore_views(self):
-        # On bot reload, restore views for active listeners
-        # Note: In a production cog, we'd iterate guilds. 
-        # For simple custom_id handling, we can rely on the dynamic button handler 
-        # if we register the Persistent View globally in setup or `cog_load`.
-        # However, since IDs are dynamic per suggestion ID in the VoteView init, 
-        # we can use a generic custom_id parser or rebuild.
-        # To keep it simple: We use specific custom_ids for the EntryView.
-        # VoteView logic is handled by `custom_id` checking inside `on_interaction` 
-        # OR we just re-attach views if we were tracking them.
-        
-        # Simpler approach for Red: Re-register the EntryView logic via adding it to bot
-        pass
 
     @commands.group(name="suggestionsset", aliases=["suggestion set"])
     @commands.admin_or_permissions(administrator=True)
@@ -346,7 +324,6 @@ Current ID:     {cfg['next_id']}
             data['status'] = 'approved'
             suggestions[suggestion_id] = data
             
-            # Logic to update thread
             thread = ctx.guild.get_thread(data['thread_id'])
             if thread:
                 embed = discord.Embed(title=f"Suggestion #{suggestion_id} Approved", description=message, color=discord.Color.green())
@@ -395,47 +372,20 @@ Current ID:     {cfg['next_id']}
         else:
             await ctx.send("Cancelled.")
 
-    @commands.command()
-    @commands.guild_only()
-    async def dashboard(self, ctx):
-        """View suggestion dashboard."""
-        suggestions = await self.config.guild(ctx.guild).suggestions()
-        if not suggestions:
-            return await ctx.send("No suggestions found.")
-            
-        open_list = [v for k,v in suggestions.items() if v['status'] == 'open']
-        approved_list = sorted([v for k,v in suggestions.items() if v['status'] == 'approved'], key=lambda x: x['timestamp'], reverse=True)[:5]
-        rejected_list = sorted([v for k,v in suggestions.items() if v['status'] == 'rejected'], key=lambda x: x['timestamp'], reverse=True)[:5]
-
-        embed = discord.Embed(title="Suggestions Dashboard", color=discord.Color.gold())
-        
-        open_str = "\n".join([f"#{x['id']} {x['title']} (<t:{int(x['timestamp'])}:R>)" for x in open_list]) or "None"
-        embed.add_field(name=f"Open ({len(open_list)})", value=open_str, inline=False)
-        
-        app_str = "\n".join([f"#{x['id']} {x['title']}" for x in approved_list]) or "None"
-        embed.add_field(name="Recently Approved", value=app_str, inline=False)
-        
-        rej_str = "\n".join([f"#{x['id']} {x['title']}" for x in rejected_list]) or "None"
-        embed.add_field(name="Recently Rejected", value=rej_str, inline=False)
-        
-        await ctx.send(embed=embed)
-
-    @commands.command()
-    @commands.guild_only()
-    async def stats(self, ctx):
+    @suggestionsset.command(name="stats")
+    async def ss_stats(self, ctx):
         """View detailed suggestion statistics."""
         data = await self.config.guild(ctx.guild).suggestions()
         all_sugs = data.values()
         if not all_sugs:
             return await ctx.send("No data available.")
 
-        # Metrics containers
         user_sugs = Counter()
         user_approved = Counter()
         user_rejected = Counter()
         user_upvotes_given = Counter()
         user_downvotes_given = Counter()
-        user_vote_net = defaultdict(int) # Received Up - Received Down
+        user_vote_net = defaultdict(int)
 
         for s in all_sugs:
             auth = s['author_id']
@@ -444,11 +394,9 @@ Current ID:     {cfg['next_id']}
             if s['status'] == 'approved': user_approved[auth] += 1
             if s['status'] == 'rejected': user_rejected[auth] += 1
             
-            # Voters
             for u in s['upvotes']: user_upvotes_given[u] += 1
             for u in s['downvotes']: user_downvotes_given[u] += 1
             
-            # Net score for author
             score = len(s['upvotes']) - len(s['downvotes'])
             user_vote_net[auth] += score
 
@@ -456,12 +404,10 @@ Current ID:     {cfg['next_id']}
         total_sugs = len(all_sugs)
         avg_sug = total_sugs / unique_users if unique_users > 0 else 0
 
-        # Helpers for formatting
         def get_top(counter, n=5):
             return counter.most_common(n)
 
         def get_ratio_extremes():
-            # Only count users with > 1 suggestion for ratio to avoid 1/1 = 100% spam
             ratios = {}
             for u, total in user_sugs.items():
                 if total < 2: continue
@@ -512,46 +458,46 @@ Current ID:     {cfg['next_id']}
         
         await ctx.send(embed=embed)
 
+    @commands.command()
+    @commands.guild_only()
+    async def dashboard(self, ctx):
+        """View suggestion dashboard."""
+        suggestions = await self.config.guild(ctx.guild).suggestions()
+        if not suggestions:
+            return await ctx.send("No suggestions found.")
+            
+        open_list = [v for k,v in suggestions.items() if v['status'] == 'open']
+        approved_list = sorted([v for k,v in suggestions.items() if v['status'] == 'approved'], key=lambda x: x['timestamp'], reverse=True)[:5]
+        rejected_list = sorted([v for k,v in suggestions.items() if v['status'] == 'rejected'], key=lambda x: x['timestamp'], reverse=True)[:5]
+
+        embed = discord.Embed(title="Suggestions Dashboard", color=discord.Color.gold())
+        
+        open_str = "\n".join([f"#{x['id']} {x['title']} (<t:{int(x['timestamp'])}:R>)" for x in open_list]) or "None"
+        embed.add_field(name=f"Open ({len(open_list)})", value=open_str, inline=False)
+        
+        app_str = "\n".join([f"#{x['id']} {x['title']}" for x in approved_list]) or "None"
+        embed.add_field(name="Recently Approved", value=app_str, inline=False)
+        
+        rej_str = "\n".join([f"#{x['id']} {x['title']}" for x in rejected_list]) or "None"
+        embed.add_field(name="Recently Rejected", value=rej_str, inline=False)
+        
+        await ctx.send(embed=embed)
+
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
-        # We need this listener to handle the EntryView button if the bot restarted 
-        # and the view object in memory is gone, but the persistent button remains.
-        # Check custom_id
         if interaction.type == discord.InteractionType.component:
             cid = interaction.data.get("custom_id", "")
             if cid == "suggestions:create_btn":
-                # Re-instantiate the view logic just for this interaction
-                # Get channel ID from config to pass to view/modal
-                # Ideally, we get it from interaction.channel_id
-                
-                # Check config to ensure this is the valid channel
                 conf_channel = await self.config.guild(interaction.guild).channel_id()
                 if interaction.channel_id == conf_channel:
-                    # We can reuse the callback logic
                     view = EntryView(self, interaction.channel_id)
                     await view.create_callback(interaction, None)
             
             elif cid.startswith("suggestion:vote:"):
-                # Vote buttons logic is simpler because the view needs the ID
-                # This part is tricky without the view attached.
-                # But we can parse the view from the message?
-                # Actually, standard practice for simple dynamic views in Red:
-                # If the view isn't persistent via `bot.add_view`, it fails.
-                # To make this robust, we should try to reload the view from the message if possible
-                # Or just rely on the fact that if the user clicks, and the bot has restarted, 
-                # we might need to rely on the generic handler.
-                pass
-                
-                # NOTE: For this code to be perfectly robust across restarts for the *Vote* buttons,
-                # we'd need to fetch the suggestion ID from the Embed Footer or Config based on Message ID.
-                # Let's do a quick lookup by message ID to fix the "restart breaks buttons" issue.
-                
                 try:
                     s_type = cid.split(":")[-1] # up or down
                     msg_id = interaction.message.id
                     
-                    # Reverse lookup: Find suggestion by Message ID
-                    # This is O(N) but N is usually small enough for config access, or we map it.
                     target_s = None
                     async with self.config.guild(interaction.guild).suggestions() as s:
                         for sid, data in s.items():
