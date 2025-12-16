@@ -887,115 +887,119 @@ class VibeCheck(getattr(commands, "Cog", object)):
             log.error(f"Failed to grant LevelUp XP: {e}")
 
     async def _add_vibes(self, giver: discord.User, receiver: discord.User, amount: int, is_good: bool):
-        """
-        Handles the core logic for adding/subtracting vibes and triggering checks.
-        """
-        # 1. Update Receiver's Score
-        receiver_settings = self.conf.user(receiver)
-        current_vibes = await receiver_settings.vibes()
-        new_vibes = current_vibes + amount
-        await receiver_settings.vibes.set(new_vibes)
+            """
+            Handles the core logic for adding/subtracting vibes and triggering checks.
+            """
+            # 1. Update Receiver's Score
+            receiver_settings = self.conf.user(receiver)
+            current_vibes = await receiver_settings.vibes()
+            new_vibes = current_vibes + amount
+            await receiver_settings.vibes.set(new_vibes)
 
-        # 2. Update Giver's Statistics (Sent Vibes & Interactions)
-        async with self.conf.user(giver).all() as giver_data:
-            if is_good:
-                giver_data["good_vibes_sent"] = giver_data.get("good_vibes_sent", 0) + 1
-                interaction_key = "good"
-            else:
-                giver_data["bad_vibes_sent"] = giver_data.get("bad_vibes_sent", 0) + 1
-                interaction_key = "bad"
+            # 2. Update Giver's Statistics (Sent Vibes & Interactions)
+            async with self.conf.user(giver).all() as giver_data:
+                if is_good:
+                    giver_data["good_vibes_sent"] = giver_data.get("good_vibes_sent", 0) + 1
+                    interaction_key = "good"
+                else:
+                    giver_data["bad_vibes_sent"] = giver_data.get("bad_vibes_sent", 0) + 1
+                    interaction_key = "bad"
 
-            interactions = giver_data.get("interactions", {})
-            receiver_id_str = str(receiver.id)
-            
-            if receiver_id_str not in interactions:
-                interactions[receiver_id_str] = {"good": 0, "bad": 0}
-            
-            interactions[receiver_id_str][interaction_key] += 1
-            giver_data["interactions"] = interactions
+                interactions = giver_data.get("interactions", {})
+                receiver_id_str = str(receiver.id)
+                
+                if receiver_id_str not in interactions:
+                    interactions[receiver_id_str] = {"good": 0, "bad": 0}
+                
+                interactions[receiver_id_str][interaction_key] += 1
+                giver_data["interactions"] = interactions
 
-        # 3. Find the Guild context and Member object for Receiver
-        member_receiver = None
-        target_guild = None
-        
-        for guild in self.bot.guilds:
-            member = guild.get_member(receiver.id)
-            if member:
-                member_receiver = member
-                target_guild = guild
-                break 
+            # 3. Find the Guild context and Member object for Receiver
+            member_receiver = None
+            target_guild = None
+            
+            for guild in self.bot.guilds:
+                member = guild.get_member(receiver.id)
+                if member:
+                    member_receiver = member
+                    target_guild = guild
+                    break 
 
-        if not member_receiver or not target_guild:
-            return 
-            
-        # 4. Check for New Member XP Reward
-        if new_vibes > current_vibes: 
-            guild_conf = self.conf.guild(target_guild)
-            xp_minutes = await guild_conf.new_member_xp_minutes()
-            
-            if xp_minutes and xp_minutes > 0:
-                xp_threshold = await guild_conf.new_member_xp_threshold()
-                if current_vibes < xp_threshold <= new_vibes:
-                    already_awarded = await receiver_settings.new_member_xp_awarded()
-                    if not already_awarded:
-                        if member_receiver.joined_at:
-                            joined_at = member_receiver.joined_at
-                            if joined_at.tzinfo is None:
-                                joined_at = joined_at.replace(tzinfo=timezone.utc)
-                            now = datetime.now(timezone.utc)
-                            age_seconds = (now - joined_at).total_seconds()
-                            
-                            if age_seconds <= (xp_minutes * 60):
-                                xp_amount = await guild_conf.new_member_xp_amount()
-                                if xp_amount > 0:
-                                    await self._give_levelup_xp(target_guild, member_receiver, xp_amount)
-                                    await receiver_settings.new_member_xp_awarded.set(True)
+            if not member_receiver or not target_guild:
+                return 
+                
+            # 4. Check for New Member XP Reward
+            if new_vibes > current_vibes: 
+                guild_conf = self.conf.guild(target_guild)
+                xp_minutes = await guild_conf.new_member_xp_minutes()
+                
+                if xp_minutes and xp_minutes > 0:
+                    xp_threshold = await guild_conf.new_member_xp_threshold()
+                    if current_vibes < xp_threshold <= new_vibes:
+                        already_awarded = await receiver_settings.new_member_xp_awarded()
+                        if not already_awarded:
+                            if member_receiver.joined_at:
+                                joined_at = member_receiver.joined_at
+                                if joined_at.tzinfo is None:
+                                    joined_at = joined_at.replace(tzinfo=timezone.utc)
+                                now = datetime.now(timezone.utc)
+                                age_seconds = (now - joined_at).total_seconds()
+                                
+                                if age_seconds <= (xp_minutes * 60):
+                                    xp_amount = await guild_conf.new_member_xp_amount()
+                                    if xp_amount > 0:
+                                        await self._give_levelup_xp(target_guild, member_receiver, xp_amount)
+                                        await receiver_settings.new_member_xp_awarded.set(True)
 
-        # 5. Run WarnSystem Integration Check
-        if new_vibes < current_vibes:
-            guild_conf = self.conf.guild(target_guild)
-            
-            ban_thresh = await guild_conf.ban_threshold()
-            kick_thresh = await guild_conf.kick_threshold()
-            warn_thresh = await guild_conf.warn_threshold()
-            
-            new_mem_age = await guild_conf.new_member_age_seconds()
-            new_mem_thresh = await guild_conf.new_member_score_threshold()
-            
-            triggered = False
-            
-            # 1. Ban
-            if ban_thresh is not None and new_vibes <= ban_thresh:
-                reason = await guild_conf.ban_reason()
-                await self._trigger_warnsystem(target_guild, member_receiver, giver, 5, f"{reason} (Score: {new_vibes})")
-                triggered = True
-            
-            # 2. New Member Kick (If not banned)
-            if not triggered and new_mem_age is not None and new_mem_thresh is not None and new_vibes <= new_mem_thresh:
-                if member_receiver.joined_at:
-                    joined_at = member_receiver.joined_at
-                    if joined_at.tzinfo is None:
-                        joined_at = joined_at.replace(tzinfo=timezone.utc)
-                    now = datetime.now(timezone.utc)
-                    if (now - joined_at).total_seconds() < new_mem_age:
-                        reason = await guild_conf.new_member_kick_reason()
-                        await self._trigger_warnsystem(target_guild, member_receiver, giver, 3, f"{reason} (Score: {new_vibes})")
-                        triggered = True
+            # 5. Run WarnSystem Integration Check
+            if new_vibes < current_vibes:
+                guild_conf = self.conf.guild(target_guild)
+                
+                ban_thresh = await guild_conf.ban_threshold()
+                kick_thresh = await guild_conf.kick_threshold()
+                warn_thresh = await guild_conf.warn_threshold()
+                
+                new_mem_age = await guild_conf.new_member_age_seconds()
+                new_mem_thresh = await guild_conf.new_member_score_threshold()
+                
+                triggered = False
+                
+                # --- CHANGE: Set the warning author to the Bot ---
+                warn_author = target_guild.me
+                # -------------------------------------------------
 
-            # 3. Standard Kick
-            if not triggered and kick_thresh is not None and new_vibes <= kick_thresh:
-                reason = await guild_conf.kick_reason()
-                await self._trigger_warnsystem(target_guild, member_receiver, giver, 3, f"{reason} (Score: {new_vibes})")
-                triggered = True
+                # 1. Ban
+                if ban_thresh is not None and new_vibes <= ban_thresh:
+                    reason = await guild_conf.ban_reason()
+                    await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 5, f"{reason} (Score: {new_vibes})")
+                    triggered = True
+                
+                # 2. New Member Kick (If not banned)
+                if not triggered and new_mem_age is not None and new_mem_thresh is not None and new_vibes <= new_mem_thresh:
+                    if member_receiver.joined_at:
+                        joined_at = member_receiver.joined_at
+                        if joined_at.tzinfo is None:
+                            joined_at = joined_at.replace(tzinfo=timezone.utc)
+                        now = datetime.now(timezone.utc)
+                        if (now - joined_at).total_seconds() < new_mem_age:
+                            reason = await guild_conf.new_member_kick_reason()
+                            await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 3, f"{reason} (Score: {new_vibes})")
+                            triggered = True
 
-            # 4. Standard Warn
-            if not triggered and warn_thresh is not None and new_vibes <= warn_thresh:
-                reason = await guild_conf.warn_reason()
-                await self._trigger_warnsystem(target_guild, member_receiver, giver, 1, f"{reason} (Score: {new_vibes})")
-                triggered = True
-        
-        # 6. Perform Logging
-        await self._log_vibe_change(target_guild, giver, member_receiver, amount, current_vibes, new_vibes)
+                # 3. Standard Kick
+                if not triggered and kick_thresh is not None and new_vibes <= kick_thresh:
+                    reason = await guild_conf.kick_reason()
+                    await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 3, f"{reason} (Score: {new_vibes})")
+                    triggered = True
+
+                # 4. Standard Warn
+                if not triggered and warn_thresh is not None and new_vibes <= warn_thresh:
+                    reason = await guild_conf.warn_reason()
+                    await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 1, f"{reason} (Score: {new_vibes})")
+                    triggered = True
+            
+            # 6. Perform Logging
+            await self._log_vibe_change(target_guild, giver, member_receiver, amount, current_vibes, new_vibes)
         
     async def _trigger_warnsystem(self, guild: discord.Guild, member: discord.Member, author: discord.User, level: int, reason: str):
         """
