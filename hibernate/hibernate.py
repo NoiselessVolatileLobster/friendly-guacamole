@@ -228,7 +228,7 @@ class Hibernate(commands.Cog):
             end = data.get("hibernation_end")
             if end:
                 member = ctx.guild.get_member(member_id)
-                name = member.display_name if member else f"Left-User({member_id})"
+                name = member.display_name if member else "Left-User"
                 
                 # Calculate time left
                 now = datetime.now(timezone.utc).timestamp()
@@ -243,12 +243,12 @@ class Hibernate(commands.Cog):
                     time_left = f"{days}d {hours}h"
 
                 end_dt = datetime.fromtimestamp(end, timezone.utc).strftime("%Y-%m-%d")
-                table_data.append([name, end_dt, time_left])
+                table_data.append([str(member_id), name, end_dt, time_left])
 
         if not table_data:
             return await ctx.send("No users are currently recorded as hibernating.")
 
-        headers = ["User", "End Date", "Time Left"]
+        headers = ["ID", "User", "End Date", "Time Left"]
         # Using tabulate within a code block for the table preference
         output = tabulate(table_data, headers=headers, tablefmt="presto")
         
