@@ -8,10 +8,9 @@ import datetime
 from collections import defaultdict, Counter
 
 class SuggestionModal(discord.ui.Modal):
-    def __init__(self, cog, channel_id):
+    def __init__(self, cog):
         super().__init__(title="Make a Suggestion")
         self.cog = cog
-        self.channel_id = channel_id
 
         self.short_title = discord.ui.TextInput(
             label="Short Title",
@@ -30,21 +29,27 @@ class SuggestionModal(discord.ui.Modal):
         self.add_item(self.suggestion_text)
 
     async def on_submit(self, interaction: discord.Interaction):
+        # We grab the channel ID from the interaction itself
         await self.cog.process_suggestion(
             interaction, 
-            self.channel_id, 
+            interaction.channel_id, 
             self.short_title.value, 
             self.suggestion_text.value
         )
 
 class EntryView(discord.ui.View):
-    def __init__(self, cog, channel_id):
+    def __init__(self, cog):
         super().__init__(timeout=None)
         self.cog = cog
-        self.channel_id = channel_id
 
     @discord.ui.button(label="📩 Make a suggestion", style=discord.ButtonStyle.primary, custom_id="suggestions:create_btn")
     async def create_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Security: Ensure this is actually the suggestions channel
+        conf_channel = await self.cog.config.guild(interaction.guild).channel_id()
+        if interaction.channel_id != conf_channel:
+            await interaction.response.send_message("This button is not active in this channel.", ephemeral=True)
+            return
+
         # Level Check
         guild = interaction.guild
         user = interaction.user
@@ -59,7 +64,7 @@ class EntryView(discord.ui.View):
                 )
                 return
 
-        await interaction.response.send_modal(SuggestionModal(self.cog, self.channel_id))
+        await interaction.response.send_modal(SuggestionModal(self.cog))
 
 class VoteView(discord.ui.View):
     def __init__(self, cog, suggestion_id):
@@ -146,6 +151,14 @@ class Suggestions(commands.Cog):
             "suggestions": {} # ID -> Dict
         }
         self.config.register_guild(**default_guild)
+        
+        # Initialize Persistent View
+        self.entry_view = EntryView(self)
+        self.bot.add_view(self.entry_view)
+
+    def cog_unload(self):
+        # Stop view when cog is unloaded to prevent errors
+        self.entry_view.stop()
 
     async def get_user_level(self, member: discord.Member) -> int:
         """Integrates with LevelUp cog to get user level."""
@@ -271,7 +284,8 @@ class Suggestions(commands.Cog):
                         "Please keep titles short and provide details in the description.",
             color=discord.Color.green()
         )
-        await channel.send(embed=embed, view=EntryView(self, channel.id))
+        # Using self.entry_view ensures it uses the same persistent view logic
+        await channel.send(embed=embed, view=self.entry_view)
         await ctx.tick()
 
     @suggestionsset.command(name="levelcreate")
@@ -483,15 +497,12 @@ Current ID:     {cfg['next_id']}
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
+        # We only need this listener for voting buttons now
         if interaction.type == discord.InteractionType.component:
             cid = interaction.data.get("custom_id", "")
-            if cid == "suggestions:create_btn":
-                conf_channel = await self.config.guild(interaction.guild).channel_id()
-                if interaction.channel_id == conf_channel:
-                    view = EntryView(self, interaction.channel_id)
-                    await view.create_callback(interaction, None)
             
-            elif cid.startswith("suggestion:vote:"):
+            # Vote button logic (handles restarts for vote buttons)
+            if cid.startswith("suggestion:vote:"):
                 try:
                     s_type = cid.split(":")[-1] # up or down
                     msg_id = interaction.message.id
