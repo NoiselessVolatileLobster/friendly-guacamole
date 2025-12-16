@@ -29,7 +29,6 @@ class SuggestionModal(discord.ui.Modal):
         self.add_item(self.suggestion_text)
 
     async def on_submit(self, interaction: discord.Interaction):
-        # We grab the channel ID from the interaction itself
         await self.cog.process_suggestion(
             interaction, 
             interaction.channel_id, 
@@ -157,7 +156,6 @@ class Suggestions(commands.Cog):
         self.bot.add_view(self.entry_view)
 
     def cog_unload(self):
-        # Stop view when cog is unloaded to prevent errors
         self.entry_view.stop()
 
     async def get_user_level(self, member: discord.Member) -> int:
@@ -166,8 +164,12 @@ class Suggestions(commands.Cog):
         if not cog:
             return 0
         try:
-            return cog.get_level(member)
+            # FIX: Added 'await' here because get_level is async
+            return await cog.get_level(member)
         except AttributeError:
+            return 0
+        except TypeError:
+            # Fallback in case it's not awaitable in some version (unlikely based on error)
             return 0
 
     async def update_suggestion_message(self, guild, data):
@@ -284,7 +286,6 @@ class Suggestions(commands.Cog):
                         "Please keep titles short and provide details in the description.",
             color=discord.Color.green()
         )
-        # Using self.entry_view ensures it uses the same persistent view logic
         await channel.send(embed=embed, view=self.entry_view)
         await ctx.tick()
 
@@ -497,11 +498,9 @@ Current ID:     {cfg['next_id']}
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
-        # We only need this listener for voting buttons now
         if interaction.type == discord.InteractionType.component:
             cid = interaction.data.get("custom_id", "")
             
-            # Vote button logic (handles restarts for vote buttons)
             if cid.startswith("suggestion:vote:"):
                 try:
                     s_type = cid.split(":")[-1] # up or down
