@@ -1,0 +1,17 @@
+{
+    "author": [
+        "NoiselessVolatileLobster"
+    ],
+    "install_msg": "A comprehensive suggestions system with threading, LevelUp integration, and deep statistics.",
+    "name": "Suggestions",
+    "short": "Suggestion system with voting and threads.",
+    "description": "Allows users to make suggestions, vote on them, and admins to manage them.",
+    "tags": [
+        "suggestions",
+        "feedback",
+        "voting",
+        "threads"
+    ],
+    "requirements": [],
+    "min_bot_version": "3.5.22"
+}
