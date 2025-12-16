@@ -43,13 +43,11 @@ class EntryView(discord.ui.View):
 
     @discord.ui.button(label="📩 Make a suggestion", style=discord.ButtonStyle.primary, custom_id="suggestions:create_btn")
     async def create_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Security: Ensure this is actually the suggestions channel
         conf_channel = await self.cog.config.guild(interaction.guild).channel_id()
         if interaction.channel_id != conf_channel:
             await interaction.response.send_message("This button is not active in this channel.", ephemeral=True)
             return
 
-        # Level Check
         guild = interaction.guild
         user = interaction.user
         req_level = await self.cog.config.guild(guild).req_level_create()
@@ -66,74 +64,28 @@ class EntryView(discord.ui.View):
         await interaction.response.send_modal(SuggestionModal(self.cog))
 
 class VoteView(discord.ui.View):
-    def __init__(self, cog, suggestion_id):
+    """
+    A purely visual view. Logic is handled by the Cog's on_interaction listener.
+    """
+    def __init__(self, suggestion_id, up_label, down_label, up_emoji, down_emoji, disabled=False):
         super().__init__(timeout=None)
-        self.cog = cog
-        self.suggestion_id = str(suggestion_id)
-
-    async def handle_vote(self, interaction: discord.Interaction, vote_type: str):
-        guild = interaction.guild
-        user = interaction.user
         
-        # Level Check
-        req_level = await self.cog.config.guild(guild).req_level_vote()
-        if req_level > 0:
-            user_level = await self.cog.get_user_level(user)
-            if user_level < req_level:
-                await interaction.response.send_message(
-                    f"You need to be Level {req_level} to vote. (Current: {user_level})", 
-                    ephemeral=True
-                )
-                return
-
-        async with self.cog.config.guild(guild).suggestions() as suggestions:
-            if self.suggestion_id not in suggestions:
-                await interaction.response.send_message("This suggestion no longer exists.", ephemeral=True)
-                return
-            
-            data = suggestions[self.suggestion_id]
-            if data['status'] != 'open':
-                await interaction.response.send_message("Voting is closed for this suggestion.", ephemeral=True)
-                return
-
-            uid = user.id
-            ups = set(data['upvotes'])
-            downs = set(data['downvotes'])
-            
-            message = "Vote recorded."
-            
-            if vote_type == "up":
-                if uid in ups:
-                    ups.remove(uid)
-                    message = "Upvote removed."
-                else:
-                    ups.add(uid)
-                    if uid in downs: downs.remove(uid)
-                    message = "Upvoted!"
-            elif vote_type == "down":
-                if uid in downs:
-                    downs.remove(uid)
-                    message = "Downvote removed."
-                else:
-                    downs.add(uid)
-                    if uid in ups: ups.remove(uid)
-                    message = "Downvoted."
-
-            data['upvotes'] = list(ups)
-            data['downvotes'] = list(downs)
-            suggestions[self.suggestion_id] = data
-            
-            # Update embed
-            await self.cog.update_suggestion_message(guild, data)
-            await interaction.response.send_message(message, ephemeral=True)
-
-    @discord.ui.button(style=discord.ButtonStyle.success, custom_id="suggestion:vote:up")
-    async def upvote(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_vote(interaction, "up")
-
-    @discord.ui.button(style=discord.ButtonStyle.danger, custom_id="suggestion:vote:down")
-    async def downvote(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self.handle_vote(interaction, "down")
+        # We manually add items so we don't attach callbacks, preventing double-triggering.
+        self.add_item(discord.ui.Button(
+            style=discord.ButtonStyle.success,
+            label=str(up_label),
+            emoji=up_emoji,
+            custom_id=f"suggestion:vote:up:{suggestion_id}",
+            disabled=disabled
+        ))
+        
+        self.add_item(discord.ui.Button(
+            style=discord.ButtonStyle.danger,
+            label=str(down_label),
+            emoji=down_emoji,
+            custom_id=f"suggestion:vote:down:{suggestion_id}",
+            disabled=disabled
+        ))
 
 class Suggestions(commands.Cog):
     def __init__(self, bot):
@@ -147,11 +99,10 @@ class Suggestions(commands.Cog):
             "next_id": 1,
             "emoji_up": "👍",
             "emoji_down": "👎",
-            "suggestions": {} # ID -> Dict
+            "suggestions": {} 
         }
         self.config.register_guild(**default_guild)
         
-        # Initialize Persistent View
         self.entry_view = EntryView(self)
         self.bot.add_view(self.entry_view)
 
@@ -159,7 +110,6 @@ class Suggestions(commands.Cog):
         self.entry_view.stop()
 
     async def get_user_level(self, member: discord.Member) -> int:
-        """Integrates with LevelUp cog to get user level."""
         cog = self.bot.get_cog("LevelUp")
         if not cog:
             return 0
@@ -179,10 +129,6 @@ class Suggestions(commands.Cog):
             thread = guild.get_thread(data['thread_id'])
             if not thread:
                 thread = await guild.fetch_channel(data['thread_id'])
-        except:
-            return
-
-        try:
             message = await thread.fetch_message(data['message_id'])
         except:
             return
@@ -192,26 +138,24 @@ class Suggestions(commands.Cog):
         
         up_count = len(data['upvotes'])
         down_count = len(data['downvotes'])
+        is_closed = data['status'] != 'open'
+
+        # Create fresh view with correct stats
+        view = VoteView(
+            suggestion_id=data['id'],
+            up_label=up_count,
+            down_label=down_count,
+            up_emoji=emoji_up,
+            down_emoji=emoji_down,
+            disabled=is_closed
+        )
 
         embed = message.embeds[0]
-        
-        view = VoteView(self, data['id'])
-        view.children[0].label = str(up_count)
-        view.children[0].emoji = emoji_up
-        view.children[1].label = str(down_count)
-        view.children[1].emoji = emoji_down
-        
-        if data['status'] != 'open':
-            for child in view.children:
-                child.disabled = True
-
         await message.edit(embed=embed, view=view)
 
     async def process_suggestion(self, interaction, channel_id, title, text):
         guild = interaction.guild
         
-        # FIX: Cannot use 'async with' on an integer config value.
-        # Use get/set instead.
         nid = await self.config.guild(guild).next_id()
         s_id = nid
         await self.config.guild(guild).next_id.set(nid + 1)
@@ -236,11 +180,8 @@ class Suggestions(commands.Cog):
         thread_name = f"{s_id} - {title}"
         thread = await channel.create_thread(name=thread_name, type=discord.ChannelType.public_thread)
         
-        view = VoteView(self, s_id)
-        view.children[0].label = "0"
-        view.children[0].emoji = emoji_up
-        view.children[1].label = "0"
-        view.children[1].emoji = emoji_down
+        # Initial View
+        view = VoteView(s_id, 0, 0, emoji_up, emoji_down)
 
         msg = await thread.send(embed=embed, view=view)
         
@@ -499,23 +440,74 @@ Current ID:     {cfg['next_id']}
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
-        if interaction.type == discord.InteractionType.component:
-            cid = interaction.data.get("custom_id", "")
+        if interaction.type != discord.InteractionType.component:
+            return
             
-            if cid.startswith("suggestion:vote:"):
-                try:
-                    s_type = cid.split(":")[-1] # up or down
-                    msg_id = interaction.message.id
+        cid = interaction.data.get("custom_id", "")
+        
+        # New format: "suggestion:vote:up:{id}"
+        if cid.startswith("suggestion:vote:"):
+            try:
+                parts = cid.split(":")
+                vote_type = parts[2] # up or down
+                suggestion_id = parts[3] # ID
+                
+                guild = interaction.guild
+                
+                # Check levels
+                req_level = await self.config.guild(guild).req_level_vote()
+                if req_level > 0:
+                    user_level = await self.get_user_level(interaction.user)
+                    if user_level < req_level:
+                        await interaction.response.send_message(
+                            f"You need to be Level {req_level} to vote. (Current: {user_level})", 
+                            ephemeral=True
+                        )
+                        return
+
+                async with self.config.guild(guild).suggestions() as suggestions:
+                    if suggestion_id not in suggestions:
+                        await interaction.response.send_message("Suggestion not found.", ephemeral=True)
+                        return
+                        
+                    data = suggestions[suggestion_id]
                     
-                    target_s = None
-                    async with self.config.guild(interaction.guild).suggestions() as s:
-                        for sid, data in s.items():
-                            if data['message_id'] == msg_id:
-                                target_s = sid
-                                break
+                    if data['status'] != 'open':
+                        await interaction.response.send_message("Voting is closed.", ephemeral=True)
+                        return
+
+                    uid = interaction.user.id
+                    ups = set(data['upvotes'])
+                    downs = set(data['downvotes'])
                     
-                    if target_s:
-                        view = VoteView(self, target_s)
-                        await view.handle_vote(interaction, s_type)
-                except:
-                    pass
+                    msg_txt = "Vote recorded."
+                    
+                    if vote_type == "up":
+                        if uid in ups:
+                            ups.remove(uid)
+                            msg_txt = "Upvote removed."
+                        else:
+                            ups.add(uid)
+                            if uid in downs: downs.remove(uid)
+                            msg_txt = "Upvoted!"
+                    elif vote_type == "down":
+                        if uid in downs:
+                            downs.remove(uid)
+                            msg_txt = "Downvote removed."
+                        else:
+                            downs.add(uid)
+                            if uid in ups: ups.remove(uid)
+                            msg_txt = "Downvoted."
+                            
+                    data['upvotes'] = list(ups)
+                    data['downvotes'] = list(downs)
+                    suggestions[suggestion_id] = data
+
+                    # Defer update so we can edit the message
+                    # But we need to update the view on the message
+                    # We can use our helper method
+                    await self.update_suggestion_message(guild, data)
+                    await interaction.response.send_message(msg_txt, ephemeral=True)
+            except Exception as e:
+                # Log or ignore invalid IDs
+                pass
