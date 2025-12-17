@@ -66,6 +66,8 @@ class SignupModal(discord.ui.Modal, title="Instructor Sign Up"):
 
 class SignupView(discord.ui.View):
     def __init__(self, cog):
+        # timeout=None is CRITICAL. 
+        # It prevents the interaction from expiring after 15 minutes.
         super().__init__(timeout=None)
         self.cog = cog
 
@@ -106,7 +108,8 @@ class CraftOfTheMonth(commands.Cog):
         }
         self.config.register_guild(**default_guild)
         
-        # Add persistent view on load
+        # This line ensures that if the bot restarts, it immediately starts listening
+        # to the "cotm:signup_button" custom_id again.
         self.bot.add_view(SignupView(self))
 
     def get_user_level(self, member: discord.Member) -> int:
@@ -122,7 +125,6 @@ class CraftOfTheMonth(commands.Cog):
             # Using the public method provided by the user
             return levelup.get_level(member)
         except AttributeError:
-            # Fallback if the method doesn't exist on that version of the cog
             return 0
             
         return 0
