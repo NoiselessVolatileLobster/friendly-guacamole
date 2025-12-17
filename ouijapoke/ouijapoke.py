@@ -32,11 +32,25 @@ class OuijaSettings(BaseModel):
     poke_days: int = Field(default=30, ge=1, description="Days a member must be inactive to be eligible for a poke.")
     summon_days: int = Field(default=60, ge=1, description="Days a member must be inactive to be eligible for a summon.")
     
-    # WarnSystem Integration Settings
+    # WarnSystem Integration (Inactivity)
     warn_level_1_days: int = Field(default=0, ge=0, description="Days inactive to trigger Level 1 warning (0 to disable).")
     warn_level_3_days: int = Field(default=0, ge=0, description="Days inactive to trigger Level 3 warning (0 to disable).")
 
-    # New Activity Threshold Settings
+    # No Intro Settings
+    nointro_days: int = Field(default=0, ge=0, description="Days since join to check for No Intro role.")
+    nointro_role_id: Optional[int] = Field(default=None, description="Role ID to check for.")
+    nointro_channel_id: Optional[int] = Field(default=None, description="Channel to send the No Intro ping.")
+    nointro_message: str = Field(default="Hey {mention}, you've been here a while! Please head to the intro channel.", description="Message to send.")
+
+    # Level 0 (Still At Zero) Settings
+    level0_warn_days: int = Field(default=0, ge=0, description="Days since join to warn if still Level 0.")
+    level0_channel_id: Optional[int] = Field(default=None, description="Channel to send the Level 0 warning.")
+    level0_message: str = Field(default="{mention}, you are still Level 0! Participate to avoid removal.", description="Message to send.")
+    
+    level0_kick_days: int = Field(default=0, ge=0, description="Days since join to Kick (WarnSystem Lvl 3) if still Level 0.")
+    level0_kick_reason: str = Field(default="Remained at Level 0 for too long.", description="Reason for the kick warning.")
+
+    # Activity Threshold Settings
     required_messages: int = Field(default=1, ge=1, description="Number of messages required to count as active.")
     required_window_hours: float = Field(default=0, ge=0, description="Time window (in hours) for the message count.")
     min_message_length: int = Field(default=0, ge=0, description="Minimum characters in a message to count.")
@@ -70,7 +84,7 @@ class OuijaPoke(commands.Cog):
             last_seen={}, # {user_id: "ISO_DATETIME_STRING"}
             last_poked={}, # {user_id: "ISO_DATETIME_STRING"}
             last_summoned={}, # {user_id: "ISO_DATETIME_STRING"}
-            warned_users={}, # {user_id: {"level1": timestamp, "level3": timestamp}}
+            warned_users={}, # {user_id: {"level1": ts, "level3": ts, "nointro": ts, "level0_warn": ts, "level0_kick": ts}}
             excluded_roles=[], # [role_id, ...] -> "Hibernating Roles"
             excluded_channels=[], # [channel_id, ...]
             ouija_settings=OuijaSettings().model_dump(),
@@ -93,6 +107,7 @@ class OuijaPoke(commands.Cog):
     async def _get_settings(self, guild: discord.Guild) -> OuijaSettings:
         """Retrieves and parses the guild settings."""
         settings_data = await self.config.guild(guild).ouija_settings()
+        # Handle backward compatibility/missing fields by letting pydantic fill defaults
         return OuijaSettings(**settings_data)
 
     async def _set_settings(self, guild: discord.Guild, settings: OuijaSettings):
@@ -100,16 +115,20 @@ class OuijaPoke(commands.Cog):
         await self.config.guild(guild).ouija_settings.set(settings.model_dump())
     
     async def _update_last_seen(self, guild: discord.Guild, user_id: int):
-        """Updates the last_seen time and clears warning flags for a user."""
+        """Updates the last_seen time and clears Inactivity warning flags for a user."""
         user_id_str = str(user_id)
         current_time_utc = datetime.now(timezone.utc).isoformat()
         
         async with self.config.guild(guild).all() as data:
             data["last_seen"][user_id_str] = current_time_utc
             
-            # If they were warned previously, clear it now that they are active
+            # If they were warned for inactivity, clear those specific flags now that they are active.
+            # NOTE: We do NOT clear "nointro" or "level0" flags here, as those are state-based, not just activity-based.
             if user_id_str in data["warned_users"]:
-                del data["warned_users"][user_id_str]
+                user_warnings = data["warned_users"][user_id_str]
+                if "level1" in user_warnings: del user_warnings["level1"]
+                if "level3" in user_warnings: del user_warnings["level3"]
+                data["warned_users"][user_id_str] = user_warnings
         
     def _is_valid_gif_url(self, url: str) -> bool:
         """Simple check if the URL looks like a GIF link or page."""
@@ -252,15 +271,15 @@ class OuijaPoke(commands.Cog):
 
     @tasks.loop(minutes=5)
     async def auto_poke_loop(self):
-        """Background loop to handle automatic pokes, summons, and WarnSystem checks."""
+        """Background loop to handle automatic pokes, summons, and automated policing."""
         for guild in self.bot.guilds:
             try:
                 # 1. Check if configured
                 settings_data = await self.config.guild(guild).ouija_settings()
                 settings = OuijaSettings(**settings_data)
                 
-                # Run Warning Checks
-                await self._process_inactivity_warnings(guild, settings)
+                # Run Automated Checks (Warnings, No Intro, Level 0)
+                await self._process_automated_checks(guild, settings)
 
                 # 2. Check Auto Poke Schedule
                 next_run_str = await self.config.guild(guild).next_auto_event()
@@ -293,86 +312,123 @@ class OuijaPoke(commands.Cog):
             except Exception as e:
                 log.error(f"Error in auto_poke_loop for guild {guild.id}: {e}", exc_info=True)
 
-    async def _process_inactivity_warnings(self, guild: discord.Guild, settings: OuijaSettings):
-        """Checks for inactive users and issues warnings via WarnSystem."""
-        # If neither warning is configured, skip
-        if settings.warn_level_1_days <= 0 and settings.warn_level_3_days <= 0:
-            return
-
+    async def _process_automated_checks(self, guild: discord.Guild, settings: OuijaSettings):
+        """Checks for inactive users, No Intro violations, and Level 0 lurkers."""
+        
         warn_cog = self.bot.get_cog("WarnSystem")
-        if not warn_cog:
-            return # WarnSystem not loaded
-
+        levelup_cog = self.bot.get_cog("LevelUp")
+        
         data = await self.config.guild(guild).all()
         last_seen_data = data["last_seen"]
         warned_users = data["warned_users"]
         excluded_roles = data["excluded_roles"]
         
         now = datetime.now(timezone.utc)
+        
+        # Pre-fetch role object for No Intro
+        nointro_role = guild.get_role(settings.nointro_role_id) if settings.nointro_role_id else None
+        nointro_channel = guild.get_channel(settings.nointro_channel_id) if settings.nointro_channel_id else None
+        level0_channel = guild.get_channel(settings.level0_channel_id) if settings.level0_channel_id else None
 
-        for user_id_str, last_seen_dt_str in last_seen_data.items():
-            user_id = int(user_id_str)
-            member = guild.get_member(user_id)
-            
-            # Skip if member left, is bot, or is hibernating (excluded)
-            if member is None or member.bot or self._is_excluded(member, excluded_roles):
+        # Iterate over MEMBERS in the guild to cover "No Intro" and "Level 0" logic (which uses join date)
+        # We also check "last_seen" for inactivity logic.
+        
+        for member in guild.members:
+            if member.bot or self._is_excluded(member, excluded_roles):
                 continue
             
-            try:
-                last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
-                days_inactive = (now - last_seen_dt).days
-            except ValueError:
-                continue
-
+            user_id_str = str(member.id)
             user_warnings = warned_users.get(user_id_str, {})
+            has_changes = False
+
+            # --- A. NO INTRO CHECK ---
+            if settings.nointro_days > 0 and nointro_role and nointro_channel:
+                if nointro_role in member.roles:
+                    days_joined = (now - member.joined_at.replace(tzinfo=timezone.utc)).days
+                    if days_joined >= settings.nointro_days:
+                        if "nointro" not in user_warnings:
+                            # Trigger No Intro Message
+                            try:
+                                msg = settings.nointro_message.replace("{mention}", member.mention)
+                                await nointro_channel.send(msg)
+                                user_warnings["nointro"] = now.isoformat()
+                                has_changes = True
+                            except discord.Forbidden:
+                                pass
+
+            # --- B. LEVEL 0 CHECKS ---
+            if levelup_cog:
+                # Check levels
+                level = levelup_cog.get_level(member)
+                if level == 0:
+                    days_joined = (now - member.joined_at.replace(tzinfo=timezone.utc)).days
+                    
+                    # 1. Message Warning
+                    if settings.level0_warn_days > 0 and level0_channel and days_joined >= settings.level0_warn_days:
+                        if "level0_warn" not in user_warnings:
+                            try:
+                                msg = settings.level0_message.replace("{mention}", member.mention)
+                                await level0_channel.send(msg)
+                                user_warnings["level0_warn"] = now.isoformat()
+                                has_changes = True
+                            except discord.Forbidden:
+                                pass
+                    
+                    # 2. Kick Warning (WarnSystem Level 3)
+                    if settings.level0_kick_days > 0 and warn_cog and days_joined >= settings.level0_kick_days:
+                        if "level0_kick" not in user_warnings:
+                            try:
+                                await warn_cog.api.warn(
+                                    member=member,
+                                    author=guild.me,
+                                    reason=settings.level0_kick_reason,
+                                    level=3
+                                )
+                                user_warnings["level0_kick"] = now.isoformat()
+                                has_changes = True
+                                log.info(f"OuijaPoke: Level 0 Kick warning for {member} in {guild.name}")
+                            except Exception as e:
+                                log.error(f"Failed Level 0 kick for {member}: {e}")
+
+            # --- C. INACTIVITY CHECKS (Uses Last Seen) ---
+            # Only run if inactivity warnings are enabled
+            if settings.warn_level_1_days > 0 or settings.warn_level_3_days > 0:
+                last_seen_dt_str = last_seen_data.get(user_id_str)
+                if last_seen_dt_str:
+                    try:
+                        last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
+                        days_inactive = (now - last_seen_dt).days
+                        
+                        # Level 3 (Kick)
+                        if settings.warn_level_3_days > 0 and warn_cog and days_inactive >= settings.warn_level_3_days:
+                            if "level3" not in user_warnings:
+                                try:
+                                    reason = f"Inactive for over {days_inactive} days (Threshold: {settings.warn_level_3_days})."
+                                    await warn_cog.api.warn(member=member, author=guild.me, reason=reason, level=3)
+                                    user_warnings["level3"] = now.isoformat()
+                                    has_changes = True
+                                except Exception as e:
+                                    log.error(f"Failed L3 Inactivity Warn for {member}: {e}")
+
+                        # Level 1 (Warn)
+                        if settings.warn_level_1_days > 0 and warn_cog and days_inactive >= settings.warn_level_1_days:
+                            if "level1" not in user_warnings:
+                                try:
+                                    reason = f"Inactive for over {days_inactive} days (Threshold: {settings.warn_level_1_days})."
+                                    await warn_cog.api.warn(member=member, author=guild.me, reason=reason, level=1)
+                                    user_warnings["level1"] = now.isoformat()
+                                    has_changes = True
+                                except Exception as e:
+                                    log.error(f"Failed L1 Inactivity Warn for {member}: {e}")
+
+                    except ValueError:
+                        pass
             
-            # --- Level 3 Warning (Kick) Check ---
-            if settings.warn_level_3_days > 0 and days_inactive >= settings.warn_level_3_days:
-                if "level3" not in user_warnings:
-                    try:
-                        reason = f"Inactive for over {days_inactive} days (Threshold: {settings.warn_level_3_days})."
-                        # Use WarnSystem API: warn(member, author, reason, level)
-                        # We use guild.me (the bot) as the author.
-                        await warn_cog.api.warn(
-                            member=member,
-                            author=guild.me,
-                            reason=reason,
-                            level=3
-                        )
-                        
-                        # Mark as warned
-                        if user_id_str not in warned_users:
-                            warned_users[user_id_str] = {}
-                        warned_users[user_id_str]["level3"] = now.isoformat()
-                        await self.config.guild(guild).warned_users.set(warned_users)
-                        
-                        log.info(f"OuijaPoke: Issued Level 3 Warn to {member} in {guild.name}")
-                        # If level 3 triggers a kick via WarnSystem, the member might be gone now.
-                        continue 
-                    except Exception as e:
-                        log.error(f"Failed to issue WarnSystem Level 3 to {member}: {e}")
-
-            # --- Level 1 Warning Check ---
-            if settings.warn_level_1_days > 0 and days_inactive >= settings.warn_level_1_days:
-                if "level1" not in user_warnings:
-                    try:
-                        reason = f"Inactive for over {days_inactive} days (Threshold: {settings.warn_level_1_days})."
-                        await warn_cog.api.warn(
-                            member=member,
-                            author=guild.me,
-                            reason=reason,
-                            level=1
-                        )
-                        
-                        # Mark as warned
-                        if user_id_str not in warned_users:
-                            warned_users[user_id_str] = {}
-                        warned_users[user_id_str]["level1"] = now.isoformat()
-                        await self.config.guild(guild).warned_users.set(warned_users)
-
-                        log.info(f"OuijaPoke: Issued Level 1 Warn to {member} in {guild.name}")
-                    except Exception as e:
-                        log.error(f"Failed to issue WarnSystem Level 1 to {member}: {e}")
+            if has_changes:
+                warned_users[user_id_str] = user_warnings
+        
+        # Bulk save warned_users once per guild loop to reduce IO
+        await self.config.guild(guild).warned_users.set(warned_users)
 
     async def _run_daily_lottery(self, guild: discord.Guild, channel: discord.TextChannel, settings: OuijaSettings) -> str:
         """Runs the 10/10/80 probability logic. Returns a status string."""
@@ -821,16 +877,34 @@ class OuijaPoke(commands.Cog):
         warn_l3 = f"{settings.warn_level_3_days} days" if settings.warn_level_3_days > 0 else "Disabled"
 
         embed.add_field(
-            name="⚠️ WarnSystem Integration",
+            name="⚠️ Inactivity Warnings",
             value=(
-                f"**Status:** {warn_status}\n"
+                f"**WarnSystem Status:** {warn_status}\n"
                 f"**Level 1 Warn:** > {warn_l1} inactive\n"
                 f"**Level 3 Warn (Kick):** > {warn_l3} inactive"
             ),
             inline=False
         )
         
-        # 3. Activity Definition
+        # 3. New Automated Policing
+        nointro_chan = f"<#{settings.nointro_channel_id}>" if settings.nointro_channel_id else "Not Set"
+        nointro_role = f"<@&{settings.nointro_role_id}>" if settings.nointro_role_id else "Not Set"
+        
+        level0_chan = f"<#{settings.level0_channel_id}>" if settings.level0_channel_id else "Not Set"
+        level0_warn = f"> {settings.level0_warn_days} days" if settings.level0_warn_days > 0 else "Disabled"
+        level0_kick = f"> {settings.level0_kick_days} days" if settings.level0_kick_days > 0 else "Disabled"
+
+        embed.add_field(
+            name="👮 Automated Policing",
+            value=(
+                f"**No Intro:** Check {nointro_role} after {settings.nointro_days} days -> Ping in {nointro_chan}\n"
+                f"**Still Level 0 (Warn):** {level0_warn} -> Ping in {level0_chan}\n"
+                f"**Still Level 0 (Kick):** {level0_kick}"
+            ),
+            inline=False
+        )
+
+        # 4. Activity Definition
         burst_desc = "Every message counts"
         if settings.required_messages > 1 and settings.required_window_hours > 0:
             burst_desc = f"**{settings.required_messages}** msgs in **{settings.required_window_hours}** hrs"
@@ -844,7 +918,7 @@ class OuijaPoke(commands.Cog):
             inline=False
         )
 
-        # 4. Auto Poke Settings
+        # 5. Auto Poke Settings
         if next_auto:
             try:
                 dt = datetime.fromisoformat(next_auto).replace(tzinfo=timezone.utc)
@@ -869,7 +943,7 @@ class OuijaPoke(commands.Cog):
             inline=False
         )
         
-        # 5. Exclusions & Hibernation
+        # 6. Exclusions & Hibernation
         excl_roles = []
         for rid in data["excluded_roles"]:
             role = ctx.guild.get_role(rid)
@@ -885,20 +959,6 @@ class OuijaPoke(commands.Cog):
             value=(
                 f"**Hibernating Roles:** {humanize_list(excl_roles) if excl_roles else 'None'}\n"
                 f"**Excluded Channels:** {humanize_list(excl_chans) if excl_chans else 'None'}"
-            ),
-            inline=False
-        )
-
-        # 6. Messages & Assets (Truncated for display)
-        poke_msg_preview = (settings.poke_message[:45] + '..') if len(settings.poke_message) > 45 else settings.poke_message
-        summon_msg_preview = (settings.summon_message[:45] + '..') if len(settings.summon_message) > 45 else settings.summon_message
-
-        embed.add_field(
-            name="🎨 Messages & GIFs",
-            value=(
-                f"**Poke Msg:** `{poke_msg_preview}`\n"
-                f"**Summon Msg:** `{summon_msg_preview}`\n"
-                f"**GIFs Stored:** {len(settings.poke_gifs)} Poke / {len(settings.summon_gifs)} Summon"
             ),
             inline=False
         )
@@ -990,7 +1050,7 @@ class OuijaPoke(commands.Cog):
         await self._set_settings(ctx.guild, settings)
         await ctx.send(f"Minimum message length set to **{length}** characters.")
 
-    # --- WarnSystem Integration Settings ---
+    # --- WarnSystem Integration Settings (Inactivity) ---
 
     @ouijaset.group(name="warnlevel", aliases=["warn"], invoke_without_command=True)
     async def ouijaset_warnlevel(self, ctx: commands.Context):
@@ -1028,6 +1088,91 @@ class OuijaPoke(commands.Cog):
             await ctx.send("Level 3 inactivity warnings disabled.")
         else:
             await ctx.send(f"Users inactive for >**{days}** days will receive a Level 3 warning (Kick, if WarnSystem is configured).")
+
+    # --- No Intro Settings ---
+    
+    @ouijaset.group(name="nointro", invoke_without_command=True)
+    async def ouijaset_nointro(self, ctx: commands.Context):
+        """Manages the 'No Intro' policing."""
+        await ctx.send_help(ctx.command)
+        
+    @ouijaset_nointro.command(name="setup")
+    async def nointro_setup(self, ctx: commands.Context, role: discord.Role, days: int, channel: discord.TextChannel, *, message: str):
+        """
+        Fully configures the No Intro check.
+        
+        Args:
+            role: The 'No Intro' role to check for.
+            days: Days since joining before alerting.
+            channel: The channel to ping the user in.
+            message: The message to send. Must include {mention}.
+        """
+        if "{mention}" not in message:
+            return await ctx.send("Message must contain `{mention}` to ping the user.")
+        
+        settings = await self._get_settings(ctx.guild)
+        settings.nointro_role_id = role.id
+        settings.nointro_days = days
+        settings.nointro_channel_id = channel.id
+        settings.nointro_message = message
+        
+        await self._set_settings(ctx.guild, settings)
+        await ctx.send(f"✅ No Intro Check configured! Users with **@{role.name}** for >**{days}** days will be pinged in {channel.mention}.")
+
+    @ouijaset_nointro.command(name="disable")
+    async def nointro_disable(self, ctx: commands.Context):
+        """Disables the No Intro check."""
+        settings = await self._get_settings(ctx.guild)
+        settings.nointro_days = 0
+        await self._set_settings(ctx.guild, settings)
+        await ctx.send("No Intro check disabled.")
+
+    # --- Level 0 Settings ---
+    
+    @ouijaset.group(name="levelzero", aliases=["stillzero"], invoke_without_command=True)
+    async def ouijaset_levelzero(self, ctx: commands.Context):
+        """Manages 'Still at Level 0' policing."""
+        await ctx.send_help(ctx.command)
+
+    @ouijaset_levelzero.command(name="warn")
+    async def levelzero_warn(self, ctx: commands.Context, days: int, channel: discord.TextChannel, *, message: str):
+        """
+        Configures the warning message for users still at Level 0.
+        
+        Args:
+            days: Days since joining to trigger the warning.
+            channel: Channel to send the message in.
+            message: Message to send. Must include {mention}.
+        """
+        if "{mention}" not in message:
+            return await ctx.send("Message must contain `{mention}`.")
+        
+        settings = await self._get_settings(ctx.guild)
+        settings.level0_warn_days = days
+        settings.level0_channel_id = channel.id
+        settings.level0_message = message
+        
+        await self._set_settings(ctx.guild, settings)
+        await ctx.send(f"✅ Users still at Level 0 after **{days}** days will be pinged in {channel.mention}.")
+
+    @ouijaset_levelzero.command(name="kick")
+    async def levelzero_kick(self, ctx: commands.Context, days: int, *, reason: str = "Remained at Level 0 for too long."):
+        """
+        Configures the Auto-Kick (WarnSystem Level 3) for users still at Level 0.
+        
+        Args:
+            days: Days since joining to trigger the kick. Set to 0 to disable.
+            reason: Reason logged in WarnSystem.
+        """
+        settings = await self._get_settings(ctx.guild)
+        settings.level0_kick_days = days
+        settings.level0_kick_reason = reason
+        
+        await self._set_settings(ctx.guild, settings)
+        if days > 0:
+            await ctx.send(f"✅ Users still at Level 0 after **{days}** days will receive a **Level 3 Warning (Kick)**.")
+        else:
+            await ctx.send("Level 0 Kick disabled.")
 
     # --- Excluded Channels ---
 
