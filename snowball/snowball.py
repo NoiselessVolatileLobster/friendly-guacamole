@@ -249,7 +249,7 @@ class Snowball(commands.Cog):
             return True
 
         if ctx.channel.id != channel_id:
-            await ctx.send(f"🚫 Snowball fights are only allowed in {channel.mention}!", delete_after=5)
+            await ctx.send(f"🚫 Run Snowball commands in {channel.mention}!", delete_after=5)
             return False
             
         return True
