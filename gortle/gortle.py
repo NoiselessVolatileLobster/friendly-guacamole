@@ -455,7 +455,21 @@ class Gortle(commands.Cog):
             return
 
         await self.config.member(message.author).last_guess_time.set(int(now))
+        
         async with self.lock:
+            # Race Condition Check 1: Game ended while user was typing/in cooldown check
+            if not await self.config.game_active():
+                await message.channel.send("The game has already ended.", delete_after=5)
+                return
+
+            # Race Condition Check 2: Word already guessed by someone else milliseconds ago
+            state = await self.config.game_state()
+            history = state.get("history", [])
+            # Check if word is already in history
+            if any(entry.get("word") == guess for entry in history):
+                await message.channel.send("That word has already been guessed.", delete_after=5)
+                return
+
             await self.process_guess(message, guess)
 
     async def process_guess(self, message, guess):
