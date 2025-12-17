@@ -9,35 +9,38 @@ from redbot.core.utils.chat_formatting import box
 log = logging.getLogger("red.NoiselessVolatileLobster.craftofthemonth")
 
 class SignupModal(discord.ui.Modal, title="Instructor Sign Up"):
-    # We define the Text Input normally
+    # We define the Text Input as a class variable. 
+    # We set row=1 to ensure it appears BELOW the dropdown menu.
     craft = discord.ui.TextInput(
         label="Craft Description",
         placeholder="What will you be teaching?",
         min_length=3,
         max_length=50,
         required=True,
-        row=1 # Force this to the second row
+        row=1 
     )
 
     def __init__(self, cog):
         super().__init__()
         self.cog = cog
         
-        # We add the Select Menu dynamically in __init__
-        # This requires discord.py 2.6+
+        # Define the Select Menu (Dropdown)
         months = [
             "January", "February", "March", "April", "May", "June",
             "July", "August", "September", "October", "November", "December"
         ]
         options = [discord.SelectOption(label=m, value=m) for m in months]
         
+        # We set row=0 to ensure it appears AT THE TOP.
         self.month_select = discord.ui.Select(
             placeholder="Select a month...",
             min_values=1,
             max_values=1,
             options=options,
-            row=0 # Force this to the first row
+            row=0 
         )
+        
+        # Add the select menu to the modal
         self.add_item(self.month_select)
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -82,7 +85,7 @@ class SignupView(discord.ui.View):
             )
             return
 
-        # Direct Single-Step Modal
+        # Open the modal directly
         modal = SignupModal(self.cog)
         await interaction.response.send_modal(modal)
 
@@ -97,24 +100,31 @@ class CraftOfTheMonth(commands.Cog):
         
         default_guild = {
             "channel_id": None,
-            "user_level_req": 0,
-            "instructor_level_req": 0,
-            "signups": {}
+            "user_level_req": 0,       # Required to view the list
+            "instructor_level_req": 0, # Required to sign up
+            "signups": {}              # Storage for signups
         }
         self.config.register_guild(**default_guild)
         
+        # Add persistent view on load
         self.bot.add_view(SignupView(self))
 
     def get_user_level(self, member: discord.Member) -> int:
+        """
+        Attempts to get the user's level from Vrt's LevelUp cog.
+        Returns 0 if cog not found or user has no data.
+        """
         levelup = self.bot.get_cog("LevelUp")
         if not levelup:
             return 0
+        
         try:
-            user_data = levelup.data[member.guild.id]["users"].get(str(member.id))
-            if user_data:
-                return user_data.get("level", 0)
+            # Using the public method provided by the user
+            return levelup.get_level(member)
         except AttributeError:
-            pass
+            # Fallback if the method doesn't exist on that version of the cog
+            return 0
+            
         return 0
 
     @commands.group(name="cotm")
@@ -125,7 +135,10 @@ class CraftOfTheMonth(commands.Cog):
 
     @cotm.command(name="list")
     async def cotm_list(self, ctx):
-        """Show the current list of instructor signups."""
+        """
+        Show the current list of instructor signups.
+        """
+        # Check User Level Requirement
         required_level = await self.config.guild(ctx.guild).user_level_req()
         user_level = self.get_user_level(ctx.author)
         
@@ -142,6 +155,7 @@ class CraftOfTheMonth(commands.Cog):
         headers = ["Month", "Craft", "Instructor"]
         data = []
         
+        # Sort by month
         months_order = {
             "January": 1, "February": 2, "March": 3, "April": 4, "May": 5, "June": 6,
             "July": 7, "August": 8, "September": 9, "October": 10, "November": 11, "December": 12
@@ -155,6 +169,7 @@ class CraftOfTheMonth(commands.Cog):
         for uid, info in sorted_items:
             data.append([info['month'], info['craft'], info['user_name']])
 
+        # Calculate column widths
         col_widths = [len(h) for h in headers]
         for row in data:
             for i, cell in enumerate(row):
@@ -171,7 +186,7 @@ class CraftOfTheMonth(commands.Cog):
 
         embed = discord.Embed(
             title="Craft of the Month: Signups",
-            description=box(table_str, lang="prolog"),
+            description=box(table_str, lang="prolog"), 
             color=discord.Color.blue()
         )
         await ctx.send(embed=embed)
@@ -249,6 +264,10 @@ class CraftOfTheMonth(commands.Cog):
             ["Instructor Level Req", str(conf['instructor_level_req'])],
             ["Total Signups", str(len(conf['signups']))]
         ]
+        
+        # Formatting table manually for display
+        col_widths = [len(r[0]) for r in settings]
+        col_widths[0] = max(col_widths[0], 20) 
         
         desc = ""
         for row in settings:
