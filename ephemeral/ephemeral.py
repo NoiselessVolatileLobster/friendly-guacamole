@@ -150,6 +150,7 @@ class Ephemeral(commands.Cog):
                 continue
             
             # 1. Initialize Active Ephemeral Timers
+            # Note: Checking all_members on very large guilds can be expensive.
             for member_id, data in (await self.config.all_members(guild)).items():
                 if data["is_ephemeral"] and data["start_time"]:
                     self.start_user_timer(guild_id, member_id)
@@ -282,19 +283,38 @@ class Ephemeral(commands.Cog):
             print(f"Ephemeral WARNING: WarnSystem cog not found. Cannot perform automated action '{action}' for {user.id}.")
             return
 
+        # Explicitly fetch the bot member to be the "author" of the warning
+        author = self.bot.user
+        if not author:
+            # Fallback if self.bot.user isn't available for some reason (rare)
+            author = guild.me
+
         try:
+            # 1. WARN ACTION
             if action == "warn":
-                await warn_system.api.warn(user, self.bot.user, reason)
+                await warn_system.api.warn(user, author, reason)
                 await self._log_event(guild, f"⚠️ **Warned:** {user.mention} (`{user.id}`) - Reason: {reason}")
+            
+            # 2. KICK ACTION
             elif action == "kick":
+                # Warn FIRST, then kick. This ensures the warning is logged/DM'd before they leave.
+                try: 
+                    await warn_system.api.warn(user, author, f"[Auto-Kick] {reason}")
+                except Exception as e:
+                    print(f"Ephemeral: Failed to log warn before kick: {e}")
+
                 await guild.kick(user, reason=reason)
-                try: await warn_system.api.warn(user, self.bot.user, f"[Auto-Kick] {reason}")
-                except: pass
                 await self._log_event(guild, f"👢 **Kicked:** {user.mention} (`{user.id}`) - Reason: {reason}")
+            
+            # 3. BAN ACTION
             elif action == "ban":
+                # Warn FIRST, then ban.
+                try: 
+                    await warn_system.api.warn(user, author, f"[Auto-Ban] {reason}")
+                except Exception as e:
+                    print(f"Ephemeral: Failed to log warn before ban: {e}")
+
                 await guild.ban(user, reason=reason)
-                try: await warn_system.api.warn(user, self.bot.user, f"[Auto-Ban] {reason}")
-                except: pass
                 await self._log_event(guild, f"🔨 **Banned:** {user.mention} (`{user.id}`) - Reason: {reason}")
 
         except discord.Forbidden:
