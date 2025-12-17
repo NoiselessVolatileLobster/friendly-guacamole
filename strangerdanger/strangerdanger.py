@@ -156,6 +156,33 @@ class StrangerDanger(commands.Cog):
         for page in pagify(msg, page_length=1900):
             await ctx.send(box(page, lang="ini"))
 
+    @strangerdanger.command(name="inspect")
+    async def inspect_role(self, ctx, role: discord.Role):
+        """
+        Inspect the permissions of a specific role.
+
+        Displays a full list of what the role has (+) and does not have (-).
+        """
+        perms = []
+        
+        # Iterate over all permissions for the role
+        for name, value in role.permissions:
+            # Format: "+ permission_name" or "- permission_name"
+            prefix = "+" if value else "-"
+            perms.append(f"{prefix} {name}")
+        
+        # Sort alphabetically for readability
+        perms.sort()
+        
+        header = f"Permissions for role: {role.name} ({role.id})\n"
+        if role.permissions.administrator:
+            header = f"*** ADMINISTRATOR ROLE (ALL PERMISSIONS GRANTED) ***\n{header}"
+            
+        full_text = header + "\n" + "\n".join(perms)
+
+        for page in pagify(full_text, delims=["\n"], page_length=1900):
+            await ctx.send(box(page, lang="diff"))
+
     @strangerdanger.command(name="scan")
     async def scan_permissions(self, ctx, permission: Optional[str] = None):
         """
