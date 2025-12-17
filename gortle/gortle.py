@@ -734,7 +734,7 @@ class Gortle(commands.Cog):
         await ctx.send("Game started.")
 
     @commands.command(aliases=["gortlehow"])
-    async def teachmehowtorgortle(self, ctx):
+    async def teachmehowtogortle(self, ctx):
         """Shows the Gortle rules and settings."""
         # Data Gathering
         cooldown_s = await self.config.guild(ctx.guild).cooldown_seconds()
@@ -947,17 +947,6 @@ class Gortle(commands.Cog):
             await self.bot.wait_for("message", check=pred, timeout=30)
         except asyncio.TimeoutError:
             return await ctx.send("Reset cancelled.")
-
-        # Reset Global Data
-        await self.config.game_number.set(0)
-        await self.config.used_words.set([])
-        await self.config.game_active.set(False)
-        await self.config.current_word.set(None)
-        
-        # Reset Member Data (Leaderboard)
-        await self.config.clear_all_members(ctx.guild)
-        
-        await ctx.send("Gortle has been completely reset.")
 
     @gortleset.command()
     async def removeuser(self, ctx, member: discord.Member):
