@@ -434,7 +434,36 @@ Current ID:     {cfg['next_id']}
 
         embed = discord.Embed(title="Suggestions Dashboard", color=discord.Color.gold())
         
-        open_str = "\n".join([f"#{x['id']} {x['title']} (<t:{int(x['timestamp'])}:R>)" for x in open_list]) or "None"
+        # Build Open List with Links and Stats
+        if open_list:
+            lines = []
+            for s in open_list:
+                # Calculate stats
+                ups = len(s['upvotes'])
+                downs = len(s['downvotes'])
+                
+                # Get Link (Jump URL)
+                # We can construct it if we have guild_id, channel_id, message_id
+                # https://discord.com/channels/GUILD_ID/CHANNEL_ID/MESSAGE_ID
+                # We need to fetch channel ID from config again to be safe, or iterate
+                # However, for speed, we can try to fetch the object or just build the string.
+                # Since we are inside the command, we have ctx.guild.id
+                
+                # We need the channel ID where the message lives.
+                # The config stores it as a single channel for the whole guild.
+                chan_id = await self.config.guild(ctx.guild).channel_id()
+                
+                link = f"https://discord.com/channels/{ctx.guild.id}/{chan_id}/{s['message_id']}"
+                
+                line = (
+                    f"[#{s['id']} {s['title']}]({link})\n"
+                    f"👍 {ups} | 👎 {downs} | <t:{int(s['timestamp'])}:R>"
+                )
+                lines.append(line)
+            open_str = "\n\n".join(lines)
+        else:
+            open_str = "None"
+
         embed.add_field(name=f"Open ({len(open_list)})", value=open_str, inline=False)
         
         app_str = "\n".join([f"#{x['id']} {x['title']}" for x in approved_list]) or "None"
