@@ -1,0 +1,9 @@
+{
+    "author": ["NoiselessVolatileLobster"],
+    "description": "A snowball fighting system with items, health, hilarity, and weather.",
+    "install_msg": "Thanks for installing Snowball! Use [p]snowballset to configure the fight channel and items.",
+    "min_bot_version": "3.5.22",
+    "name": "Snowball",
+    "short": "Snowball Fight System",
+    "permissions": ["embed_links", "attach_files"]
+}

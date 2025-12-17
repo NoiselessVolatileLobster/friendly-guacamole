@@ -7,6 +7,83 @@ from redbot.core.utils.chat_formatting import box, humanize_list
 from discord.ext import tasks
 from discord.ui import View, Button
 
+class LeaderboardView(View):
+    def __init__(self, ctx, all_data):
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.all_data = all_data
+        self.current_sort = "Damage Dealt"
+        
+        # Map readable names to config keys
+        self.sort_map = {
+            "Damage Dealt": "stat_damage_dealt",
+            "Damage Taken": "stat_hits_taken",
+            "Snowballs Made": "stat_snowballs_made",
+            "Cookies Eaten": "stat_cookies_eaten",
+            "Drinks Drunk": "stat_drinks_drunk",
+            "Money Spent": "stat_credits_spent"
+        }
+        
+        # Initialize buttons
+        self._add_buttons()
+
+    def _add_buttons(self):
+        # Create a button for each sort option
+        for label in self.sort_map.keys():
+            style = discord.ButtonStyle.primary if label == self.current_sort else discord.ButtonStyle.secondary
+            btn = Button(label=label, style=style, custom_id=label)
+            btn.callback = self.button_callback
+            self.add_item(btn)
+
+    async def button_callback(self, interaction: discord.Interaction):
+        # Only allow the command invoker to sort (optional, but prevents spam)
+        # if interaction.user.id != self.ctx.author.id:
+        #    return await interaction.response.send_message("Only the person who ran the command can sort.", ephemeral=True)
+        
+        self.current_sort = interaction.custom_id
+        
+        # Update button styles to show active selection
+        for child in self.children:
+            if isinstance(child, Button):
+                child.style = discord.ButtonStyle.primary if child.custom_id == self.current_sort else discord.ButtonStyle.secondary
+        
+        embed = self.generate_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    def generate_embed(self):
+        sort_key = self.sort_map[self.current_sort]
+        
+        # Sort data
+        sorted_members = sorted(
+            self.all_data.items(), 
+            key=lambda x: x[1].get(sort_key, 0), 
+            reverse=True
+        )[:10]
+
+        embed = discord.Embed(title=f"🏆 Snowball Championships: {self.current_sort}", color=discord.Color.gold())
+        
+        desc = ""
+        for index, (user_id, data) in enumerate(sorted_members, 1):
+            user = self.ctx.guild.get_member(user_id)
+            name = user.display_name if user else "Unknown User"
+            val = data.get(sort_key, 0)
+            
+            # Format the value if it's money
+            if sort_key == "stat_credits_spent":
+                # We don't have currency name here easily without async, so just use generic
+                val_str = f"{val}" 
+            else:
+                val_str = f"{val}"
+
+            desc += f"**{index}. {name}**: {val_str}\n"
+            
+        if not desc:
+            desc = "No stats recorded yet!"
+            
+        embed.description = desc
+        embed.set_footer(text="Click the buttons below to sort by different stats.")
+        return embed
+
 class Snowball(commands.Cog):
     """
     A Snowball fighting system with items, health, hilarity, and weather.
@@ -616,29 +693,24 @@ class Snowball(commands.Cog):
     @commands.command()
     async def snowstats(self, ctx):
         """View the Snowball Leaderboard."""
+        if not await self.check_channel(ctx):
+            return
+
         all_members = await self.config.all_members(ctx.guild)
-        sorted_members = sorted(all_members.items(), key=lambda x: x[1]['stat_damage_dealt'], reverse=True)[:10]
+        if not all_members:
+            return await ctx.send("No stats recorded yet!")
+
+        view = LeaderboardView(ctx, all_members)
+        embed = view.generate_embed()
         
-        embed = discord.Embed(title="🏆 Snowball Championships", color=discord.Color.gold())
-        
-        desc = ""
-        for index, (user_id, data) in enumerate(sorted_members, 1):
-            user = ctx.guild.get_member(user_id)
-            name = user.display_name if user else "Unknown User"
-            
-            desc += (
-                f"**{index}. {name}**\n"
-                f"⚔️ Dmg: {data['stat_damage_dealt']} | 🤕 Taken: {data['stat_hits_taken']}\n"
-                f"🍪 Cookies: {data.get('stat_cookies_eaten', 0)} | ☕ Drinks: {data.get('stat_drinks_drunk', 0)}\n"
-                f"❄️ Balls: {data['stat_snowballs_made']} | 💰 Spent: {data['stat_credits_spent']}\n\n"
-            )
-            
-        embed.description = desc
-        await ctx.send(embed=embed)
+        await ctx.send(embed=embed, view=view)
 
     @commands.command()
     async def mysnowstats(self, ctx):
         """Check your own stats and HP."""
+        if not await self.check_channel(ctx):
+            return
+
         data = await self.config.member(ctx.author).all()
         inv = data['inventory']
         
@@ -708,7 +780,7 @@ class Snowball(commands.Cog):
         await self.config.clear_all_members(ctx.guild)
         await ctx.send("🚨 **GAME RESET!** 🚨\nAll player HP, stats, snowballs, and inventories have been wiped. Let the new games begin!")
 
-    @snowballset.command(name="settings")
+    @snowballset.command(name="view")
     async def view_settings(self, ctx):
         """View the current game configuration and shop items."""
         guild_data = await self.config.guild(ctx.guild).all()
