@@ -9,8 +9,6 @@ from redbot.core.utils.chat_formatting import box
 log = logging.getLogger("red.NoiselessVolatileLobster.craftofthemonth")
 
 class SignupModal(discord.ui.Modal, title="Instructor Sign Up"):
-    # We define the Text Input as a class variable. 
-    # We set row=1 to ensure it appears BELOW the dropdown menu.
     craft = discord.ui.TextInput(
         label="Craft Description",
         placeholder="What will you be teaching?",
@@ -24,14 +22,12 @@ class SignupModal(discord.ui.Modal, title="Instructor Sign Up"):
         super().__init__()
         self.cog = cog
         
-        # Define the Select Menu (Dropdown)
         months = [
             "January", "February", "March", "April", "May", "June",
             "July", "August", "September", "October", "November", "December"
         ]
         options = [discord.SelectOption(label=m, value=m) for m in months]
         
-        # We set row=0 to ensure it appears AT THE TOP.
         self.month_select = discord.ui.Select(
             placeholder="Select a month...",
             min_values=1,
@@ -39,15 +35,12 @@ class SignupModal(discord.ui.Modal, title="Instructor Sign Up"):
             options=options,
             row=0 
         )
-        
-        # Add the select menu to the modal
         self.add_item(self.month_select)
 
     async def on_submit(self, interaction: discord.Interaction):
         guild = interaction.guild
         user = interaction.user
         
-        # Retrieve values
         selected_month = self.month_select.values[0]
         craft_name = self.craft.value
         
@@ -66,19 +59,17 @@ class SignupModal(discord.ui.Modal, title="Instructor Sign Up"):
 
 class SignupView(discord.ui.View):
     def __init__(self, cog):
-        # timeout=None is CRITICAL. 
-        # It prevents the interaction from expiring after 15 minutes.
         super().__init__(timeout=None)
         self.cog = cog
 
     @discord.ui.button(label="📅 Sign Up", style=discord.ButtonStyle.primary, custom_id="cotm:signup_button")
     async def signup_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Check Instructor Level Requirement
         guild = interaction.guild
         member = interaction.user
         required_level = await self.cog.config.guild(guild).instructor_level_req()
         
-        user_level = self.cog.get_user_level(member)
+        # FIX: Added 'await' here
+        user_level = await self.cog.get_user_level(member)
         
         if user_level < required_level:
             await interaction.response.send_message(
@@ -87,7 +78,6 @@ class SignupView(discord.ui.View):
             )
             return
 
-        # Open the modal directly
         modal = SignupModal(self.cog)
         await interaction.response.send_modal(modal)
 
@@ -102,17 +92,16 @@ class CraftOfTheMonth(commands.Cog):
         
         default_guild = {
             "channel_id": None,
-            "user_level_req": 0,       # Required to view the list
-            "instructor_level_req": 0, # Required to sign up
-            "signups": {}              # Storage for signups
+            "user_level_req": 0,
+            "instructor_level_req": 0,
+            "signups": {}
         }
         self.config.register_guild(**default_guild)
         
-        # This line ensures that if the bot restarts, it immediately starts listening
-        # to the "cotm:signup_button" custom_id again.
         self.bot.add_view(SignupView(self))
 
-    def get_user_level(self, member: discord.Member) -> int:
+    # FIX: Changed to async def
+    async def get_user_level(self, member: discord.Member) -> int:
         """
         Attempts to get the user's level from Vrt's LevelUp cog.
         Returns 0 if cog not found or user has no data.
@@ -122,8 +111,8 @@ class CraftOfTheMonth(commands.Cog):
             return 0
         
         try:
-            # Using the public method provided by the user
-            return levelup.get_level(member)
+            # FIX: Added await here as get_level is a coroutine
+            return await levelup.get_level(member)
         except AttributeError:
             return 0
             
@@ -140,9 +129,10 @@ class CraftOfTheMonth(commands.Cog):
         """
         Show the current list of instructor signups.
         """
-        # Check User Level Requirement
         required_level = await self.config.guild(ctx.guild).user_level_req()
-        user_level = self.get_user_level(ctx.author)
+        
+        # FIX: Added 'await' here
+        user_level = await self.get_user_level(ctx.author)
         
         if user_level < required_level:
             await ctx.send(f"⛔ You need to be level **{required_level}** to view this list.")
@@ -157,7 +147,6 @@ class CraftOfTheMonth(commands.Cog):
         headers = ["Month", "Craft", "Instructor"]
         data = []
         
-        # Sort by month
         months_order = {
             "January": 1, "February": 2, "March": 3, "April": 4, "May": 5, "June": 6,
             "July": 7, "August": 8, "September": 9, "October": 10, "November": 11, "December": 12
@@ -171,7 +160,6 @@ class CraftOfTheMonth(commands.Cog):
         for uid, info in sorted_items:
             data.append([info['month'], info['craft'], info['user_name']])
 
-        # Calculate column widths
         col_widths = [len(h) for h in headers]
         for row in data:
             for i, cell in enumerate(row):
