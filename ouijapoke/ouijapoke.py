@@ -314,7 +314,7 @@ class OuijaPoke(commands.Cog):
             user_id = int(user_id_str)
             member = guild.get_member(user_id)
             
-            # Skip if member left, is bot, or is hibernating
+            # Skip if member left, is bot, or is hibernating (excluded)
             if member is None or member.bot or self._is_excluded(member, excluded_roles):
                 continue
             
@@ -668,6 +668,34 @@ class OuijaPoke(commands.Cog):
                 
                 if duration >= timedelta(minutes=5):
                     await self._update_last_seen(member.guild, member.id)
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        """
+        Resets inactivity timer if a member loses a hibernating (excluded) role.
+        """
+        if before.bot: 
+            return
+        
+        # Only proceed if roles were removed
+        if len(before.roles) <= len(after.roles):
+            return
+
+        excluded_role_ids = await self.config.guild(after.guild).excluded_roles()
+        if not excluded_role_ids:
+            return
+        
+        # Calculate removed roles
+        before_ids = {r.id for r in before.roles}
+        after_ids = {r.id for r in after.roles}
+        removed_ids = before_ids - after_ids
+        
+        # Check intersection
+        if not removed_ids.isdisjoint(set(excluded_role_ids)):
+            # A hibernating role was removed.
+            # We reset their timer to ensure they start at 0.
+            await self._update_last_seen(after.guild, after.id)
+            log.info(f"OuijaPoke: Reset inactivity for {after} (Hibernating role removed).")
 
     # --- User Commands ---
 
