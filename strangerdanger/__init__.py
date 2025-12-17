@@ -1,4 +1,4 @@
 from .strangerdanger import StrangerDanger
 
-def setup(bot):
+async def setup(bot):
     bot.add_cog(StrangerDanger(bot))
