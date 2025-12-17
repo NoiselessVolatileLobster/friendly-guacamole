@@ -1,0 +1,10 @@
+{
+    "author": ["NoiselessVolatileLobster"],
+    "description": "A system to manage Craft of the Month instructor signups.",
+    "install_msg": "Thanks for installing CraftOfTheMonth. Configure it using [p]cotmset.",
+    "min_bot_version": "3.5.0",
+    "name": "CraftOfTheMonth",
+    "requirements": [],
+    "short": "Manage Craft of the Month signups",
+    "tags": ["crafting", "signup", "utility"]
+}
