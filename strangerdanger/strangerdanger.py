@@ -161,27 +161,69 @@ class StrangerDanger(commands.Cog):
         """
         Inspect the permissions of a specific role.
 
-        Displays a full list of what the role has (+) and does not have (-).
+        Displays global permissions and any channel-specific overwrites.
         """
-        perms = []
-        
-        # Iterate over all permissions for the role
-        for name, value in role.permissions:
-            # Format: "+ permission_name" or "- permission_name"
-            prefix = "+" if value else "-"
-            perms.append(f"{prefix} {name}")
-        
-        # Sort alphabetically for readability
-        perms.sort()
-        
-        header = f"Permissions for role: {role.name} ({role.id})\n"
-        if role.permissions.administrator:
-            header = f"*** ADMINISTRATOR ROLE (ALL PERMISSIONS GRANTED) ***\n{header}"
+        async with ctx.typing():
+            lines = []
             
-        full_text = header + "\n" + "\n".join(perms)
+            # --- Global Permissions ---
+            lines.append(f"=== GLOBAL PERMISSIONS FOR {role.name} ({role.id}) ===")
+            if role.permissions.administrator:
+                lines.append("!!! THIS ROLE HAS ADMINISTRATOR !!!")
+                lines.append("(All permissions are implicitly granted)\n")
+            
+            # Sort global perms alphabetically
+            global_perms_list = sorted([p for p in role.permissions], key=lambda x: x[0])
 
-        for page in pagify(full_text, delims=["\n"], page_length=1900):
-            await ctx.send(box(page, lang="diff"))
+            for name, value in global_perms_list:
+                # Format: "+ permission" or "- permission"
+                lines.append(f"{'+' if value else '-'} {name}")
+            
+            lines.append("") # Spacer
+
+            # --- Channel Overwrites ---
+            lines.append(f"=== CHANNEL OVERWRITES ===")
+            
+            overwrites_found = False
+            
+            # Sort channels by position to match server layout
+            channels = sorted(ctx.guild.channels, key=lambda c: c.position)
+            
+            for channel in channels:
+                # Get the overwrite specifically for this role (not including member overrides)
+                overwrite = channel.overwrites_for(role)
+                
+                # Check if empty (no specific settings)
+                if overwrite.is_empty():
+                    continue
+                
+                overwrites_found = True
+                
+                channel_changes = []
+                
+                # Iterate over the PermissionOverwrite object
+                # It yields (name, value) where value is True (Allow), False (Deny), or None (Default)
+                for name, value in overwrite:
+                    if value is True:
+                        channel_changes.append(f"+ {name}")
+                    elif value is False:
+                        channel_changes.append(f"- {name}")
+                        
+                if channel_changes:
+                    # Sort changes for readability
+                    channel_changes.sort()
+                    lines.append(f"# {channel.name} ({channel.id})")
+                    for change in channel_changes:
+                        lines.append(f"  {change}")
+                    lines.append("") # Spacer
+            
+            if not overwrites_found:
+                lines.append("No specific channel overwrites found.")
+
+            full_text = "\n".join(lines)
+
+            for page in pagify(full_text, delims=["\n"], page_length=1900):
+                await ctx.send(box(page, lang="diff"))
 
     @strangerdanger.command(name="scan")
     async def scan_permissions(self, ctx, permission: Optional[str] = None):
