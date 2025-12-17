@@ -12,6 +12,7 @@ import math
 from redbot.core import commands, Config, bank, checks
 from redbot.core.data_manager import bundled_data_path
 from redbot.core.utils.chat_formatting import pagify, box
+from tabulate import tabulate
 
 class Gortle(commands.Cog):
     """A communal 6-letter Wordle-style game for Discord."""
@@ -272,12 +273,10 @@ class Gortle(commands.Cog):
                     await self.config.consecutive_no_guesses.set(current_streak)
                     
                     if current_streak >= 3 and not manual:
-                        prefixes = await self.bot.get_valid_prefixes(target_channel.guild)
-                        prefix = prefixes[0] if prefixes else "[p]"
-                        
+                        # New sleep embed message
                         sleep_embed = discord.Embed(
                             title="Gortle's Gone To Sleep", 
-                            description=f"Three games with no guesses. Zzz...\nType `{prefix}newgortle` to wake me up!",
+                            description=f"Three games with no guesses. Zzz...\nSay `wake up` to wake me up!",
                             color=discord.Color.dark_grey()
                         )
                         if thumb:
@@ -425,6 +424,18 @@ class Gortle(commands.Cog):
             return
 
         content = message.content.lower().strip()
+
+        # Wake Up Check
+        if "wake up" in content:
+            is_active = await self.config.game_active()
+            sleep_streak = await self.config.consecutive_no_guesses()
+            
+            # If game is inactive and has a sleep streak >= 3
+            if not is_active and sleep_streak >= 3:
+                await message.channel.send("🥱 I'm awake! Getting a new game ready...")
+                await self.start_new_game(manual=True)
+                return
+
         if not content.startswith("!"):
             return
 
@@ -719,38 +730,6 @@ class Gortle(commands.Cog):
 
     # --- Commands ---
 
-    @commands.command()
-    async def newgortle(self, ctx):
-        """Manually start a new Gortle game.
-        This is subject to a rate limit set by the server admins.
-        """
-        # Check if game is already active
-        if await self.config.game_active():
-            return await ctx.send("A Gortle game is already active!")
-
-        # Check Manual Limit
-        limit = await self.config.schedule_manual_max()
-        if limit > 0:
-            now = datetime.datetime.now(datetime.timezone.utc)
-            current_hour_ts = int(now.replace(minute=0, second=0, microsecond=0).timestamp())
-            
-            log = await self.config.manual_log()
-            
-            # Check if stored log is for a previous hour
-            if log['hour'] != current_hour_ts:
-                # Reset
-                log = {"hour": current_hour_ts, "count": 0}
-            
-            if log['count'] >= limit:
-                return await ctx.send(f"The maximum number of manual games for this hour ({limit}) has been reached. Please wait for the next hour or an auto-scheduled game.")
-            
-            # Increment and Save
-            log['count'] += 1
-            await self.config.manual_log.set(log)
-
-        await self.start_new_game(manual=True)
-        await ctx.send("Game started.")
-
     @commands.command(aliases=["gortlehow"])
     async def teachmehowtogortle(self, ctx):
         """Shows the Gortle rules and settings."""
@@ -870,7 +849,6 @@ class Gortle(commands.Cog):
         ]
         
         # Using Red's box util for table formatting
-        from tabulate import tabulate
         table = tabulate(table_data, headers=["Setting", "Value"], tablefmt="presto")
         
         await ctx.send(box(table))
