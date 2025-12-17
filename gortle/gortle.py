@@ -733,6 +733,60 @@ class Gortle(commands.Cog):
         await self.start_new_game(manual=True)
         await ctx.send("Game started.")
 
+    @commands.command(aliases=["gortlehow"])
+    async def teachmehowtorgortle(self, ctx):
+        """Shows the Gortle rules and settings."""
+        # Data Gathering
+        cooldown_s = await self.config.guild(ctx.guild).cooldown_seconds()
+        cooldown_m = cooldown_s / 60
+        # Format minutes nicely (e.g., 1 instead of 1.0 if whole number)
+        if cooldown_m.is_integer():
+            cooldown_str = str(int(cooldown_m))
+        else:
+            cooldown_str = f"{cooldown_m:.1f}"
+
+        freq = await self.config.schedule_auto_freq()
+        if freq == 0:
+            schedule_str = "never (Manual only)"
+        else:
+            # Freq is times per hour. 1 = 60m, 2 = 30m.
+            minutes = 60 / freq
+            if minutes.is_integer():
+                schedule_str = f"{int(minutes)} minutes"
+            else:
+                schedule_str = f"{minutes:.1f} minutes"
+
+        try:
+            currency = await bank.get_currency_name(ctx.guild)
+        except:
+            currency = "credits"
+
+        credits_rate = self.CREDITS_PER_POINT
+
+        desc = (
+            "### How to Play:\n"
+            "- Type a six letter word to make a guess. For example `!friend`\n"
+            "- You get points if your guess discovers the right letter in the wrong position (yellow) "
+            "or the right letter in the right position (green).\n"
+            "- If the timer runs out or you don't guess it in 9 tries, the game ends.\n\n"
+            "### Server Settings:\n"
+            f"- There is a cooldown of {cooldown_str} minutes between guesses\n"
+            f"- A new Gortle is published every {schedule_str}\n\n"
+            "### Rewards:\n"
+            "- A yellow letter gives you 1 point.\n"
+            "- Turning a yellow letter green gives you 1 point.\n"
+            "- Finding a green letter gives you 2 points.\n"
+            "- If the Gortle is solved, everyone who posted a guess gets 2 points.\n"
+            f"- If the Gortle is solved, you also get {credits_rate} {currency} deposited per point earned."
+        )
+
+        embed = discord.Embed(
+            title="Teach Me How To Gortle",
+            description=desc,
+            color=discord.Color.blue()
+        )
+        await ctx.send(embed=embed)
+
     @commands.command()
     async def gortletop(self, ctx):
         """Shows the Gortle leaderboard."""
