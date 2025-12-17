@@ -143,94 +143,92 @@ class StrangerDanger(commands.Cog):
         await ctx.send(msg)
 
     @strangerdanger.command(name="scan")
-    async def scan_permissions(self, ctx, permission: Optional[str] = None):
-        """
-        Scans channels and roles for dangerous permissions.
-        
-        If permission is provided, looks only for that specific one.
-        Otherwise, looks for a default list of dangerous permissions.
-        """
-        guild = ctx.guild
-        data = await self.config.guild(guild).all()
-        
-        trusted_roles = set(data['admin_roles'] + data['mod_roles'])
-        exceptions = data['role_exceptions'] # Dict of "role_id": ["perm", "perm"]
-
-        # Determine which permissions to scan for
-        perms_to_scan = []
-        if permission:
-            clean_perm = self._format_perm_name(permission)
-            valid = await self._get_all_permissions_names()
-            if clean_perm not in valid:
-                return await ctx.send(f"❌ `{clean_perm}` is not a valid permission name.")
-            perms_to_scan.append(clean_perm)
-        else:
-            perms_to_scan = self.dangerous_perms
-
-        await ctx.trigger_typing()
-        
-        issues = []
-
-        # 1. SCAN GLOBAL ROLE PERMISSIONS
-        for role in guild.roles:
-            if role.managed or role.id in trusted_roles:
-                continue
-
-            # Check exceptions for this role
-            role_exceptions = exceptions.get(str(role.id), [])
-
-            for perm_name in perms_to_scan:
-                # getattr returns True/False for the permission
-                if getattr(role.permissions, perm_name, False):
-                    # It has the perm. Is it excepted?
-                    if perm_name not in role_exceptions:
-                        issues.append(f"[GLOBAL ROLE] **{role.name}** has `{perm_name}`")
-
-        # 2. SCAN CHANNEL OVERWRITES
-        for channel in guild.channels:
-            # Skip if we can't see it (unlikely for admin, but good practice)
-            if not channel.permissions_for(guild.me).view_channel:
-                continue
-
-            for target, overwrite in channel.overwrites.items():
-                # Target can be Role or Member
-                is_role = isinstance(target, discord.Role)
-                target_name = target.name
-                target_id = target.id
-
-                # Skip trusted
-                if is_role:
-                    if target_id in trusted_roles:
-                        continue
-                else:
-                    # For members, we check if they have any trusted role?
-                    # Usually explicit overwrites on members are risky regardless, 
-                    # but if the user is an admin we skip.
-                    if any(r.id in trusted_roles for r in target.roles):
-                        continue
-
-                # Check exceptions (Roles only)
-                target_exceptions = []
-                if is_role:
-                    target_exceptions = exceptions.get(str(target_id), [])
-
-                # Check the overwrite values
-                # overwrite pair returns (allow, deny) objects
-                allow, deny = overwrite.pair()
-                
-                for perm_name in perms_to_scan:
-                    if getattr(allow, perm_name, False):
-                        # Explicitly allowed in channel
-                        if perm_name not in target_exceptions:
-                            type_label = "ROLE" if is_role else "USER"
-                            issues.append(f"[CHANNEL: {channel.name}] **{target_name}** ({type_label}) has `{perm_name}`")
-
-        if not issues:
-            await ctx.send("✅ Scan complete. No unexpected dangerous permissions found.")
-        else:
-            header = f"⚠️ **StrangerDanger Scan Report** ⚠️\nFound {len(issues)} potential issues:\n\n"
-            full_text = "\n".join(issues)
+        async def scan_permissions(self, ctx, permission: Optional[str] = None):
+            """
+            Scans channels and roles for dangerous permissions.
             
-            for page in pagify(full_text, delims=["\n"], page_length=1900):
-                await ctx.send(header + page if page == full_text[:1900] else page)
-                header = "" # Only print header on first page
+            If permission is provided, looks only for that specific one.
+            Otherwise, looks for a default list of dangerous permissions.
+            """
+            guild = ctx.guild
+            data = await self.config.guild(guild).all()
+            
+            trusted_roles = set(data['admin_roles'] + data['mod_roles'])
+            exceptions = data['role_exceptions'] # Dict of "role_id": ["perm", "perm"]
+
+            # Determine which permissions to scan for
+            perms_to_scan = []
+            if permission:
+                clean_perm = self._format_perm_name(permission)
+                valid = await self._get_all_permissions_names()
+                if clean_perm not in valid:
+                    return await ctx.send(f"❌ `{clean_perm}` is not a valid permission name.")
+                perms_to_scan.append(clean_perm)
+            else:
+                perms_to_scan = self.dangerous_perms
+
+            # FIXED: Use 'async with ctx.typing():' instead of 'await ctx.trigger_typing()'
+            async with ctx.typing():
+                issues = []
+
+                # 1. SCAN GLOBAL ROLE PERMISSIONS
+                for role in guild.roles:
+                    if role.managed or role.id in trusted_roles:
+                        continue
+
+                    # Check exceptions for this role
+                    role_exceptions = exceptions.get(str(role.id), [])
+
+                    for perm_name in perms_to_scan:
+                        # getattr returns True/False for the permission
+                        if getattr(role.permissions, perm_name, False):
+                            # It has the perm. Is it excepted?
+                            if perm_name not in role_exceptions:
+                                issues.append(f"[GLOBAL ROLE] **{role.name}** has `{perm_name}`")
+
+                # 2. SCAN CHANNEL OVERWRITES
+                for channel in guild.channels:
+                    # Skip if we can't see it (unlikely for admin, but good practice)
+                    if not channel.permissions_for(guild.me).view_channel:
+                        continue
+
+                    for target, overwrite in channel.overwrites.items():
+                        # Target can be Role or Member
+                        is_role = isinstance(target, discord.Role)
+                        target_name = target.name
+                        target_id = target.id
+
+                        # Skip trusted
+                        if is_role:
+                            if target_id in trusted_roles:
+                                continue
+                        else:
+                            # For members, we check if they have any trusted role
+                            if any(r.id in trusted_roles for r in target.roles):
+                                continue
+
+                        # Check exceptions (Roles only)
+                        target_exceptions = []
+                        if is_role:
+                            target_exceptions = exceptions.get(str(target_id), [])
+
+                        # Check the overwrite values
+                        # overwrite pair returns (allow, deny) objects
+                        allow, deny = overwrite.pair()
+                        
+                        for perm_name in perms_to_scan:
+                            if getattr(allow, perm_name, False):
+                                # Explicitly allowed in channel
+                                if perm_name not in target_exceptions:
+                                    type_label = "ROLE" if is_role else "USER"
+                                    issues.append(f"[CHANNEL: {channel.name}] **{target_name}** ({type_label}) has `{perm_name}`")
+
+                if not issues:
+                    await ctx.send("✅ Scan complete. No unexpected dangerous permissions found.")
+                else:
+                    header = f"⚠️ **StrangerDanger Scan Report** ⚠️\nFound {len(issues)} potential issues:\n\n"
+                    full_text = "\n".join(issues)
+                    
+                    for page in pagify(full_text, delims=["\n"], page_length=1900):
+                        await ctx.send(header + page if page == full_text[:1900] else page)
+                        header = "" # Only print header on first page
