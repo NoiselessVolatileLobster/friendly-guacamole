@@ -758,8 +758,7 @@ class OuijaPoke(commands.Cog):
     @commands.group(invoke_without_command=True, aliases=["ouija"])
     async def ouijapoke(self, ctx: commands.Context):
         """Commands for OuijaPoke."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
+        await ctx.send_help(ctx.command)
     
     @commands.command(name="poke")
     async def poke(self, ctx: commands.Context):
@@ -838,12 +837,11 @@ class OuijaPoke(commands.Cog):
 
     # --- Admin Commands (Settings) ---
 
-    @commands.group()
+    @commands.group(invoke_without_command=True)
     @checks.admin_or_permissions(manage_guild=True)
     async def ouijaset(self, ctx: commands.Context):
         """Manages the OuijaPoke settings."""
-        if ctx.invoked_subcommand is None:
-            await ctx.send_help(ctx.command)
+        await ctx.send_help(ctx.command)
 
     @ouijaset.command(name="view")
     async def ouijaset_view(self, ctx: commands.Context):
