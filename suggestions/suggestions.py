@@ -125,7 +125,6 @@ class Suggestions(commands.Cog):
         if not channel: return
 
         try:
-            # Message is now in the main channel, not the thread
             message = await channel.fetch_message(data['message_id'])
         except:
             return
@@ -135,7 +134,8 @@ class Suggestions(commands.Cog):
         
         up_count = len(data['upvotes'])
         down_count = len(data['downvotes'])
-        is_closed = data['status'] != 'open'
+        status = data['status']
+        is_closed = status != 'open'
 
         view = VoteView(
             suggestion_id=data['id'],
@@ -147,6 +147,20 @@ class Suggestions(commands.Cog):
         )
 
         embed = message.embeds[0]
+        
+        # Strip existing prefixes to prevent duplication
+        clean_title = embed.title.replace("[APPROVED] ", "").replace("[REJECTED] ", "")
+        
+        if status == 'approved':
+            embed.color = discord.Color.green()
+            embed.title = f"[APPROVED] {clean_title}"
+        elif status == 'rejected':
+            embed.color = discord.Color.red()
+            embed.title = f"[REJECTED] {clean_title}"
+        else:
+            embed.color = discord.Color.blue()
+            embed.title = clean_title
+
         await message.edit(embed=embed, view=view)
 
     async def process_suggestion(self, interaction, channel_id, title, text):
@@ -159,14 +173,12 @@ class Suggestions(commands.Cog):
         emoji_up = await self.config.guild(guild).emoji_up()
         emoji_down = await self.config.guild(guild).emoji_down()
 
-        # 1. Create Main Channel Embed (Anonymous)
         embed = discord.Embed(
             title=f"Suggestion {s_id} - {title}",
             description=text,
             color=discord.Color.blue(),
             timestamp=datetime.datetime.now()
         )
-        # REMOVED: embed.set_author(...) to keep it anonymous
         embed.set_footer(text="Check the pinned message to make a suggestion.")
 
         channel = guild.get_channel(channel_id)
@@ -174,15 +186,12 @@ class Suggestions(commands.Cog):
             await interaction.response.send_message("Configuration error: Channel not found.", ephemeral=True)
             return
 
-        # 2. Post Embed with Buttons to Channel
         view = VoteView(s_id, 0, 0, emoji_up, emoji_down)
         msg = await channel.send(embed=embed, view=view)
 
-        # 3. Create Thread attached to that message
         thread_name = f"{s_id} - {title}"
         thread = await msg.create_thread(name=thread_name)
 
-        # 4. Post Text-Only version inside thread
         thread_content = f"## Suggestion {s_id} - {title}\n{text}"
         await thread.send(content=thread_content)
         
@@ -281,15 +290,21 @@ Current ID:     {cfg['next_id']}
             data['status'] = 'approved'
             suggestions[suggestion_id] = data
             
-            # Update the main message
+            # Update the main message (Embed Title/Color handled here)
             await self.update_suggestion_message(ctx.guild, data)
 
             # Update thread
             thread = ctx.guild.get_thread(data['thread_id'])
             if thread:
+                # Rename thread
+                if not thread.name.startswith("[APPROVED]"):
+                    new_name = f"[APPROVED] {thread.name}"
+                    await thread.edit(name=new_name, locked=True, archived=True)
+                else:
+                    await thread.edit(locked=True, archived=True)
+                    
                 embed = discord.Embed(title=f"Suggestion #{suggestion_id} Approved", description=message, color=discord.Color.green())
                 await thread.send(embed=embed)
-                await thread.edit(locked=True, archived=True)
                 await ctx.tick()
             else:
                 await ctx.send("Thread not found, status updated in DB.")
@@ -305,15 +320,21 @@ Current ID:     {cfg['next_id']}
             data['status'] = 'rejected'
             suggestions[suggestion_id] = data
             
-            # Update the main message
+            # Update the main message (Embed Title/Color handled here)
             await self.update_suggestion_message(ctx.guild, data)
             
             # Update thread
             thread = ctx.guild.get_thread(data['thread_id'])
             if thread:
+                # Rename thread
+                if not thread.name.startswith("[REJECTED]"):
+                    new_name = f"[REJECTED] {thread.name}"
+                    await thread.edit(name=new_name, locked=True, archived=True)
+                else:
+                    await thread.edit(locked=True, archived=True)
+
                 embed = discord.Embed(title=f"Suggestion #{suggestion_id} Rejected", description=message, color=discord.Color.red())
                 await thread.send(embed=embed)
-                await thread.edit(locked=True, archived=True)
                 await ctx.tick()
             else:
                 await ctx.send("Thread not found, status updated in DB.")
