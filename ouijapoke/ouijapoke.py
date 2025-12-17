@@ -71,6 +71,98 @@ class OuijaSettings(BaseModel):
     # Auto Poke Settings
     auto_channel_id: Optional[int] = Field(default=None, description="Channel ID for automatic pokes/summons.")
 
+# --- View Class for Pagination ---
+
+class OuijaEligibleView(discord.ui.View):
+    def __init__(self, ctx, active_pages: List[str], hibernating_pages: List[str], settings: OuijaSettings):
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.active_pages = active_pages
+        self.hibernating_pages = hibernating_pages
+        self.settings = settings
+        
+        self.page_index = 0
+        self.mode = "active" # "active" or "hibernating"
+        self.message: Optional[discord.Message] = None
+
+        self._update_buttons()
+
+    def _update_buttons(self):
+        # determine which list we are using
+        current_list = self.active_pages if self.mode == "active" else self.hibernating_pages
+        total_pages = len(current_list)
+
+        self.prev_button.disabled = self.page_index == 0
+        self.next_button.disabled = self.page_index >= total_pages - 1
+        self.counter_button.label = f"Page {self.page_index + 1}/{max(1, total_pages)}"
+
+        # Toggle button appearance
+        if self.mode == "active":
+            self.toggle_mode_button.label = "View Hibernating"
+            self.toggle_mode_button.style = discord.ButtonStyle.secondary
+        else:
+            self.toggle_mode_button.label = "View Active"
+            self.toggle_mode_button.style = discord.ButtonStyle.primary
+
+    async def get_embed(self) -> discord.Embed:
+        current_list = self.active_pages if self.mode == "active" else self.hibernating_pages
+        
+        if not current_list:
+            desc = "No members found in this category."
+        else:
+            desc = current_list[self.page_index]
+
+        if self.mode == "active":
+            embed = discord.Embed(
+                title=f"👻 Active Eligible Members",
+                description=desc,
+                color=discord.Color.dark_purple()
+            )
+            embed.set_footer(text=f"Poke > {self.settings.poke_days}d | Summon > {self.settings.summon_days}d")
+        else:
+            embed = discord.Embed(
+                title=f"💤 Hibernating Members",
+                description=desc,
+                color=discord.Color.orange()
+            )
+            embed.set_footer(text=f"Excluded from auto-actions due to Role.")
+        
+        return embed
+
+    @discord.ui.button(label="◀️", style=discord.ButtonStyle.grey, row=0)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page_index = max(0, self.page_index - 1)
+        self._update_buttons()
+        await interaction.response.edit_message(embed=await self.get_embed(), view=self)
+
+    @discord.ui.button(label="Page 1/1", style=discord.ButtonStyle.grey, disabled=True, row=0)
+    async def counter_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
+
+    @discord.ui.button(label="▶️", style=discord.ButtonStyle.grey, row=0)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        current_list = self.active_pages if self.mode == "active" else self.hibernating_pages
+        self.page_index = min(len(current_list) - 1, self.page_index + 1)
+        self._update_buttons()
+        await interaction.response.edit_message(embed=await self.get_embed(), view=self)
+
+    @discord.ui.button(label="View Hibernating", style=discord.ButtonStyle.secondary, row=1)
+    async def toggle_mode_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Switch mode
+        self.mode = "hibernating" if self.mode == "active" else "active"
+        self.page_index = 0 # Reset to first page
+        self._update_buttons()
+        await interaction.response.edit_message(embed=await self.get_embed(), view=self)
+
+    async def on_timeout(self):
+        if self.message:
+            try:
+                for item in self.children:
+                    item.disabled = True
+                await self.message.edit(view=self)
+            except:
+                pass
+
 # --- Cog Class ---
 
 class OuijaPoke(commands.Cog):
@@ -583,11 +675,10 @@ class OuijaPoke(commands.Cog):
         eligible_list.sort(key=lambda x: x['last_seen_days'], reverse=True)
         return eligible_list
     
-    async def _get_excluded_eligible_members(self, ctx: commands.Context) -> List[dict]:
-        """Retrieves data for members who are eligible by activity but excluded by role (Hibernating)."""
+    async def _get_all_hibernating_member_data(self, ctx: commands.Context) -> List[dict]:
+        """Retrieves data for ALL members who are excluded by role (Hibernating), regardless of activity."""
         guild = ctx.guild
         data = await self.config.guild(guild).all()
-        
         settings = OuijaSettings(**data["ouija_settings"])
         last_seen_data = data["last_seen"]
         excluded_roles = data["excluded_roles"]
@@ -595,39 +686,44 @@ class OuijaPoke(commands.Cog):
         poke_cutoff = self._get_inactivity_cutoff(settings.poke_days)
         summon_cutoff = self._get_inactivity_cutoff(settings.summon_days)
         
-        excluded_eligible_list = []
+        hibernating_list = []
         
-        for user_id_str, last_seen_dt_str in last_seen_data.items():
-            user_id = int(user_id_str)
-            member = guild.get_member(user_id)
+        for member in guild.members: # iterate all members to find hibernators
+            if member.bot: continue
             
-            if member is None or member.bot:
-                continue
-            
-            if not self._is_excluded(member, excluded_roles):
-                continue
-            
-            try:
-                last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
-            except ValueError:
-                continue
-
-            is_poke_eligible = last_seen_dt < poke_cutoff
-            is_summon_eligible = last_seen_dt < summon_cutoff
-            
-            if is_poke_eligible or is_summon_eligible:
-                last_seen_diff = (datetime.now(timezone.utc) - last_seen_dt).days
+            if self._is_excluded(member, excluded_roles):
+                # Calculate status
+                user_id_str = str(member.id)
+                last_seen_dt_str = last_seen_data.get(user_id_str)
+                
+                days_diff = 0
+                status_str = "Unknown"
+                
+                if last_seen_dt_str:
+                    try:
+                        last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
+                        days_diff = (datetime.now(timezone.utc) - last_seen_dt).days
+                        
+                        if last_seen_dt < summon_cutoff:
+                            status_str = "Summon Eligible"
+                        elif last_seen_dt < poke_cutoff:
+                            status_str = "Poke Eligible"
+                        else:
+                            status_str = "Active"
+                    except ValueError:
+                        pass
+                
                 excluded_names = self._get_excluded_role_names(member, excluded_roles)
                 
-                excluded_eligible_list.append({
+                hibernating_list.append({
                     "member": member,
-                    "last_seen_days": last_seen_diff,
-                    "eligible_for": ("Poke" if is_poke_eligible else "") + (" & Summon" if is_poke_eligible and is_summon_eligible else "Summon" if is_summon_eligible else ""),
+                    "last_seen_days": days_diff,
+                    "status": status_str,
                     "excluded_by": humanize_list([f"@{name}" for name in excluded_names])
                 })
-
-        excluded_eligible_list.sort(key=lambda x: x['last_seen_days'], reverse=True)
-        return excluded_eligible_list
+        
+        hibernating_list.sort(key=lambda x: x['last_seen_days'], reverse=True)
+        return hibernating_list
 
     async def _send_activity_message(self, ctx: commands.Context, member: discord.Member, message_text: str, gif_list: list[str]):
         """Sends the message text and the GIF URL as two separate messages."""
@@ -1210,16 +1306,17 @@ class OuijaPoke(commands.Cog):
     @ouijaset.command(name="eligible")
     async def ouijaset_eligible(self, ctx: commands.Context):
         """Displays a list of all members currently eligible for being poked/summoned OR excluded (hibernating)."""
-        
         settings = await self._get_settings(ctx.guild)
 
         async with ctx.typing():
             eligible_members = await self._get_all_eligible_member_data(ctx)
-            excluded_eligible_members = await self._get_excluded_eligible_members(ctx)
+            hibernating_members = await self._get_all_hibernating_member_data(ctx)
 
-        # 1. Handle main eligible list
-        if eligible_members:
-            # Prepare content for display
+        # 1. Prepare Active Pages
+        active_pages = []
+        if not eligible_members:
+            active_pages = ["🎉 **No members are currently eligible** for poking or summoning based on activity alone."]
+        else:
             entries = []
             for i, member_data in enumerate(eligible_members):
                 entry = (
@@ -1230,71 +1327,50 @@ class OuijaPoke(commands.Cog):
                     f"  ✅ Eligible For: {member_data['eligible_for']}"
                 )
                 entries.append(entry)
-
-            # Use basic page separation for clarity
-            pages = []
+            
+            # Pagination Logic
             MAX_CHARS = 1000
             current_page = ""
-            
             for entry in entries:
                 if len(current_page) + len(entry) + 2 > MAX_CHARS:
-                    pages.append(current_page)
+                    active_pages.append(current_page)
                     current_page = entry + "\n"
                 else:
                     current_page += entry + "\n"
             if current_page:
-                pages.append(current_page)
-            
-            # Send the pages
-            for page_num, content in enumerate(pages):
-                embed = discord.Embed(
-                    title=f"👻 Active Eligible Members ({len(eligible_members)} Total)",
-                    description=f"Members below are eligible for action (Sorted by inactivity):\n\n{content}",
-                    color=discord.Color.dark_purple()
-                )
-                embed.set_footer(text=f"Page {page_num + 1}/{len(pages)} (Eligible) | Poke Days: {settings.poke_days}, Summon Days: {settings.summon_days}")
-                await ctx.send(embed=embed)
-        else:
-            await ctx.send("🎉 **No members are currently eligible** for poking or summoning based on activity alone.")
+                active_pages.append(current_page)
 
-        # 2. Handle hibernating (excluded) members list
-        if excluded_eligible_members:
-            excluded_entries = []
-            for i, member_data in enumerate(excluded_eligible_members):
+        # 2. Prepare Hibernating Pages
+        hibernating_pages = []
+        if not hibernating_members:
+             hibernating_pages = ["✅ No members are currently hibernating (no roles configured or no members in those roles)."]
+        else:
+            entries = []
+            for i, member_data in enumerate(hibernating_members):
+                # We show ALL hibernating members here, active or not, but display their status.
                 entry = (
                     f"**{i+1}. {member_data['member'].display_name}** (`{member_data['member'].id}`)\n"
                     f"  ➡️ Last Active: **{member_data['last_seen_days']} days ago**\n"
                     f"  🚫 Excluded By: **{member_data['excluded_by']}**\n"
-                    f"  ⚠️ *Would be Eligible For: {member_data['eligible_for']}*"
+                    f"  ℹ️ Status: {member_data['status']}"
                 )
-                excluded_entries.append(entry)
+                entries.append(entry)
 
-            # Use basic page separation for clarity
-            excluded_pages = []
             MAX_CHARS = 1000
             current_page = ""
-            
-            for entry in excluded_entries:
+            for entry in entries:
                 if len(current_page) + len(entry) + 2 > MAX_CHARS:
-                    excluded_pages.append(current_page)
+                    hibernating_pages.append(current_page)
                     current_page = entry + "\n"
                 else:
                     current_page += entry + "\n"
             if current_page:
-                excluded_pages.append(current_page)
-            
-            # Send the excluded pages
-            for page_num, content in enumerate(excluded_pages):
-                embed = discord.Embed(
-                    title=f"💤 Hibernating Eligible Members ({len(excluded_eligible_members)} Total)",
-                    description=f"Members below are inactive enough, but **HIBERNATING** due to role:\n\n{content}",
-                    color=discord.Color.orange()
-                )
-                embed.set_footer(text=f"Page {page_num + 1}/{len(excluded_pages)} (Hibernating) | Total Hibernating: {len(excluded_eligible_members)}")
-                await ctx.send(embed=embed)
-        elif eligible_members:
-             # Only send this message if we sent the first embed, to keep the output clean
-             await ctx.send("✅ No members are currently hibernating who would otherwise be eligible for action.")
+                hibernating_pages.append(current_page)
+
+        # 3. Launch View
+        view = OuijaEligibleView(ctx, active_pages, hibernating_pages, settings)
+        embed = await view.get_embed()
+        view.message = await ctx.send(embed=embed, view=view)
 
     # --- Status Listing (New Feature) ---
 
