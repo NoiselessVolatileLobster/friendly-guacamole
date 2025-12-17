@@ -159,14 +159,14 @@ class Suggestions(commands.Cog):
         emoji_up = await self.config.guild(guild).emoji_up()
         emoji_down = await self.config.guild(guild).emoji_down()
 
-        # 1. Create Main Channel Embed
+        # 1. Create Main Channel Embed (Anonymous)
         embed = discord.Embed(
             title=f"Suggestion {s_id} - {title}",
             description=text,
             color=discord.Color.blue(),
             timestamp=datetime.datetime.now()
         )
-        embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
+        # REMOVED: embed.set_author(...) to keep it anonymous
         embed.set_footer(text="Check the pinned message to make a suggestion.")
 
         channel = guild.get_channel(channel_id)
@@ -193,7 +193,7 @@ class Suggestions(commands.Cog):
             "content": text,
             "timestamp": datetime.datetime.now().timestamp(),
             "thread_id": thread.id,
-            "message_id": msg.id, # ID of the message in the main channel
+            "message_id": msg.id, 
             "status": "open",
             "upvotes": [],
             "downvotes": []
@@ -434,25 +434,13 @@ Current ID:     {cfg['next_id']}
 
         embed = discord.Embed(title="Suggestions Dashboard", color=discord.Color.gold())
         
-        # Build Open List with Links and Stats
         if open_list:
             lines = []
             for s in open_list:
-                # Calculate stats
                 ups = len(s['upvotes'])
                 downs = len(s['downvotes'])
                 
-                # Get Link (Jump URL)
-                # We can construct it if we have guild_id, channel_id, message_id
-                # https://discord.com/channels/GUILD_ID/CHANNEL_ID/MESSAGE_ID
-                # We need to fetch channel ID from config again to be safe, or iterate
-                # However, for speed, we can try to fetch the object or just build the string.
-                # Since we are inside the command, we have ctx.guild.id
-                
-                # We need the channel ID where the message lives.
-                # The config stores it as a single channel for the whole guild.
                 chan_id = await self.config.guild(ctx.guild).channel_id()
-                
                 link = f"https://discord.com/channels/{ctx.guild.id}/{chan_id}/{s['message_id']}"
                 
                 line = (
