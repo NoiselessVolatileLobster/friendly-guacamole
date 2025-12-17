@@ -1,0 +1,10 @@
+{
+    "author": ["NoiselessVolatileLobster"],
+    "description": "Scans server roles and channels for elevated permissions granted to non-admin/non-mod users.",
+    "install_msg": "StrangerDanger has been installed. Run `[p]strangerdanger listpermissions` to see what you can scan for, or `[p]strangerdanger scan` to run a full check.",
+    "name": "StrangerDanger",
+    "short": "Permission auditing tool.",
+    "permissions": ["manage_guild"],
+    "requirements": [],
+    "tags": ["permissions", "audit", "security"]
+}
