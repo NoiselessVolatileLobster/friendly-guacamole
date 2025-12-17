@@ -232,7 +232,7 @@ class Suggestions(commands.Cog):
                 currency = await bank.get_currency_name(guild)
                 reward_msg = f"\n\n💰 **Reward:** You received {create_amt} {currency} for submitting a suggestion!"
             except:
-                pass # Fail silently if bank errors
+                pass
 
         try:
             await interaction.user.send(
@@ -244,28 +244,27 @@ class Suggestions(commands.Cog):
         
         await interaction.response.send_message(f"Suggestion created in {thread.mention}", ephemeral=True)
 
-    async def distribute_approval_rewards(self, guild, data, thread):
+    async def distribute_rewards(self, guild, data, thread, status):
         """Handles distributing credits for Approval, Voting, and Thread Participation."""
         currency = await bank.get_currency_name(guild)
         logs = []
 
-        # 1. Author Reward
-        author_amt = await self.config.guild(guild).credits_approve()
-        if author_amt > 0:
-            author = guild.get_member(data['author_id'])
-            if author:
-                try:
-                    await bank.deposit_credits(author, author_amt)
-                    logs.append(f"Author {author.mention}: +{author_amt} {currency}")
-                except: pass
+        # 1. Author Reward (ONLY if Approved)
+        if status == 'approved':
+            author_amt = await self.config.guild(guild).credits_approve()
+            if author_amt > 0:
+                author = guild.get_member(data['author_id'])
+                if author:
+                    try:
+                        await bank.deposit_credits(author, author_amt)
+                        logs.append(f"Author {author.mention}: +{author_amt} {currency} (Approval)")
+                    except: pass
 
-        # 2. Voter Reward (Union of up and down votes)
+        # 2. Voter Reward (Always, if configured)
         vote_amt = await self.config.guild(guild).credits_vote()
         if vote_amt > 0:
             voters = set(data['upvotes']) | set(data['downvotes'])
             for user_id in voters:
-                # Optional: prevent author from getting voter reward on own suggestion? 
-                # Keeping simple: if they voted, they get paid.
                 member = guild.get_member(user_id)
                 if member:
                     try:
@@ -274,14 +273,11 @@ class Suggestions(commands.Cog):
             if voters:
                 logs.append(f"{len(voters)} Voters: +{vote_amt} {currency} each")
 
-        # 3. Thread Participation Reward
+        # 3. Thread Participation Reward (Always, if configured)
         thread_amt = await self.config.guild(guild).credits_thread()
         min_msgs = await self.config.guild(guild).thread_min_msgs()
         
         if thread_amt > 0 and thread:
-            # Count messages
-            # Note: Fetching history can be slow on massive threads, but suggestion threads are usually small.
-            # Limiting to 500 to prevent API abuse/timeouts
             counter = Counter()
             try:
                 async for message in thread.history(limit=500):
@@ -364,13 +360,13 @@ class Suggestions(commands.Cog):
 
     @ss_credits.command(name="vote")
     async def ss_cred_vote(self, ctx, amount: int):
-        """Set credits given to users who voted (on approval)."""
+        """Set credits given to users who voted (on approval/rejection)."""
         await self.config.guild(ctx.guild).credits_vote.set(amount)
-        await ctx.send(f"Reward for **voting** (distributed on approval) set to {amount}.")
+        await ctx.send(f"Reward for **voting** (distributed on close) set to {amount}.")
 
     @ss_credits.command(name="thread")
     async def ss_cred_thread(self, ctx, amount: int, min_messages: int = 5):
-        """Set credits given to users who chatted in the thread (on approval)."""
+        """Set credits given to users who chatted in the thread (on approval/rejection)."""
         await self.config.guild(ctx.guild).credits_thread.set(amount)
         await self.config.guild(ctx.guild).thread_min_msgs.set(min_messages)
         await ctx.send(f"Reward for **thread participation** set to {amount} (Min messages: {min_messages}).")
@@ -415,7 +411,6 @@ Thread Chat:    {cfg['credits_thread']} (Min Msgs: {cfg['thread_min_msgs']})
             
             await self.update_suggestion_message(ctx.guild, data)
 
-            # Update Thread
             thread = ctx.guild.get_thread(data['thread_id'])
             reward_logs = []
             
@@ -426,23 +421,21 @@ Thread Chat:    {cfg['credits_thread']} (Min Msgs: {cfg['thread_min_msgs']})
                 else:
                     await thread.edit(locked=True, archived=True)
                 
-                # Distribute Economy Rewards
-                reward_logs = await self.distribute_approval_rewards(ctx.guild, data, thread)
+                # Distribute Rewards (Status = approved)
+                reward_logs = await self.distribute_rewards(ctx.guild, data, thread, status='approved')
                     
                 embed = discord.Embed(title=f"Suggestion #{suggestion_id} Approved", description=message, color=discord.Color.green())
                 await thread.send(embed=embed)
                 await ctx.tick()
             else:
-                await ctx.send("Thread not found, status updated in DB. (Rewards not distributed due to missing thread context)")
+                await ctx.send("Thread not found, status updated in DB. (Rewards not distributed)")
 
-            # DM User
             try:
                 member = ctx.guild.get_member(data['author_id'])
                 if member:
                     chan_id = await self.config.guild(ctx.guild).channel_id()
                     jump_url = f"https://discord.com/channels/{ctx.guild.id}/{chan_id}/{data['message_id']}"
                     
-                    # Add reward summary to DM
                     reward_text = ""
                     if reward_logs:
                         reward_text = "\n\n**Rewards Distributed:**\n" + "\n".join(reward_logs)
@@ -455,7 +448,6 @@ Thread Chat:    {cfg['credits_thread']} (Min Msgs: {cfg['thread_min_msgs']})
             except:
                 pass
             
-            # Optional: Post reward logs to context channel for transparency
             if reward_logs:
                 await ctx.send(box("\n".join(reward_logs), lang="yaml"))
 
@@ -474,6 +466,8 @@ Thread Chat:    {cfg['credits_thread']} (Min Msgs: {cfg['thread_min_msgs']})
             await self.update_suggestion_message(ctx.guild, data)
             
             thread = ctx.guild.get_thread(data['thread_id'])
+            reward_logs = []
+
             if thread:
                 if not thread.name.startswith("[REJECTED]"):
                     new_name = f"[REJECTED] {thread.name}"
@@ -481,25 +475,36 @@ Thread Chat:    {cfg['credits_thread']} (Min Msgs: {cfg['thread_min_msgs']})
                 else:
                     await thread.edit(locked=True, archived=True)
 
+                # Distribute Rewards (Status = rejected)
+                # Voters and thread participants still get paid.
+                reward_logs = await self.distribute_rewards(ctx.guild, data, thread, status='rejected')
+
                 embed = discord.Embed(title=f"Suggestion #{suggestion_id} Rejected", description=message, color=discord.Color.red())
                 await thread.send(embed=embed)
                 await ctx.tick()
             else:
-                await ctx.send("Thread not found, status updated in DB.")
+                await ctx.send("Thread not found, status updated in DB. (Rewards not distributed)")
 
-            # DM User
             try:
                 member = ctx.guild.get_member(data['author_id'])
                 if member:
                     chan_id = await self.config.guild(ctx.guild).channel_id()
                     jump_url = f"https://discord.com/channels/{ctx.guild.id}/{chan_id}/{data['message_id']}"
+                    
+                    reward_text = ""
+                    if reward_logs:
+                        reward_text = "\n\n**Rewards Distributed:**\n" + "\n".join(reward_logs)
+
                     await member.send(
                         f"Your suggestion #{suggestion_id} has been **REJECTED**.\n"
-                        f"**Reason:** {message}\n\n"
+                        f"**Reason:** {message}{reward_text}\n\n"
                         f"Link: {jump_url}"
                     )
             except:
                 pass
+
+            if reward_logs:
+                await ctx.send(box("\n".join(reward_logs), lang="yaml"))
 
     @suggestionsset.command(name="resetstats")
     async def ss_resetstats(self, ctx):
