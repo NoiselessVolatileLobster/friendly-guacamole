@@ -349,7 +349,11 @@ class Gortle(commands.Cog):
             if thumb:
                 embed.set_thumbnail(url=thumb)
                 
-            await target_channel.send(content=mention, embed=embed)
+            await target_channel.send(
+                content=mention, 
+                embed=embed, 
+                allowed_mentions=discord.AllowedMentions(roles=True)
+            )
 
     async def check_weekly_role(self, now):
         target_day = await self.config.weekly_role_day()
