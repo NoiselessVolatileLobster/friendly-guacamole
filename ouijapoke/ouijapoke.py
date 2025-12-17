@@ -755,85 +755,45 @@ class OuijaPoke(commands.Cog):
 
     # --- User Commands ---
 
-    @commands.group(invoke_without_command=True, aliases=["ouija"])
-    async def ouijapoke(self, ctx: commands.Context):
-        """Commands for OuijaPoke."""
-        await ctx.send_help(ctx.command)
-    
     @commands.command(name="poke")
     async def poke(self, ctx: commands.Context):
-        """Pokes a random inactive member."""
-        try:
-            await self.ouijapoke_random(ctx)
-        finally:
-            if ctx.channel.permissions_for(ctx.me).manage_messages:
-                await ctx.message.delete()
-            else:
-                await ctx.send("I need the `Manage Messages` permission to delete your command message.", delete_after=10)
+        """Pokes a random eligible member."""
+        async with ctx.typing():
+            try:
+                settings = await self._get_settings(ctx.guild)
+                p1_members, p2_members = await self._get_eligible_members(ctx.guild, settings.poke_days, "last_poked")
+                member_to_poke = random.choice(p1_members) if p1_members else (random.choice(p2_members) if p2_members else None)
+                
+                if member_to_poke is None:
+                    return await ctx.send(f"No one is eligible to be poked (needs >{settings.poke_days} days of inactivity).")
+
+                await self._set_last_action_time(ctx.guild, member_to_poke.id, "last_poked")
+                await self._send_activity_message(ctx, member_to_poke, settings.poke_message, settings.poke_gifs)
+            finally:
+                if ctx.channel.permissions_for(ctx.me).manage_messages:
+                    await ctx.message.delete()
+                else:
+                    await ctx.send("I need the `Manage Messages` permission to delete your command message.", delete_after=10)
 
     @commands.command(name="summon")
     async def summon(self, ctx: commands.Context):
-        """Summons a random inactive member."""
-        try:
-            await self.ouijasummon_random(ctx)
-        finally:
-            if ctx.channel.permissions_for(ctx.me).manage_messages:
-                await ctx.message.delete()
-            else:
-                await ctx.send("I need the `Manage Messages` permission to delete your command message.", delete_after=10)
-
-    @ouijapoke.command(name="check")
-    async def ouijapoke_check(self, ctx: commands.Context):
-        """Shows your own inactivity status."""
-        user_id = str(ctx.author.id)
-        data = await self.config.guild(ctx.guild).last_seen()
-        last_seen_dt_str = data.get(user_id)
-
-        try:
-            if not last_seen_dt_str:
-                return await ctx.send("I haven't recorded any activity for you yet! Say something now!")
-
-            last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
-            now_dt = datetime.now(timezone.utc)
-            days = (now_dt - last_seen_dt).days
-            
-            message = (
-                f"The Ouija Planchette last saw you move **{days} days** ago. "
-                f"(On {last_seen_dt.strftime('%Y-%m-%d %H:%M:%S UTC')})"
-            )
-            await ctx.send(message)
-        finally:
-            if ctx.channel.permissions_for(ctx.me).manage_messages:
-                await ctx.message.delete()
-
-    @ouijapoke.command(name="poke") 
-    async def ouijapoke_random(self, ctx: commands.Context):
-        """Pokes a random eligible member."""
-        async with ctx.typing():
-            settings = await self._get_settings(ctx.guild)
-            p1_members, p2_members = await self._get_eligible_members(ctx.guild, settings.poke_days, "last_poked")
-            member_to_poke = random.choice(p1_members) if p1_members else (random.choice(p2_members) if p2_members else None)
-            
-            if member_to_poke is None:
-                return await ctx.send(f"No one is eligible to be poked (needs >{settings.poke_days} days of inactivity).")
-
-            await self._set_last_action_time(ctx.guild, member_to_poke.id, "last_poked")
-            await self._send_activity_message(ctx, member_to_poke, settings.poke_message, settings.poke_gifs)
-    
-    @ouijapoke.command(name="summon")
-    async def ouijasummon_random(self, ctx: commands.Context):
         """Summons a random eligible member."""
         async with ctx.typing():
-            settings = await self._get_settings(ctx.guild)
-            p1_members, p2_members = await self._get_eligible_members(ctx.guild, settings.summon_days, "last_summoned")
-            member_to_summon = random.choice(p1_members) if p1_members else (random.choice(p2_members) if p2_members else None)
-            
-            if member_to_summon is None:
-                return await ctx.send(f"No one is eligible to be summoned (needs >{settings.summon_days} days of inactivity).")
+            try:
+                settings = await self._get_settings(ctx.guild)
+                p1_members, p2_members = await self._get_eligible_members(ctx.guild, settings.summon_days, "last_summoned")
+                member_to_summon = random.choice(p1_members) if p1_members else (random.choice(p2_members) if p2_members else None)
+                
+                if member_to_summon is None:
+                    return await ctx.send(f"No one is eligible to be summoned (needs >{settings.summon_days} days of inactivity).")
 
-            await self._set_last_action_time(ctx.guild, member_to_summon.id, "last_summoned")
-            await self._send_activity_message(ctx, member_to_summon, settings.summon_message, settings.summon_gifs)
-
+                await self._set_last_action_time(ctx.guild, member_to_summon.id, "last_summoned")
+                await self._send_activity_message(ctx, member_to_summon, settings.summon_message, settings.summon_gifs)
+            finally:
+                if ctx.channel.permissions_for(ctx.me).manage_messages:
+                    await ctx.message.delete()
+                else:
+                    await ctx.send("I need the `Manage Messages` permission to delete your command message.", delete_after=10)
 
     # --- Admin Commands (Settings) ---
 
