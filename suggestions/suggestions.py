@@ -70,7 +70,6 @@ class VoteView(discord.ui.View):
     def __init__(self, suggestion_id, up_label, down_label, up_emoji, down_emoji, disabled=False):
         super().__init__(timeout=None)
         
-        # We manually add items so we don't attach callbacks, preventing double-triggering.
         self.add_item(discord.ui.Button(
             style=discord.ButtonStyle.success,
             label=str(up_label),
@@ -126,10 +125,8 @@ class Suggestions(commands.Cog):
         if not channel: return
 
         try:
-            thread = guild.get_thread(data['thread_id'])
-            if not thread:
-                thread = await guild.fetch_channel(data['thread_id'])
-            message = await thread.fetch_message(data['message_id'])
+            # Message is now in the main channel, not the thread
+            message = await channel.fetch_message(data['message_id'])
         except:
             return
 
@@ -140,7 +137,6 @@ class Suggestions(commands.Cog):
         down_count = len(data['downvotes'])
         is_closed = data['status'] != 'open'
 
-        # Create fresh view with correct stats
         view = VoteView(
             suggestion_id=data['id'],
             up_label=up_count,
@@ -163,27 +159,32 @@ class Suggestions(commands.Cog):
         emoji_up = await self.config.guild(guild).emoji_up()
         emoji_down = await self.config.guild(guild).emoji_down()
 
+        # 1. Create Main Channel Embed
         embed = discord.Embed(
-            title=f"#{s_id} - {title}",
+            title=f"Suggestion {s_id} - {title}",
             description=text,
             color=discord.Color.blue(),
             timestamp=datetime.datetime.now()
         )
         embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
-        embed.set_footer(text=f"ID: {s_id}")
+        embed.set_footer(text="Check the pinned message to make a suggestion.")
 
         channel = guild.get_channel(channel_id)
         if not channel:
             await interaction.response.send_message("Configuration error: Channel not found.", ephemeral=True)
             return
 
-        thread_name = f"{s_id} - {title}"
-        thread = await channel.create_thread(name=thread_name, type=discord.ChannelType.public_thread)
-        
-        # Initial View
+        # 2. Post Embed with Buttons to Channel
         view = VoteView(s_id, 0, 0, emoji_up, emoji_down)
+        msg = await channel.send(embed=embed, view=view)
 
-        msg = await thread.send(embed=embed, view=view)
+        # 3. Create Thread attached to that message
+        thread_name = f"{s_id} - {title}"
+        thread = await msg.create_thread(name=thread_name)
+
+        # 4. Post Text-Only version inside thread
+        thread_content = f"## Suggestion {s_id} - {title}\n{text}"
+        await thread.send(content=thread_content)
         
         s_data = {
             "id": s_id,
@@ -192,7 +193,7 @@ class Suggestions(commands.Cog):
             "content": text,
             "timestamp": datetime.datetime.now().timestamp(),
             "thread_id": thread.id,
-            "message_id": msg.id,
+            "message_id": msg.id, # ID of the message in the main channel
             "status": "open",
             "upvotes": [],
             "downvotes": []
@@ -280,12 +281,15 @@ Current ID:     {cfg['next_id']}
             data['status'] = 'approved'
             suggestions[suggestion_id] = data
             
+            # Update the main message
+            await self.update_suggestion_message(ctx.guild, data)
+
+            # Update thread
             thread = ctx.guild.get_thread(data['thread_id'])
             if thread:
                 embed = discord.Embed(title=f"Suggestion #{suggestion_id} Approved", description=message, color=discord.Color.green())
                 await thread.send(embed=embed)
                 await thread.edit(locked=True, archived=True)
-                await self.update_suggestion_message(ctx.guild, data)
                 await ctx.tick()
             else:
                 await ctx.send("Thread not found, status updated in DB.")
@@ -301,12 +305,15 @@ Current ID:     {cfg['next_id']}
             data['status'] = 'rejected'
             suggestions[suggestion_id] = data
             
+            # Update the main message
+            await self.update_suggestion_message(ctx.guild, data)
+            
+            # Update thread
             thread = ctx.guild.get_thread(data['thread_id'])
             if thread:
                 embed = discord.Embed(title=f"Suggestion #{suggestion_id} Rejected", description=message, color=discord.Color.red())
                 await thread.send(embed=embed)
                 await thread.edit(locked=True, archived=True)
-                await self.update_suggestion_message(ctx.guild, data)
                 await ctx.tick()
             else:
                 await ctx.send("Thread not found, status updated in DB.")
@@ -445,7 +452,6 @@ Current ID:     {cfg['next_id']}
             
         cid = interaction.data.get("custom_id", "")
         
-        # New format: "suggestion:vote:up:{id}"
         if cid.startswith("suggestion:vote:"):
             try:
                 parts = cid.split(":")
@@ -454,7 +460,6 @@ Current ID:     {cfg['next_id']}
                 
                 guild = interaction.guild
                 
-                # Check levels
                 req_level = await self.config.guild(guild).req_level_vote()
                 if req_level > 0:
                     user_level = await self.get_user_level(interaction.user)
@@ -503,11 +508,7 @@ Current ID:     {cfg['next_id']}
                     data['downvotes'] = list(downs)
                     suggestions[suggestion_id] = data
 
-                    # Defer update so we can edit the message
-                    # But we need to update the view on the message
-                    # We can use our helper method
                     await self.update_suggestion_message(guild, data)
                     await interaction.response.send_message(msg_txt, ephemeral=True)
             except Exception as e:
-                # Log or ignore invalid IDs
                 pass
