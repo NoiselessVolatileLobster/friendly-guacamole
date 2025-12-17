@@ -484,8 +484,14 @@ class Gortle(commands.Cog):
         state = await self.config.game_state()
         solved_indices = set(state['solved_indices'])
         
+        # FIX START: Pre-calculate counts of letters that are ALREADY locked (Green)
+        # This prevents "Green" letters from previous rounds from counting as "Floating" knowledge.
+        locked_chars = Counter()
+        for idx in solved_indices:
+            locked_chars[solution[idx]] += 1
+        # FIX END
+
         # Track how many of each letter we have matched IN THIS GUESS
-        # This is critical for double-letter logic (e.g. matching 2nd 'A' vs 1st 'A')
         matched_in_guess = Counter()
         
         guess_visual = [""] * 6
@@ -506,20 +512,23 @@ class Gortle(commands.Cog):
                 
                 if i not in solved_indices:
                     # Determine if this is a "new" instance or an "upgrade"
-                    # k is the K-th instance of 'char' we found in this guess
                     k = matched_in_guess[char]
-                    current_known = state['found_letters'].count(char)
                     
-                    if current_known >= k:
-                        # We already knew about K instances. Since this is Green, it's an Upgrade.
+                    # FIX START: Calculate how many "Floating" (Yellow) instances of this char we knew about
+                    total_known = state['found_letters'].count(char)
+                    locked_count = locked_chars[char]
+                    floating_known = max(0, total_known - locked_count)
+                    
+                    if floating_known >= k:
+                        # We knew about 'k' floating instances. This Green consumes one.
                         # Upgrading from Yellow -> Green = 1 point
                         points += 1
-                        # Do NOT append to found_letters (count remains same)
                     else:
-                        # We didn't know about K instances. New discovery.
+                        # We didn't know about this many instances. New discovery.
                         # Finding new Green = 2 points
                         points += 2
                         state['found_letters'].append(char)
+                    # FIX END
                     
                     state['solved_indices'].append(i)
                 else:
@@ -538,7 +547,7 @@ class Gortle(commands.Cog):
                 k = matched_in_guess[char]
                 current_known = state['found_letters'].count(char)
                 
-                # Point Logic
+                # Point Logic (Yellow logic remains mostly same, as it deals with total quantity)
                 if current_known >= k:
                     # We already knew about K instances of this letter.
                     # Since this is just Yellow (re-finding), NO POINTS.
@@ -557,6 +566,7 @@ class Gortle(commands.Cog):
             "user_id": message.author.id,
             "word": guess
         }
+        # ... rest of the function remains identical ...
         if 'history' not in state:
             state['history'] = []
         state['history'].append(history_entry)
@@ -567,7 +577,7 @@ class Gortle(commands.Cog):
             current_guessed.add(c)
         state['guessed_letters'] = sorted(list(current_guessed))
         
-        # Update Round Scores (for later payout)
+        # Update Round Scores
         round_scores = state.get('round_scores', {})
         str_uid = str(message.author.id)
         round_scores[str_uid] = round_scores.get(str_uid, 0) + points
@@ -613,11 +623,9 @@ class Gortle(commands.Cog):
 
         embed = discord.Embed(title=f"Gortle #{game_num}", description=description, color=discord.Color.blue())
         
-        # Get total round points for the embed
         total_round_points = round_scores.get(str_uid, 0)
         
         embed.add_field(name="Points Gained", value=f"+{points} ({total_round_points} points this round)", inline=True)
-        # Use zero-width space for title to effectively remove it
         embed.add_field(name="\u200b", value=keyboard_view, inline=False)
         
         thumb = await self.config.guild(message.guild).thumbnail_url()
@@ -629,7 +637,6 @@ class Gortle(commands.Cog):
         if guess == solution:
             await self.handle_win(message.author, message.channel, game_num)
         elif len(state['history']) >= self.MAX_GUESSES:
-            # Game Over - Loss
             await self.handle_loss(message.channel, solution)
 
     async def handle_win(self, winner, channel, game_num):
