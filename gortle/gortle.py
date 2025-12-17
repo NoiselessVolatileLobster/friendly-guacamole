@@ -188,11 +188,7 @@ class Gortle(commands.Cog):
         interval_minutes = 60 / freq
         current_minute = now.minute
         
-        # Calculate which 'slot' we are in or passed
-        # e.g. freq=2 (30 min), current=15. Slots: 0, 30. Next: 30.
-        # e.g. freq=2 (30 min), current=45. Slots: 0, 30. Next: 00 (next hour).
-        
-        next_slot_index = math.ceil((current_minute + 1) / interval_minutes) # +1 to avoid immediate re-trigger if logic runs fast
+        next_slot_index = math.ceil((current_minute + 1) / interval_minutes) 
         next_minute = int(next_slot_index * interval_minutes)
         
         if next_minute >= 60:
@@ -219,19 +215,14 @@ class Gortle(commands.Cog):
                 next_game_ts = await self.config.next_game_timestamp()
                 auto_freq = await self.config.schedule_auto_freq()
                 
-                # Check Sleep Status:
-                # If we have 3 or more games with 0 guesses, we are "asleep".
-                # We do NOT schedule new games until a manual game is started.
+                # Check Sleep Status
                 sleep_streak = await self.config.consecutive_no_guesses()
                 
                 if auto_freq > 0 and sleep_streak < 3:
                     if next_game_ts == 0 or timestamp >= next_game_ts:
-                        # Swap order: Calculate next time FIRST, then start game.
-                        # This allows start_new_game to see the valid FUTURE timestamp for the embed.
                         new_next_ts = self._calculate_next_auto_time(now, auto_freq)
                         await self.config.next_game_timestamp.set(new_next_ts)
 
-                        # Only start if next_game_ts was actually set to a valid past time (not 0 initialization)
                         if next_game_ts != 0:
                             await self.start_new_game(manual=False)
 
@@ -277,12 +268,10 @@ class Gortle(commands.Cog):
                 history = state.get("history", [])
                 
                 if len(history) == 0:
-                    # No guesses made, increment sleep counter
                     current_streak = await self.config.consecutive_no_guesses() + 1
                     await self.config.consecutive_no_guesses.set(current_streak)
                     
                     if current_streak >= 3 and not manual:
-                        # Go to sleep
                         prefixes = await self.bot.get_valid_prefixes(target_channel.guild)
                         prefix = prefixes[0] if prefixes else "[p]"
                         
@@ -296,27 +285,22 @@ class Gortle(commands.Cog):
                             
                         await target_channel.send(embed=sleep_embed)
                         
-                        # Disable auto-scheduler and mark inactive
                         await self.config.next_game_timestamp.set(0)
                         await self.config.game_active.set(False)
                         return
                 else:
-                    # Guesses were made, reset counter
                     await self.config.consecutive_no_guesses.set(0)
 
-            # If starting manually, always wake up (reset sleep counter)
             if manual:
                 await self.config.consecutive_no_guesses.set(0)
 
             # Pick new word
             used = await self.config.used_words()
-            # Filter: unused AND exactly 6 chars long
             available = [w for w in self.solutions if w not in used and len(w) == 6]
             
             if not available:
                 used = []
                 await self.config.used_words.set([])
-                # Reset and ensure we still filter by length
                 available = [w for w in self.solutions if len(w) == 6]
 
             if not available:
@@ -340,7 +324,7 @@ class Gortle(commands.Cog):
                 "guessed_letters": [],
                 "guesses_made": 0,
                 "history": [],
-                "round_scores": {} # Reset round scores
+                "round_scores": {}
             }
             await self.config.game_state.set(new_state)
 
@@ -350,19 +334,15 @@ class Gortle(commands.Cog):
             
             keyboard_view = self._get_keyboard_visual(new_state, new_word)
 
-            # Add expiration timestamp if schedule is active
             next_ts = await self.config.next_game_timestamp()
             now_ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
             
-            # Note: If we just woke up from sleep manually, next_ts might be 0 here because
-            # the loop hasn't run yet to set the new schedule. That is intended behavior.
             if next_ts > now_ts:
                  keyboard_view += f"\n\n**Next Game:** <t:{next_ts}:R>"
             
             desc = "Guess the 6-letter word by typing `!word`!"
             
             embed = discord.Embed(title=f"New Gortle Started! (#{game_num})", description=desc, color=discord.Color.green())
-            # Use zero-width space for title to effectively remove it
             embed.add_field(name="\u200b", value=keyboard_view, inline=False)
             
             thumb = await self.config.guild(target_channel.guild).thumbnail_url()
@@ -457,7 +437,6 @@ class Gortle(commands.Cog):
         reset_ts = await self.config.cooldown_reset_timestamp()
         now = datetime.datetime.now(datetime.timezone.utc).timestamp()
         
-        # If last guess was before the last reset, ignore it (treat as no cooldown)
         if last_guess < reset_ts:
             last_guess = 0
         
@@ -484,12 +463,10 @@ class Gortle(commands.Cog):
         state = await self.config.game_state()
         solved_indices = set(state['solved_indices'])
         
-        # FIX START: Pre-calculate counts of letters that are ALREADY locked (Green)
-        # This prevents "Green" letters from previous rounds from counting as "Floating" knowledge.
+        # Pre-calculate counts of letters that are ALREADY locked (Green)
         locked_chars = Counter()
         for idx in solved_indices:
             locked_chars[solution[idx]] += 1
-        # FIX END
 
         # Track how many of each letter we have matched IN THIS GUESS
         matched_in_guess = Counter()
@@ -514,7 +491,7 @@ class Gortle(commands.Cog):
                     # Determine if this is a "new" instance or an "upgrade"
                     k = matched_in_guess[char]
                     
-                    # FIX START: Calculate how many "Floating" (Yellow) instances of this char we knew about
+                    # Calculate how many "Floating" (Yellow) instances of this char we knew about
                     total_known = state['found_letters'].count(char)
                     locked_count = locked_chars[char]
                     floating_known = max(0, total_known - locked_count)
@@ -528,7 +505,6 @@ class Gortle(commands.Cog):
                         # Finding new Green = 2 points
                         points += 2
                         state['found_letters'].append(char)
-                    # FIX END
                     
                     state['solved_indices'].append(i)
                 else:
@@ -547,7 +523,7 @@ class Gortle(commands.Cog):
                 k = matched_in_guess[char]
                 current_known = state['found_letters'].count(char)
                 
-                # Point Logic (Yellow logic remains mostly same, as it deals with total quantity)
+                # Point Logic
                 if current_known >= k:
                     # We already knew about K instances of this letter.
                     # Since this is just Yellow (re-finding), NO POINTS.
@@ -566,7 +542,6 @@ class Gortle(commands.Cog):
             "user_id": message.author.id,
             "word": guess
         }
-        # ... rest of the function remains identical ...
         if 'history' not in state:
             state['history'] = []
         state['history'].append(history_entry)
@@ -577,7 +552,7 @@ class Gortle(commands.Cog):
             current_guessed.add(c)
         state['guessed_letters'] = sorted(list(current_guessed))
         
-        # Update Round Scores
+        # Update Round Scores (for later payout)
         round_scores = state.get('round_scores', {})
         str_uid = str(message.author.id)
         round_scores[str_uid] = round_scores.get(str_uid, 0) + points
@@ -623,6 +598,7 @@ class Gortle(commands.Cog):
 
         embed = discord.Embed(title=f"Gortle #{game_num}", description=description, color=discord.Color.blue())
         
+        # Get total round points for the embed
         total_round_points = round_scores.get(str_uid, 0)
         
         embed.add_field(name="Points Gained", value=f"+{points} ({total_round_points} points this round)", inline=True)
@@ -637,10 +613,10 @@ class Gortle(commands.Cog):
         if guess == solution:
             await self.handle_win(message.author, message.channel, game_num)
         elif len(state['history']) >= self.MAX_GUESSES:
+            # Game Over - Loss
             await self.handle_loss(message.channel, solution)
 
     async def handle_win(self, winner, channel, game_num):
-        # Game finished, so reset streak of no-guesses
         await self.config.consecutive_no_guesses.set(0)
         await self.config.game_active.set(False)
         
@@ -648,19 +624,16 @@ class Gortle(commands.Cog):
         round_scores = state.get('round_scores', {})
         participants = set()
         
-        # Identify participants from history
         for entry in state.get('history', []):
             participants.add(entry['user_id'])
             
-        # Collect results for display and sort
         results = []
         
         for uid in participants:
             member = channel.guild.get_member(uid)
             if not member:
                 continue
-                
-            # 1. Award Participation Points (+2)
+            
             await self.config.member(member).score.set(
                 await self.config.member(member).score() + 2
             )
@@ -668,45 +641,32 @@ class Gortle(commands.Cog):
                 await self.config.member(member).weekly_score() + 2
             )
             
-            # 2. Calculate Payout
-            # Get points earned during guesses
             guess_points = round_scores.get(str(uid), 0)
-            
-            # Total Round Points = Guess Points + 2 (Participation)
             total_round_points = guess_points + 2
-            
             results.append((total_round_points, member))
             
-            # Credits = Total Points * 10
             credits_to_give = total_round_points * self.CREDITS_PER_POINT
-            
             if credits_to_give > 0:
                 try:
                     await bank.deposit_credits(member, credits_to_give)
                 except Exception as e:
                     print(f"Failed to deposit credits for {member}: {e}")
 
-        # Sort results ascending by points (lowest first)
         results.sort(key=lambda x: x[0])
         
-        # Generate display string
         score_lines = []
         for points, member in results:
             score_lines.append(f"{member.display_name}: **{points}**")
             
         score_str = "\n".join(score_lines)
 
-        # Currency name for display
         try:
             currency = await bank.get_currency_name(channel.guild)
         except:
             currency = "credits"
 
-        # Fetch custom title emojis (Case-insensitive)
         yay2 = self._find_emoji("yay2")
         yay = self._find_emoji("yay")
-        
-        # Use str() for emoji objects to get proper ID format, else fallback to text
         yay2_str = str(yay2) if yay2 else ":yay2:"
         yay_str = str(yay) if yay else ":yay:"
 
@@ -727,7 +687,6 @@ class Gortle(commands.Cog):
         await channel.send(embed=embed)
 
     async def handle_loss(self, channel, solution):
-        # Game finished (lost), so reset streak of no-guesses
         await self.config.consecutive_no_guesses.set(0)
         await self.config.game_active.set(False)
         embed = discord.Embed(title="Gortle Failed!", 
@@ -797,6 +756,52 @@ class Gortle(commands.Cog):
     async def gortleset(self, ctx):
         """Configuration for Gortle."""
         pass
+
+    @gortleset.command()
+    async def view(self, ctx):
+        """View all current Gortle settings."""
+        # Guild Settings
+        guild_data = await self.config.guild(ctx.guild).all()
+        channel_id = guild_data.get('channel_id')
+        role_id = guild_data.get('mention_role')
+        thumb_url = guild_data.get('thumbnail_url') or "None"
+        cooldown = guild_data.get('cooldown_seconds', 60)
+        
+        # Resolving Objects
+        channel_obj = ctx.guild.get_channel(channel_id) if channel_id else "Not Set"
+        role_obj = ctx.guild.get_role(role_id) if role_id else "Not Set"
+
+        # Global Settings
+        freq = await self.config.schedule_auto_freq()
+        manual_max = await self.config.schedule_manual_max()
+        prize = await self.config.win_amount()
+        
+        # Weekly Settings
+        w_role_id = await self.config.weekly_role_id()
+        w_day = await self.config.weekly_role_day()
+        w_hour = await self.config.weekly_role_hour()
+        
+        w_role_obj = ctx.guild.get_role(w_role_id) if w_role_id else "Not Set"
+        days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        w_day_str = days[w_day] if 0 <= w_day <= 6 else w_day
+
+        table_data = [
+            ["Channel", str(channel_obj)],
+            ["Mention Role", str(role_obj)],
+            ["Thumbnail", thumb_url[:30] + "..." if len(thumb_url) > 30 else thumb_url],
+            ["Cooldown", f"{cooldown}s"],
+            ["Prize Amt", prize],
+            ["Auto Freq", f"{freq}/hr"],
+            ["Manual Max", f"{manual_max}/hr"],
+            ["Weekly Role", str(w_role_obj)],
+            ["Weekly Time", f"{w_day_str} @ {w_hour}:00 UTC"]
+        ]
+        
+        # Using Red's box util for table formatting
+        from tabulate import tabulate
+        table = tabulate(table_data, headers=["Setting", "Value"], tablefmt="presto")
+        
+        await ctx.send(box(table))
 
     @gortleset.command()
     async def channel(self, ctx, channel: discord.TextChannel):
@@ -873,21 +878,13 @@ class Gortle(commands.Cog):
         self._load_word_lists()
         await ctx.send(f"Lists reloaded. Solutions: {len(self.solutions)}, Guesses: {len(self.guesses)}")
 
-    # --- Admin Cleanup ---
-
-    @commands.group()
-    @checks.admin_or_permissions(manage_guild=True)
-    async def gortleadmin(self, ctx):
-        """Admin management for leaderboards."""
-        pass
-
-    @gortleadmin.command()
+    @gortleset.command()
     async def clearall(self, ctx):
         """Clear all scores."""
         await self.config.clear_all_members(ctx.guild)
         await ctx.send("All scores cleared.")
         
-    @gortleadmin.command()
+    @gortleset.command()
     async def hardreset(self, ctx):
         """Resets the game number, used words, and all user scores."""
         await ctx.send("Are you sure you want to reset EVERYTHING? This includes the game count, history of used words, and all user leaderboards. Type `yes` to confirm.")
@@ -908,13 +905,13 @@ class Gortle(commands.Cog):
         
         await ctx.send("Gortle has been completely reset.")
 
-    @gortleadmin.command()
+    @gortleset.command()
     async def removeuser(self, ctx, member: discord.Member):
         """Remove a specific user from stats."""
         await self.config.member(member).clear()
         await ctx.send(f"Stats cleared for {member.display_name}.")
 
-    @gortleadmin.command()
+    @gortleset.command()
     async def clean(self, ctx):
         """Remove users who are no longer in the server."""
         members = await self.config.all_members(ctx.guild)
