@@ -136,6 +136,7 @@ class Suggestions(commands.Cog):
         down_count = len(data['downvotes'])
         status = data['status']
         is_closed = status != 'open'
+        reason = data.get('reason', '')
 
         view = VoteView(
             suggestion_id=data['id'],
@@ -148,7 +149,7 @@ class Suggestions(commands.Cog):
 
         embed = message.embeds[0]
         
-        # Strip existing prefixes to prevent duplication
+        # 1. Update Title and Color
         clean_title = embed.title.replace("[APPROVED] ", "").replace("[REJECTED] ", "")
         
         if status == 'approved':
@@ -160,6 +161,14 @@ class Suggestions(commands.Cog):
         else:
             embed.color = discord.Color.blue()
             embed.title = clean_title
+
+        # 2. Update Description with Reason
+        # We rebuild from data['content'] to ensure we don't duplicate the reason if called multiple times
+        new_desc = data['content']
+        if is_closed and reason:
+            new_desc += f"\n\n**Reason:** {reason}"
+        
+        embed.description = new_desc
 
         await message.edit(embed=embed, view=view)
 
@@ -204,6 +213,7 @@ class Suggestions(commands.Cog):
             "thread_id": thread.id,
             "message_id": msg.id, 
             "status": "open",
+            "reason": "",
             "upvotes": [],
             "downvotes": []
         }
@@ -288,15 +298,15 @@ Current ID:     {cfg['next_id']}
             
             data = suggestions[suggestion_id]
             data['status'] = 'approved'
+            data['reason'] = message
             suggestions[suggestion_id] = data
             
-            # Update the main message (Embed Title/Color handled here)
+            # Update the main message
             await self.update_suggestion_message(ctx.guild, data)
 
             # Update thread
             thread = ctx.guild.get_thread(data['thread_id'])
             if thread:
-                # Rename thread
                 if not thread.name.startswith("[APPROVED]"):
                     new_name = f"[APPROVED] {thread.name}"
                     await thread.edit(name=new_name, locked=True, archived=True)
@@ -318,15 +328,15 @@ Current ID:     {cfg['next_id']}
             
             data = suggestions[suggestion_id]
             data['status'] = 'rejected'
+            data['reason'] = message
             suggestions[suggestion_id] = data
             
-            # Update the main message (Embed Title/Color handled here)
+            # Update the main message
             await self.update_suggestion_message(ctx.guild, data)
             
             # Update thread
             thread = ctx.guild.get_thread(data['thread_id'])
             if thread:
-                # Rename thread
                 if not thread.name.startswith("[REJECTED]"):
                     new_name = f"[REJECTED] {thread.name}"
                     await thread.edit(name=new_name, locked=True, archived=True)
@@ -442,47 +452,6 @@ Current ID:     {cfg['next_id']}
         
         await ctx.send(embed=embed)
 
-    @suggestionsset.command(name="dashboard")
-    async def ss_dashboard(self, ctx):
-        """View suggestion dashboard."""
-        suggestions = await self.config.guild(ctx.guild).suggestions()
-        if not suggestions:
-            return await ctx.send("No suggestions found.")
-            
-        open_list = [v for k,v in suggestions.items() if v['status'] == 'open']
-        approved_list = sorted([v for k,v in suggestions.items() if v['status'] == 'approved'], key=lambda x: x['timestamp'], reverse=True)[:5]
-        rejected_list = sorted([v for k,v in suggestions.items() if v['status'] == 'rejected'], key=lambda x: x['timestamp'], reverse=True)[:5]
-
-        embed = discord.Embed(title="Suggestions Dashboard", color=discord.Color.gold())
-        
-        if open_list:
-            lines = []
-            for s in open_list:
-                ups = len(s['upvotes'])
-                downs = len(s['downvotes'])
-                
-                chan_id = await self.config.guild(ctx.guild).channel_id()
-                link = f"https://discord.com/channels/{ctx.guild.id}/{chan_id}/{s['message_id']}"
-                
-                line = (
-                    f"[#{s['id']} {s['title']}]({link})\n"
-                    f"👍 {ups} | 👎 {downs} | <t:{int(s['timestamp'])}:R>"
-                )
-                lines.append(line)
-            open_str = "\n\n".join(lines)
-        else:
-            open_str = "None"
-
-        embed.add_field(name=f"Open ({len(open_list)})", value=open_str, inline=False)
-        
-        app_str = "\n".join([f"#{x['id']} {x['title']}" for x in approved_list]) or "None"
-        embed.add_field(name="Recently Approved", value=app_str, inline=False)
-        
-        rej_str = "\n".join([f"#{x['id']} {x['title']}" for x in rejected_list]) or "None"
-        embed.add_field(name="Recently Rejected", value=rej_str, inline=False)
-        
-        await ctx.send(embed=embed)
-
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
         if interaction.type != discord.InteractionType.component:
@@ -550,3 +519,44 @@ Current ID:     {cfg['next_id']}
                     await interaction.response.send_message(msg_txt, ephemeral=True)
             except Exception as e:
                 pass
+
+    @suggestionsset.command(name="dashboard")
+    async def ss_dashboard(self, ctx):
+        """View suggestion dashboard."""
+        suggestions = await self.config.guild(ctx.guild).suggestions()
+        if not suggestions:
+            return await ctx.send("No suggestions found.")
+            
+        open_list = [v for k,v in suggestions.items() if v['status'] == 'open']
+        approved_list = sorted([v for k,v in suggestions.items() if v['status'] == 'approved'], key=lambda x: x['timestamp'], reverse=True)[:5]
+        rejected_list = sorted([v for k,v in suggestions.items() if v['status'] == 'rejected'], key=lambda x: x['timestamp'], reverse=True)[:5]
+
+        embed = discord.Embed(title="Suggestions Dashboard", color=discord.Color.gold())
+        
+        if open_list:
+            lines = []
+            for s in open_list:
+                ups = len(s['upvotes'])
+                downs = len(s['downvotes'])
+                
+                chan_id = await self.config.guild(ctx.guild).channel_id()
+                link = f"https://discord.com/channels/{ctx.guild.id}/{chan_id}/{s['message_id']}"
+                
+                line = (
+                    f"[#{s['id']} {s['title']}]({link})\n"
+                    f"👍 {ups} | 👎 {downs} | <t:{int(s['timestamp'])}:R>"
+                )
+                lines.append(line)
+            open_str = "\n\n".join(lines)
+        else:
+            open_str = "None"
+
+        embed.add_field(name=f"Open ({len(open_list)})", value=open_str, inline=False)
+        
+        app_str = "\n".join([f"#{x['id']} {x['title']}" for x in approved_list]) or "None"
+        embed.add_field(name="Recently Approved", value=app_str, inline=False)
+        
+        rej_str = "\n".join([f"#{x['id']} {x['title']}" for x in rejected_list]) or "None"
+        embed.add_field(name="Recently Rejected", value=rej_str, inline=False)
+        
+        await ctx.send(embed=embed)
