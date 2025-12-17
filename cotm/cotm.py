@@ -8,57 +8,64 @@ from redbot.core.utils.chat_formatting import box
 
 log = logging.getLogger("red.NoiselessVolatileLobster.craftofthemonth")
 
-class SignupModal(discord.ui.Modal, title="Instructor Sign Up"):
+# --- Step 3: The Modal (Text Input Only) ---
+class SignupModal(discord.ui.Modal):
+    def __init__(self, cog, selected_month: str):
+        # We set the title dynamically to show the month they picked
+        super().__init__(title=f"Sign up for {selected_month}")
+        self.cog = cog
+        self.selected_month = selected_month
+
     craft = discord.ui.TextInput(
         label="Craft Description",
         placeholder="What will you be teaching?",
         min_length=3,
         max_length=50,
-        required=True,
-        row=1 
+        required=True
     )
-
-    def __init__(self, cog):
-        super().__init__()
-        self.cog = cog
-        
-        months = [
-            "January", "February", "March", "April", "May", "June",
-            "July", "August", "September", "October", "November", "December"
-        ]
-        options = [discord.SelectOption(label=m, value=m) for m in months]
-        
-        self.month_select = discord.ui.Select(
-            placeholder="Select a month...",
-            min_values=1,
-            max_values=1,
-            options=options,
-            row=0 
-        )
-        self.add_item(self.month_select)
 
     async def on_submit(self, interaction: discord.Interaction):
         guild = interaction.guild
         user = interaction.user
         
-        selected_month = self.month_select.values[0]
-        craft_name = self.craft.value
-        
         async with self.cog.config.guild(guild).signups() as signups:
             signups[str(user.id)] = {
-                "month": selected_month,
-                "craft": craft_name,
+                "month": self.selected_month,
+                "craft": self.craft.value,
                 "user_name": user.display_name,
                 "user_id": user.id
             }
 
         await interaction.response.send_message(
-            f"✅ You have successfully signed up to teach **{craft_name}** in **{selected_month}**!",
+            f"✅ You have successfully signed up to teach **{self.craft.value}** in **{self.selected_month}**!",
             ephemeral=True
         )
 
+# --- Step 2: The Dropdown Menu ---
+class MonthSelect(discord.ui.Select):
+    def __init__(self, cog):
+        months = [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"
+        ]
+        options = [discord.SelectOption(label=m, value=m) for m in months]
+        super().__init__(placeholder="Select a month...", min_values=1, max_values=1, options=options)
+        self.cog = cog
+
+    async def callback(self, interaction: discord.Interaction):
+        # Once they pick a month, we immediately show the Modal
+        selected_month = self.values[0]
+        await interaction.response.send_modal(SignupModal(self.cog, selected_month))
+
+class MonthSelectView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=60) # Short timeout since this is just a quick menu
+        self.add_item(MonthSelect(cog))
+
+# --- Step 1: The Main Button ---
 class SignupView(discord.ui.View):
     def __init__(self, cog):
+        # Persistent view needs timeout=None
         super().__init__(timeout=None)
         self.cog = cog
 
@@ -68,7 +75,7 @@ class SignupView(discord.ui.View):
         member = interaction.user
         required_level = await self.cog.config.guild(guild).instructor_level_req()
         
-        # FIX: Added 'await' here
+        # Await the level check (Fix for TypeError)
         user_level = await self.cog.get_user_level(member)
         
         if user_level < required_level:
@@ -78,9 +85,15 @@ class SignupView(discord.ui.View):
             )
             return
 
-        modal = SignupModal(self.cog)
-        await interaction.response.send_modal(modal)
+        # Send the Month Select View first (Ephemeral)
+        view = MonthSelectView(self.cog)
+        await interaction.response.send_message(
+            "Please select which month you would like to sign up for:", 
+            view=view, 
+            ephemeral=True
+        )
 
+# --- Main Cog ---
 class CraftOfTheMonth(commands.Cog):
     """
     Manage Craft of the Month signups and instructor lists.
@@ -98,9 +111,9 @@ class CraftOfTheMonth(commands.Cog):
         }
         self.config.register_guild(**default_guild)
         
+        # Re-register the persistent view on bot restart
         self.bot.add_view(SignupView(self))
 
-    # FIX: Changed to async def
     async def get_user_level(self, member: discord.Member) -> int:
         """
         Attempts to get the user's level from Vrt's LevelUp cog.
@@ -111,7 +124,7 @@ class CraftOfTheMonth(commands.Cog):
             return 0
         
         try:
-            # FIX: Added await here as get_level is a coroutine
+            # Await the external call
             return await levelup.get_level(member)
         except AttributeError:
             return 0
@@ -126,12 +139,10 @@ class CraftOfTheMonth(commands.Cog):
 
     @cotm.command(name="list")
     async def cotm_list(self, ctx):
-        """
-        Show the current list of instructor signups.
-        """
+        """Show the current list of instructor signups."""
         required_level = await self.config.guild(ctx.guild).user_level_req()
         
-        # FIX: Added 'await' here
+        # Await the level check
         user_level = await self.get_user_level(ctx.author)
         
         if user_level < required_level:
@@ -176,7 +187,7 @@ class CraftOfTheMonth(commands.Cog):
 
         embed = discord.Embed(
             title="Craft of the Month: Signups",
-            description=box(table_str, lang="prolog"), 
+            description=box(table_str, lang="prolog"),
             color=discord.Color.blue()
         )
         await ctx.send(embed=embed)
@@ -255,7 +266,6 @@ class CraftOfTheMonth(commands.Cog):
             ["Total Signups", str(len(conf['signups']))]
         ]
         
-        # Formatting table manually for display
         col_widths = [len(r[0]) for r in settings]
         col_widths[0] = max(col_widths[0], 20) 
         
