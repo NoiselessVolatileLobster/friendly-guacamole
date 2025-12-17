@@ -1,6 +1,6 @@
 import discord
 from redbot.core import Config, commands, checks
-from redbot.core.utils.chat_formatting import humanize_list
+from redbot.core.utils.chat_formatting import humanize_list, box
 from discord.ext import tasks
 from datetime import datetime, timedelta, timezone
 import random
@@ -32,6 +32,10 @@ class OuijaSettings(BaseModel):
     poke_days: int = Field(default=30, ge=1, description="Days a member must be inactive to be eligible for a poke.")
     summon_days: int = Field(default=60, ge=1, description="Days a member must be inactive to be eligible for a summon.")
     
+    # WarnSystem Integration Settings
+    warn_level_1_days: int = Field(default=0, ge=0, description="Days inactive to trigger Level 1 warning (0 to disable).")
+    warn_level_3_days: int = Field(default=0, ge=0, description="Days inactive to trigger Level 3 warning (0 to disable).")
+
     # New Activity Threshold Settings
     required_messages: int = Field(default=1, ge=1, description="Number of messages required to count as active.")
     required_window_hours: float = Field(default=0, ge=0, description="Time window (in hours) for the message count.")
@@ -66,10 +70,10 @@ class OuijaPoke(commands.Cog):
             last_seen={}, # {user_id: "ISO_DATETIME_STRING"}
             last_poked={}, # {user_id: "ISO_DATETIME_STRING"}
             last_summoned={}, # {user_id: "ISO_DATETIME_STRING"}
-            excluded_roles=[], # [role_id, ...] -> Now referred to as "Hibernating Roles" in UI
+            warned_users={}, # {user_id: {"level1": timestamp, "level3": timestamp}}
+            excluded_roles=[], # [role_id, ...] -> "Hibernating Roles"
             excluded_channels=[], # [channel_id, ...]
             ouija_settings=OuijaSettings().model_dump(),
-            inactive_roles={}, # {role_id: days_inactive}
             next_auto_event=None, # ISO_DATETIME_STRING for the next scheduled auto run
         )
         # In-memory tracker for voice channel connections
@@ -96,13 +100,16 @@ class OuijaPoke(commands.Cog):
         await self.config.guild(guild).ouija_settings.set(settings.model_dump())
     
     async def _update_last_seen(self, guild: discord.Guild, user_id: int):
-        """Updates the last_seen time for a user in the guild config."""
+        """Updates the last_seen time and clears warning flags for a user."""
         user_id_str = str(user_id)
         current_time_utc = datetime.now(timezone.utc).isoformat()
         
-        data = await self.config.guild(guild).last_seen()
-        data[user_id_str] = current_time_utc
-        await self.config.guild(guild).last_seen.set(data)
+        async with self.config.guild(guild).all() as data:
+            data["last_seen"][user_id_str] = current_time_utc
+            
+            # If they were warned previously, clear it now that they are active
+            if user_id_str in data["warned_users"]:
+                del data["warned_users"][user_id_str]
         
     def _is_valid_gif_url(self, url: str) -> bool:
         """Simple check if the URL looks like a GIF link or page."""
@@ -245,17 +252,17 @@ class OuijaPoke(commands.Cog):
 
     @tasks.loop(minutes=5)
     async def auto_poke_loop(self):
-        """Background loop to handle automatic pokes and summons."""
+        """Background loop to handle automatic pokes, summons, and WarnSystem checks."""
         for guild in self.bot.guilds:
             try:
                 # 1. Check if configured
                 settings_data = await self.config.guild(guild).ouija_settings()
                 settings = OuijaSettings(**settings_data)
                 
-                # If no auto channel is set, we can't do anything.
-                # However, we should still manage the schedule so it doesn't get stuck attempting constantly if set later.
-                
-                # 2. Check Schedule
+                # Run Warning Checks
+                await self._process_inactivity_warnings(guild, settings)
+
+                # 2. Check Auto Poke Schedule
                 next_run_str = await self.config.guild(guild).next_auto_event()
                 now = datetime.now(timezone.utc)
                 
@@ -285,6 +292,87 @@ class OuijaPoke(commands.Cog):
                     await self._schedule_next_auto_event(guild)
             except Exception as e:
                 log.error(f"Error in auto_poke_loop for guild {guild.id}: {e}", exc_info=True)
+
+    async def _process_inactivity_warnings(self, guild: discord.Guild, settings: OuijaSettings):
+        """Checks for inactive users and issues warnings via WarnSystem."""
+        # If neither warning is configured, skip
+        if settings.warn_level_1_days <= 0 and settings.warn_level_3_days <= 0:
+            return
+
+        warn_cog = self.bot.get_cog("WarnSystem")
+        if not warn_cog:
+            return # WarnSystem not loaded
+
+        data = await self.config.guild(guild).all()
+        last_seen_data = data["last_seen"]
+        warned_users = data["warned_users"]
+        excluded_roles = data["excluded_roles"]
+        
+        now = datetime.now(timezone.utc)
+
+        for user_id_str, last_seen_dt_str in last_seen_data.items():
+            user_id = int(user_id_str)
+            member = guild.get_member(user_id)
+            
+            # Skip if member left, is bot, or is hibernating
+            if member is None or member.bot or self._is_excluded(member, excluded_roles):
+                continue
+            
+            try:
+                last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
+                days_inactive = (now - last_seen_dt).days
+            except ValueError:
+                continue
+
+            user_warnings = warned_users.get(user_id_str, {})
+            
+            # --- Level 3 Warning (Kick) Check ---
+            if settings.warn_level_3_days > 0 and days_inactive >= settings.warn_level_3_days:
+                if "level3" not in user_warnings:
+                    try:
+                        reason = f"Inactive for over {days_inactive} days (Threshold: {settings.warn_level_3_days})."
+                        # Use WarnSystem API: warn(member, author, reason, level)
+                        # We use guild.me (the bot) as the author.
+                        await warn_cog.api.warn(
+                            member=member,
+                            author=guild.me,
+                            reason=reason,
+                            level=3
+                        )
+                        
+                        # Mark as warned
+                        if user_id_str not in warned_users:
+                            warned_users[user_id_str] = {}
+                        warned_users[user_id_str]["level3"] = now.isoformat()
+                        await self.config.guild(guild).warned_users.set(warned_users)
+                        
+                        log.info(f"OuijaPoke: Issued Level 3 Warn to {member} in {guild.name}")
+                        # If level 3 triggers a kick via WarnSystem, the member might be gone now.
+                        continue 
+                    except Exception as e:
+                        log.error(f"Failed to issue WarnSystem Level 3 to {member}: {e}")
+
+            # --- Level 1 Warning Check ---
+            if settings.warn_level_1_days > 0 and days_inactive >= settings.warn_level_1_days:
+                if "level1" not in user_warnings:
+                    try:
+                        reason = f"Inactive for over {days_inactive} days (Threshold: {settings.warn_level_1_days})."
+                        await warn_cog.api.warn(
+                            member=member,
+                            author=guild.me,
+                            reason=reason,
+                            level=1
+                        )
+                        
+                        # Mark as warned
+                        if user_id_str not in warned_users:
+                            warned_users[user_id_str] = {}
+                        warned_users[user_id_str]["level1"] = now.isoformat()
+                        await self.config.guild(guild).warned_users.set(warned_users)
+
+                        log.info(f"OuijaPoke: Issued Level 1 Warn to {member} in {guild.name}")
+                    except Exception as e:
+                        log.error(f"Failed to issue WarnSystem Level 1 to {member}: {e}")
 
     async def _run_daily_lottery(self, guild: discord.Guild, channel: discord.TextChannel, settings: OuijaSettings) -> str:
         """Runs the 10/10/80 probability logic. Returns a status string."""
@@ -485,55 +573,6 @@ class OuijaPoke(commands.Cog):
         excluded_eligible_list.sort(key=lambda x: x['last_seen_days'], reverse=True)
         return excluded_eligible_list
 
-    # Role Awarding Logic
-    async def _check_and_award_inactive_roles(self, guild: discord.Guild):
-        """Checks all members against the configured inactive roles and applies/removes roles."""
-        inactive_roles = await self.config.guild(guild).inactive_roles()
-        last_seen_data = await self.config.guild(guild).last_seen()
-
-        if not inactive_roles or not last_seen_data:
-            return
-
-        roles_to_check = {}
-        for role_id, days_inactive in inactive_roles.items():
-            role = guild.get_role(int(role_id))
-            if role is not None:
-                roles_to_check[role] = days_inactive
-
-        if not roles_to_check:
-            return
-        
-        for member in guild.members:
-            if member.bot:
-                continue
-            
-            user_id_str = str(member.id)
-            last_seen_dt_str = last_seen_data.get(user_id_str)
-            
-            if not last_seen_dt_str:
-                last_seen_dt = datetime.now(timezone.utc) 
-            else:
-                try:
-                    last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
-                except ValueError:
-                    continue
-
-            for role, days_inactive in roles_to_check.items():
-                cutoff_dt = self._get_inactivity_cutoff(days_inactive)
-                is_inactive = last_seen_dt < cutoff_dt
-                has_role = role in member.roles
-                
-                if is_inactive and not has_role:
-                    try:
-                        await member.add_roles(role, reason=f"Inactive for >{days_inactive} days (OuijaPoke)")
-                    except discord.Forbidden:
-                        pass 
-                elif not is_inactive and has_role:
-                    try:
-                        await member.remove_roles(role, reason=f"Active again (OuijaPoke)")
-                    except discord.Forbidden:
-                        pass 
-
     async def _send_activity_message(self, ctx: commands.Context, member: discord.Member, message_text: str, gif_list: list[str]):
         """Sends the message text and the GIF URL as two separate messages."""
         final_message = message_text.replace("{user_mention}", member.mention)
@@ -595,7 +634,6 @@ class OuijaPoke(commands.Cog):
         # 5. Update if criteria met
         if should_update:
             await self._update_last_seen(guild, user_id)
-            await self._check_and_award_inactive_roles(guild)
     
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
@@ -630,7 +668,6 @@ class OuijaPoke(commands.Cog):
                 
                 if duration >= timedelta(minutes=5):
                     await self._update_last_seen(member.guild, member.id)
-                    await self._check_and_award_inactive_roles(member.guild)
 
     # --- User Commands ---
 
@@ -746,8 +783,26 @@ class OuijaPoke(commands.Cog):
             ),
             inline=False
         )
+
+        # 2. WarnSystem Integration
+        warn_status = "Not Loaded"
+        if self.bot.get_cog("WarnSystem"):
+            warn_status = "Loaded & Ready"
         
-        # 2. Activity Definition
+        warn_l1 = f"{settings.warn_level_1_days} days" if settings.warn_level_1_days > 0 else "Disabled"
+        warn_l3 = f"{settings.warn_level_3_days} days" if settings.warn_level_3_days > 0 else "Disabled"
+
+        embed.add_field(
+            name="⚠️ WarnSystem Integration",
+            value=(
+                f"**Status:** {warn_status}\n"
+                f"**Level 1 Warn:** > {warn_l1} inactive\n"
+                f"**Level 3 Warn (Kick):** > {warn_l3} inactive"
+            ),
+            inline=False
+        )
+        
+        # 3. Activity Definition
         burst_desc = "Every message counts"
         if settings.required_messages > 1 and settings.required_window_hours > 0:
             burst_desc = f"**{settings.required_messages}** msgs in **{settings.required_window_hours}** hrs"
@@ -761,7 +816,7 @@ class OuijaPoke(commands.Cog):
             inline=False
         )
 
-        # 3. Auto Poke Settings
+        # 4. Auto Poke Settings
         if next_auto:
             try:
                 dt = datetime.fromisoformat(next_auto).replace(tzinfo=timezone.utc)
@@ -786,7 +841,7 @@ class OuijaPoke(commands.Cog):
             inline=False
         )
         
-        # 4. Exclusions & Hibernation
+        # 5. Exclusions & Hibernation
         excl_roles = []
         for rid in data["excluded_roles"]:
             role = ctx.guild.get_role(rid)
@@ -803,21 +858,6 @@ class OuijaPoke(commands.Cog):
                 f"**Hibernating Roles:** {humanize_list(excl_roles) if excl_roles else 'None'}\n"
                 f"**Excluded Channels:** {humanize_list(excl_chans) if excl_chans else 'None'}"
             ),
-            inline=False
-        )
-        
-        # 5. Inactive Awards
-        awards = []
-        # sort by days
-        sorted_awards = sorted(data["inactive_roles"].items(), key=lambda x: x[1])
-        for rid_str, days in sorted_awards:
-            role = ctx.guild.get_role(int(rid_str))
-            if role:
-                awards.append(f"{role.mention} (**>{days}** days)")
-        
-        embed.add_field(
-            name="🏆 Inactive Role Awards",
-            value="\n".join(awards) if awards else "No auto-roles configured",
             inline=False
         )
 
@@ -921,6 +961,45 @@ class OuijaPoke(commands.Cog):
         settings.min_message_length = length
         await self._set_settings(ctx.guild, settings)
         await ctx.send(f"Minimum message length set to **{length}** characters.")
+
+    # --- WarnSystem Integration Settings ---
+
+    @ouijaset.group(name="warnlevel", aliases=["warn"], invoke_without_command=True)
+    async def ouijaset_warnlevel(self, ctx: commands.Context):
+        """Manages WarnSystem integration for inactive users."""
+        await ctx.send_help(ctx.command)
+
+    @ouijaset_warnlevel.command(name="level1")
+    async def ouijaset_warnlevel_1(self, ctx: commands.Context, days: int):
+        """
+        Sets days inactive to trigger a Level 1 warning via WarnSystem.
+        Set to 0 to disable.
+        """
+        if days < 0: return await ctx.send("Days must be >= 0.")
+        settings = await self._get_settings(ctx.guild)
+        settings.warn_level_1_days = days
+        await self._set_settings(ctx.guild, settings)
+        
+        if days == 0:
+            await ctx.send("Level 1 inactivity warnings disabled.")
+        else:
+            await ctx.send(f"Users inactive for >**{days}** days will receive a Level 1 warning.")
+
+    @ouijaset_warnlevel.command(name="level3")
+    async def ouijaset_warnlevel_3(self, ctx: commands.Context, days: int):
+        """
+        Sets days inactive to trigger a Level 3 warning (Kick) via WarnSystem.
+        Set to 0 to disable.
+        """
+        if days < 0: return await ctx.send("Days must be >= 0.")
+        settings = await self._get_settings(ctx.guild)
+        settings.warn_level_3_days = days
+        await self._set_settings(ctx.guild, settings)
+        
+        if days == 0:
+            await ctx.send("Level 3 inactivity warnings disabled.")
+        else:
+            await ctx.send(f"Users inactive for >**{days}** days will receive a Level 3 warning (Kick, if WarnSystem is configured).")
 
     # --- Excluded Channels ---
 
@@ -1085,58 +1164,6 @@ class OuijaPoke(commands.Cog):
         elif eligible_members:
              # Only send this message if we sent the first embed, to keep the output clean
              await ctx.send("✅ No members are currently hibernating who would otherwise be eligible for action.")
-
-    # --- Inactive Roles ---
-    
-    @ouijaset.group(name="inactiverole", invoke_without_command=True)
-    async def ouijaset_inactiverole(self, ctx: commands.Context):
-        """Manages inactive role awards."""
-        if ctx.invoked_subcommand is None:
-            await self.ouijaset_inactiverole_list.invoke(ctx)
-
-    @ouijaset_inactiverole.command(name="list")
-    async def ouijaset_inactiverole_list(self, ctx: commands.Context):
-        """Lists all configured inactive role awards."""
-        inactive_roles = await self.config.guild(ctx.guild).inactive_roles()
-        if not inactive_roles:
-            return await ctx.send("No inactive role awards are currently configured.")
-
-        msg = "**Configured Inactive Role Awards**\n\n"
-        roles_data = []
-        for role_id_str, days in inactive_roles.items():
-            role = ctx.guild.get_role(int(role_id_str))
-            if role:
-                roles_data.append((role, days))
-
-        roles_data.sort(key=lambda x: x[1])
-        for role, days in roles_data:
-            msg += f"• **@{role.name}** (`{role.id}`): Given after **>{days} days** of inactivity.\n"
-        await ctx.send(msg)
-
-    @ouijaset_inactiverole.command(name="add")
-    async def ouijaset_inactiverole_add(self, ctx: commands.Context, role: discord.Role, days: int):
-        """Adds/updates an inactive role award."""
-        if days < 1: return await ctx.send("Days must be >= 1.")
-        async with self.config.guild(ctx.guild).inactive_roles() as inactive_roles:
-            inactive_roles[str(role.id)] = days
-        await ctx.send(f"Role **{role.name}** will be given after **>{days} days** inactive.")
-        await self._check_and_award_inactive_roles(ctx.guild)
-
-    @ouijaset_inactiverole.command(name="remove")
-    async def ouijaset_inactiverole_remove(self, ctx: commands.Context, role: discord.Role):
-        """Removes an inactive role award."""
-        role_id_str = str(role.id)
-        async with self.config.guild(ctx.guild).inactive_roles() as inactive_roles:
-            if role_id_str in inactive_roles:
-                del inactive_roles[role_id_str]
-                # Remove role from current holders
-                for member in role.members:
-                    if role in member.roles:
-                        try: await member.remove_roles(role, reason="Inactive award removed")
-                        except: pass
-                await ctx.send(f"Removed inactive role config for **{role.name}**.")
-            else:
-                await ctx.send("Role not configured.")
 
     # --- Status Listing (New Feature) ---
 
@@ -1327,18 +1354,17 @@ class OuijaPoke(commands.Cog):
                 if not member.bot: data[str(member.id)] = target_dt.isoformat()
             await self.config.guild(ctx.guild).last_seen.set(data)
         await ctx.send(f"Set **{len(role.members)}** members to **{days_ago} days ago**.")
-        await self._check_and_award_inactive_roles(ctx.guild)
+        # Trigger warn check next loop
 
     @ouijaset.command(name="markactive")
     async def ouijaset_markactive(self, ctx: commands.Context, member: discord.Member):
         """
         Manually marks a user as active right now.
         
-        This resets their inactivity timer and removes any inactivity roles they may have.
+        This resets their inactivity timer and removes any warnings flags.
         """
         await self._update_last_seen(ctx.guild, member.id)
-        await self._check_and_award_inactive_roles(ctx.guild)
-        await ctx.send(f"✅ **{member.display_name}** has been marked as active. Their timer is reset.")
+        await ctx.send(f"✅ **{member.display_name}** has been marked as active. Their timer and warnings are reset.")
 
     @ouijaset.command(name="resetactivity")
     @checks.is_owner()
@@ -1350,9 +1376,7 @@ class OuijaPoke(commands.Cog):
                 await self.config.guild(ctx.guild).last_seen.set({})
                 await self.config.guild(ctx.guild).last_poked.set({})
                 await self.config.guild(ctx.guild).last_summoned.set({})
+                await self.config.guild(ctx.guild).warned_users.set({})
                 await ctx.send("Data reset.")
         except TimeoutError:
             await ctx.send("Cancelled.")
-
-async def setup(bot):
-    await bot.add_cog(OuijaPoke(bot))
