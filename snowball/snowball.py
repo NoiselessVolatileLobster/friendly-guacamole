@@ -31,20 +31,19 @@ class LeaderboardView(View):
         # Create a button for each sort option
         for label in self.sort_map.keys():
             style = discord.ButtonStyle.primary if label == self.current_sort else discord.ButtonStyle.secondary
+            # Ensure custom_id is set to the label
             btn = Button(label=label, style=style, custom_id=label)
             btn.callback = self.button_callback
             self.add_item(btn)
 
     async def button_callback(self, interaction: discord.Interaction):
-        # Only allow the command invoker to sort (optional, but prevents spam)
-        # if interaction.user.id != self.ctx.author.id:
-        #    return await interaction.response.send_message("Only the person who ran the command can sort.", ephemeral=True)
-        
-        self.current_sort = interaction.custom_id
+        # Fix: Access custom_id from the interaction data payload
+        self.current_sort = interaction.data["custom_id"]
         
         # Update button styles to show active selection
         for child in self.children:
             if isinstance(child, Button):
+                # Compare against the child's custom_id
                 child.style = discord.ButtonStyle.primary if child.custom_id == self.current_sort else discord.ButtonStyle.secondary
         
         embed = self.generate_embed()
@@ -70,7 +69,6 @@ class LeaderboardView(View):
             
             # Format the value if it's money
             if sort_key == "stat_credits_spent":
-                # We don't have currency name here easily without async, so just use generic
                 val_str = f"{val}" 
             else:
                 val_str = f"{val}"
