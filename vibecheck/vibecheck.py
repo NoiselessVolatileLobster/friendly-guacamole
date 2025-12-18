@@ -18,6 +18,8 @@ UNIQUE_ID = 0x9C02DCC7
 MemberInfo = namedtuple("MemberInfo", "id name vibes")
 MemberRatioInfo = namedtuple("MemberRatioInfo", "id name ratio")
 
+# 14 Days in seconds
+WARN_COOLDOWN_SECONDS = 1209600 
 
 class VibeCheck(getattr(commands, "Cog", object)):
     """
@@ -78,6 +80,11 @@ class VibeCheck(getattr(commands, "Cog", object)):
             negativenancy_action="warn",
             negativenancy_score_threshold=None,
             negativenancy_ratio_threshold=None
+        )
+
+        # Member Settings (Guild-specific user data)
+        self.conf.register_member(
+            last_warn_timestamp=0 # Timestamp of the last Level 1 warning
         )
 
     # --- PUBLIC API ---
@@ -1035,6 +1042,10 @@ class VibeCheck(getattr(commands, "Cog", object)):
             
             # Warn Author is always the Bot
             warn_author = target_guild.me
+            
+            # Fetch last warn timestamp (Level 1 / Nancy Warn)
+            last_warn = await self.conf.member(member_receiver).last_warn_timestamp()
+            current_time = int(time.time())
 
             # 0. Negative Nancy Check (New)
             if (nn_score_thresh is not None and nn_ratio_thresh is not None and 
@@ -1045,8 +1056,18 @@ class VibeCheck(getattr(commands, "Cog", object)):
                 level_map = {"warn": 1, "kick": 3, "ban": 5}
                 level = level_map.get(nn_action, 1)
                 
-                await self._trigger_warnsystem(target_guild, member_receiver, warn_author, level, reason)
-                triggered = True
+                should_trigger = True
+                # If action is Warn, check 2-week cooldown
+                if level == 1:
+                    if (current_time - last_warn) < WARN_COOLDOWN_SECONDS:
+                        should_trigger = False
+                    
+                if should_trigger:
+                    await self._trigger_warnsystem(target_guild, member_receiver, warn_author, level, reason)
+                    triggered = True
+                    # Update timestamp if it was a warn
+                    if level == 1:
+                         await self.conf.member(member_receiver).last_warn_timestamp.set(current_time)
 
             # 1. Ban
             if not triggered and ban_thresh is not None and new_vibes <= ban_thresh:
@@ -1074,9 +1095,12 @@ class VibeCheck(getattr(commands, "Cog", object)):
 
             # 4. Standard Warn
             if not triggered and warn_thresh is not None and new_vibes <= warn_thresh:
-                reason = all_guild_settings.get('warn_reason')
-                await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 1, f"{reason} (Score: {new_vibes})")
-                triggered = True
+                # Check 2-week cooldown
+                if (current_time - last_warn) > WARN_COOLDOWN_SECONDS:
+                    reason = all_guild_settings.get('warn_reason')
+                    await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 1, f"{reason} (Score: {new_vibes})")
+                    await self.conf.member(member_receiver).last_warn_timestamp.set(current_time)
+                    triggered = True
         
         # 6. Perform Logging
         await self._log_vibe_change(target_guild, giver, member_receiver, amount, current_vibes, new_vibes)
