@@ -30,27 +30,45 @@ class VibeCheckActionView(discord.ui.View):
         """Ensure only authorized users can click the buttons."""
         guild = interaction.guild
         if not guild:
+            await interaction.response.send_message("This command cannot be used in DMs.", ephemeral=True)
             return False
 
-        # 1. Always allow Bot Owner and Guild Owner
-        if await self.cog.bot.is_owner(interaction.user) or interaction.user.id == guild.owner_id:
+        # --- DEBUGGING LOGS ---
+        # This will print to your console whenever a button is clicked
+        user = interaction.user
+        log.info(f"[VibeCheck Debug] Interaction by {user} (ID: {user.id})")
+        
+        # 1. Global Overrides
+        if await self.cog.bot.is_owner(user):
+            log.info("[VibeCheck Debug] Auth: Bot Owner")
+            return True
+        if user.id == guild.owner_id:
+            log.info("[VibeCheck Debug] Auth: Guild Owner")
+            return True
+        if user.guild_permissions.administrator:
+            log.info("[VibeCheck Debug] Auth: Administrator")
             return True
 
         # 2. Check for Specific Authorized Roles
         authorized_role_ids = await self.cog.conf.guild(guild).authorized_voter_role_ids()
+        user_role_ids = [r.id for r in user.roles]
         
         if authorized_role_ids:
-            # If roles are configured, the user MUST have one of them
-            user_role_ids = [r.id for r in interaction.user.roles]
+            log.info(f"[VibeCheck Debug] Roles Configured: {authorized_role_ids}")
+            log.info(f"[VibeCheck Debug] User Roles: {user_role_ids}")
+            
             if any(rid in user_role_ids for rid in authorized_role_ids):
+                log.info("[VibeCheck Debug] Auth: Role Match")
                 return True
             
-            # If they don't have the role, deny entry
-            await interaction.response.send_message("You are not authorized to vote on this vibe check.", ephemeral=True)
+            log.info("[VibeCheck Debug] Auth Fail: No matching role")
+            await interaction.response.send_message("You do not have the required role to vote on this.", ephemeral=True)
             return False
 
-        # 3. Fallback: Standard Mod Permissions (Manage Messages or Manage Guild)
-        perms = interaction.channel.permissions_for(interaction.user)
+        # 3. Fallback: Standard Mod Permissions
+        perms = interaction.channel.permissions_for(user)
+        log.info(f"[VibeCheck Debug] Fallback Check - Manage Messages: {perms.manage_messages}, Manage Guild: {perms.manage_guild}")
+        
         if perms.manage_messages or perms.manage_guild:
             return True
             
@@ -642,6 +660,79 @@ class VibeCheck(getattr(commands, "Cog", object)):
         await self.conf.guild(ctx.guild).authorized_voter_role_ids.set(role_ids)
         role_mentions = ", ".join(r.mention for r in roles)
         await ctx.send(f"The following roles are now authorized to vote: {role_mentions}")
+
+    @mod_actions_group.command(name="repost")
+    async def repost_active_votes(self, ctx: commands.Context):
+        """
+        Reposts all currently active vote embeds to the action channel.
+        Use this if the old messages were deleted or if the buttons stop working.
+        """
+        channel_id = await self.conf.guild(ctx.guild).mod_action_channel_id()
+        if not channel_id:
+            return await ctx.send("Mod Action Channel is not configured.")
+        
+        channel = ctx.guild.get_channel(channel_id)
+        if not channel:
+            return await ctx.send("Mod Action Channel not found.")
+
+        # Load active votes
+        active_votes = await self.conf.guild(ctx.guild).active_votes()
+        if not active_votes:
+            return await ctx.send("No active votes found.")
+
+        await ctx.send(f"Reposting {len(active_votes)} active votes...")
+
+        # We will build a new dictionary to replace the old one with new Message IDs
+        new_active_votes = {}
+        
+        # Keys to remove from old dict
+        to_delete_msg_ids = []
+
+        for old_msg_id, data in active_votes.items():
+            target_id = data["target_id"]
+            member = ctx.guild.get_member(target_id)
+            
+            # If member left, we can't really vote on them properly, but we can display it
+            if not member:
+                # Decide if we keep it or clean it up. For now, let's skip/clean up.
+                to_delete_msg_ids.append(old_msg_id)
+                continue
+
+            # Try to delete the old message to clean up
+            try:
+                old_msg = await channel.fetch_message(int(old_msg_id))
+                await old_msg.delete()
+            except (discord.NotFound, discord.Forbidden, ValueError):
+                pass # Message already gone or can't be deleted
+
+            # Re-calculate data for the fresh embed
+            unique_haters = await self._calculate_unique_haters(target_id)
+            current_score = await self.conf.user(member).vibes()
+            threshold = data.get("threshold_score", "Unknown")
+
+            embed = discord.Embed(
+                title="VIBECHECK - VibeScore below threshold (Repost)",
+                description=f"{member.mention}'s score has fallen below {threshold}.\n"
+                            f"**User ID:** {member.id}\n"
+                            f"**Current Score:** {current_score}\n"
+                            f"They got bad vibes from **{unique_haters}** users.",
+                color=discord.Color.orange()
+            )
+            if member.display_avatar:
+                embed.set_thumbnail(url=member.display_avatar.url)
+            
+            # Send new message with View
+            new_msg = await channel.send(embed=embed, view=self.vote_view)
+            
+            # Save data under NEW message ID
+            new_active_votes[str(new_msg.id)] = data
+            
+            # Mark old ID for deletion from DB (handled by creating new dict)
+
+        # Update Config: We replace the entire dict with our new one containing only valid, reposted votes
+        await self.conf.guild(ctx.guild).active_votes.set(new_active_votes)
+        
+        await ctx.send("Reposting complete.")
 
 
     # --- COOLDOWN COMMANDS ---
@@ -1517,9 +1608,6 @@ class VibeCheck(getattr(commands, "Cog", object)):
             )
         elif isinstance(error, commands.MemberNotFound):
             await ctx.send(f"Member not found: {str(error)}", ephemeral=True)
-        elif isinstance(error, commands.MissingRequiredArgument):
-            # This catches other missing args, but kick/ban are handled manually now
-            await ctx.send_help()
         else:
             raise error 
                 
