@@ -3,7 +3,7 @@ import asyncio
 import logging
 import time
 from collections import namedtuple
-from typing import Tuple, Optional, Union
+from typing import Tuple, Optional, Union, Dict, List
 from datetime import datetime, timedelta, timezone
 
 import discord
@@ -17,6 +17,36 @@ __all__ = ["UNIQUE_ID", "VibeCheck"]
 UNIQUE_ID = 0x9C02DCC7
 MemberInfo = namedtuple("MemberInfo", "id name vibes")
 MemberRatioInfo = namedtuple("MemberRatioInfo", "id name ratio")
+
+class VibeCheckActionView(discord.ui.View):
+    """
+    Persistent View for VibeCheck voting (Boot vs Wait).
+    """
+    def __init__(self, cog):
+        super().__init__(timeout=None)
+        self.cog = cog
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Ensure only moderators can click the buttons."""
+        # Using Red's permission logic check
+        if await self.cog.bot.is_owner(interaction.user):
+            return True
+        
+        # Check for Mod permissions (Manage Messages or Manage Guild as a heuristic for Mod)
+        perms = interaction.channel.permissions_for(interaction.user)
+        if perms.manage_messages or perms.manage_guild:
+            return True
+            
+        await interaction.response.send_message("You are not authorized to vote on this vibe check.", ephemeral=True)
+        return False
+
+    @discord.ui.button(label="🥾 Boot", style=discord.ButtonStyle.danger, custom_id="vibecheck_boot")
+    async def boot_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.process_vote(interaction, "boot")
+
+    @discord.ui.button(label="🛑 Wait", style=discord.ButtonStyle.secondary, custom_id="vibecheck_wait")
+    async def wait_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.cog.process_vote(interaction, "wait")
 
 
 class VibeCheck(getattr(commands, "Cog", object)):
@@ -77,8 +107,23 @@ class VibeCheck(getattr(commands, "Cog", object)):
             # Negative Nancy Settings
             negativenancy_action="warn",
             negativenancy_score_threshold=None,
-            negativenancy_ratio_threshold=None
+            negativenancy_ratio_threshold=None,
+
+            # Voting & Mod Action Settings
+            mod_action_channel_id=None, # Where the Vote Embed goes
+            mod_log_channel_id=None,    # Where votes are logged
+            votes_needed_boot=2,
+            votes_needed_wait=2,
+            active_votes={} # {message_id_str: {target_id: int, boot_votes: [uid], wait_votes: [uid], threshold_score: int}}
         )
+
+        # Initialize the persistent view
+        self.vote_view = VibeCheckActionView(self)
+        self.bot.add_view(self.vote_view)
+
+    def cog_unload(self):
+        # Clean up view when cog is unloaded/reloaded
+        self.bot.remove_view(self.vote_view)
 
     # --- PUBLIC API ---
 
@@ -526,6 +571,44 @@ class VibeCheck(getattr(commands, "Cog", object)):
         await self.conf.guild(ctx.guild).log_channel_id.set(channel.id)
         await ctx.send(f"Vibe activity will now be logged in {channel.mention}.")
 
+    # --- VOTING CONFIG COMMANDS ---
+
+    @vibecheckset.group(name="modactions")
+    async def mod_actions_group(self, ctx: commands.Context):
+        """Configure the Mod Vote Action system for kicks."""
+        pass
+
+    @mod_actions_group.command(name="actionchannel")
+    async def set_mod_action_channel(self, ctx: commands.Context, channel: discord.TextChannel = None):
+        """Set the channel where Vote Embeds (Boot/Wait) will appear."""
+        if channel is None:
+            await self.conf.guild(ctx.guild).mod_action_channel_id.set(None)
+            return await ctx.send("Mod Action Vote channel disabled.")
+        
+        await self.conf.guild(ctx.guild).mod_action_channel_id.set(channel.id)
+        await ctx.send(f"Mod Action voting embeds will appear in {channel.mention}.")
+
+    @mod_actions_group.command(name="logchannel")
+    async def set_mod_log_channel(self, ctx: commands.Context, channel: discord.TextChannel = None):
+        """Set the channel where individual moderator votes are logged."""
+        if channel is None:
+            await self.conf.guild(ctx.guild).mod_log_channel_id.set(None)
+            return await ctx.send("Mod Action vote logging disabled.")
+        
+        await self.conf.guild(ctx.guild).mod_log_channel_id.set(channel.id)
+        await ctx.send(f"Mod Action votes will be logged in {channel.mention}.")
+
+    @mod_actions_group.command(name="votes")
+    async def set_vote_requirements(self, ctx: commands.Context, boot_votes: int, wait_votes: int):
+        """Set the number of votes needed to Boot or Wait."""
+        if boot_votes < 1 or wait_votes < 1:
+            return await ctx.send("Vote requirements must be at least 1.")
+        
+        await self.conf.guild(ctx.guild).votes_needed_boot.set(boot_votes)
+        await self.conf.guild(ctx.guild).votes_needed_wait.set(wait_votes)
+        await ctx.send(f"**Vote Requirements Updated:**\nBoot: {boot_votes} votes\nWait: {wait_votes} votes")
+
+
     # --- COOLDOWN COMMANDS ---
 
     @vibecheckset.group(name="cooldown")
@@ -583,15 +666,23 @@ class VibeCheck(getattr(commands, "Cog", object)):
         )
 
     @vibecheckset.command(name="kick")
-    async def set_kick(self, ctx: commands.Context, threshold: int, *, reason: str = "VibeCheck: Very low vibe score"):
-        """Configure WarnSystem Level 3 (Kick)."""
+    async def set_kick(self, ctx: commands.Context, threshold: Optional[int] = None, *, reason: Optional[str] = None):
+        """
+        Configure WarnSystem Level 3 (Kick).
+        Run without arguments to see help.
+        """
+        if threshold is None:
+            return await ctx.send_help()
+            
+        if reason is None:
+            reason = "VibeCheck: Very low vibe score"
+
         if threshold > 0:
             return await ctx.send("The threshold must be a negative integer (e.g., `-50`). Set to 0 to disable.")
 
         if threshold == 0:
             await self.conf.guild(ctx.guild).kick_threshold.set(None)
-            await ctx.send("WarnSystem Level 3 triggers have been **disabled**.")
-            return
+            return await ctx.send("WarnSystem Level 3 triggers have been **disabled**.")
 
         await self.conf.guild(ctx.guild).kick_threshold.set(threshold)
         await self.conf.guild(ctx.guild).kick_reason.set(reason)
@@ -602,15 +693,23 @@ class VibeCheck(getattr(commands, "Cog", object)):
         )
 
     @vibecheckset.command(name="ban")
-    async def set_ban(self, ctx: commands.Context, threshold: int, *, reason: str = "VibeCheck: Critically low vibe score"):
-        """Configure WarnSystem Level 5 (Ban)."""
+    async def set_ban(self, ctx: commands.Context, threshold: Optional[int] = None, *, reason: Optional[str] = None):
+        """
+        Configure WarnSystem Level 5 (Ban).
+        Run without arguments to see help.
+        """
+        if threshold is None:
+            return await ctx.send_help()
+            
+        if reason is None:
+            reason = "VibeCheck: Critically low vibe score"
+
         if threshold > 0:
             return await ctx.send("The threshold must be a negative integer (e.g., `-100`). Set to 0 to disable.")
 
         if threshold == 0:
             await self.conf.guild(ctx.guild).ban_threshold.set(None)
-            await ctx.send("WarnSystem Level 5 triggers have been **disabled**.")
-            return
+            return await ctx.send("WarnSystem Level 5 triggers have been **disabled**.")
 
         await self.conf.guild(ctx.guild).ban_threshold.set(threshold)
         await self.conf.guild(ctx.guild).ban_reason.set(reason)
@@ -729,6 +828,16 @@ class VibeCheck(getattr(commands, "Cog", object)):
         req_good_str = f"Level {req_good}" if req_good > 0 else "None"
         req_bad_str = f"Level {req_bad}" if req_bad > 0 else "None"
 
+        # --- Mod Action Settings (New) ---
+        mod_act_chan = settings.get('mod_action_channel_id')
+        mod_act_str = f"<#{mod_act_chan}>" if mod_act_chan else "Disabled"
+        
+        mod_log_chan = settings.get('mod_log_channel_id')
+        mod_log_str = f"<#{mod_log_chan}>" if mod_log_chan else "Disabled"
+        
+        votes_boot = settings.get('votes_needed_boot', 2)
+        votes_wait = settings.get('votes_needed_wait', 2)
+
         embed = discord.Embed(title=f"VibeCheck Settings for {ctx.guild.name}", color=discord.Color.blue())
         embed.add_field(name="Log Channel", value=log_text, inline=False)
         
@@ -748,6 +857,11 @@ class VibeCheck(getattr(commands, "Cog", object)):
         embed.add_field(name="WarnSystem Lvl 1", value=warn_thresh_str, inline=False)
         embed.add_field(name="WarnSystem Lvl 3", value=kick_thresh_str, inline=False)
         embed.add_field(name="WarnSystem Lvl 5", value=ban_thresh_str, inline=False)
+
+        # New Fields
+        embed.add_field(name="Mod Action Channel", value=mod_act_str, inline=True)
+        embed.add_field(name="Mod Log Channel", value=mod_log_str, inline=True)
+        embed.add_field(name="Votes (Boot/Wait)", value=f"{votes_boot}/{votes_wait}", inline=True)
         
         await ctx.send(embed=embed)
 
@@ -988,6 +1102,14 @@ class VibeCheck(getattr(commands, "Cog", object)):
         except Exception as e:
             log.error(f"Failed to grant LevelUp XP: {e}")
 
+    async def _get_active_vote_msg_id(self, guild: discord.Guild, user_id: int) -> Optional[str]:
+        """Check if user has an ongoing kick vote."""
+        active_votes = await self.conf.guild(guild).active_votes()
+        for msg_id, data in active_votes.items():
+            if data["target_id"] == user_id:
+                return msg_id
+        return None
+
     async def _add_vibes(self, giver: discord.User, receiver: discord.User, amount: int, is_good: bool):
         """
         Handles the core logic for adding/subtracting vibes and triggering checks.
@@ -1060,7 +1182,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
                                     await self._give_levelup_xp(target_guild, member_receiver, xp_amount)
                                     await receiver_settings.new_member_xp_awarded.set(True)
 
-        # 5. Run WarnSystem Integration Check
+        # 5. Run WarnSystem Integration Check (With Anti-Spam)
         if new_vibes < current_vibes:
             guild_conf = self.conf.guild(target_guild)
             all_guild_settings = await guild_conf.all()
@@ -1082,51 +1204,199 @@ class VibeCheck(getattr(commands, "Cog", object)):
             # Warn Author is always the Bot
             warn_author = target_guild.me
 
-            # 0. Negative Nancy Check (New)
-            if (nn_score_thresh is not None and nn_ratio_thresh is not None and 
-                new_vibes <= nn_score_thresh and receiver_ratio <= nn_ratio_thresh):
-                
-                reason = f"Your vibe score is {new_vibes}, and your vibe ratio is {receiver_ratio}"
-                
-                level_map = {"warn": 1, "kick": 3, "ban": 5}
-                level = level_map.get(nn_action, 1)
-                
-                await self._trigger_warnsystem(target_guild, member_receiver, warn_author, level, reason)
-                triggered = True
+            # 0. Negative Nancy Check (Cross-Line Check for Anti-Spam)
+            if (nn_score_thresh is not None and nn_ratio_thresh is not None):
+                # Only trigger if they JUST crossed the score threshold downwards
+                # (Assuming ratio was already low or became low simultaneously, but score drop triggered this)
+                if (current_vibes > nn_score_thresh >= new_vibes) and (receiver_ratio <= nn_ratio_thresh):
+                    
+                    reason = f"Your vibe score is {new_vibes}, and your vibe ratio is {receiver_ratio}"
+                    
+                    level_map = {"warn": 1, "kick": 3, "ban": 5}
+                    level = level_map.get(nn_action, 1)
+                    
+                    await self._trigger_warnsystem(target_guild, member_receiver, warn_author, level, reason)
+                    triggered = True
 
-            # 1. Ban
-            if not triggered and ban_thresh is not None and new_vibes <= ban_thresh:
-                reason = all_guild_settings.get('ban_reason')
-                await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 5, f"{reason} (Score: {new_vibes})")
-                triggered = True
+            # 1. Ban (Cross-Line Check)
+            if not triggered and ban_thresh is not None:
+                if current_vibes > ban_thresh >= new_vibes:
+                    reason = all_guild_settings.get('ban_reason')
+                    await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 5, f"{reason} (Score: {new_vibes})")
+                    triggered = True
             
-            # 2. New Member Kick (If not banned)
-            if not triggered and new_mem_age is not None and new_mem_thresh is not None and new_vibes <= new_mem_thresh:
-                if member_receiver.joined_at:
-                    joined_at = member_receiver.joined_at
-                    if joined_at.tzinfo is None:
-                        joined_at = joined_at.replace(tzinfo=timezone.utc)
-                    now = datetime.now(timezone.utc)
-                    if (now - joined_at).total_seconds() < new_mem_age:
-                        reason = all_guild_settings.get('new_member_kick_reason')
-                        await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 3, f"{reason} (Score: {new_vibes})")
-                        triggered = True
+            # 2. New Member Kick (Cross-Line Check)
+            if not triggered and new_mem_age is not None and new_mem_thresh is not None:
+                if current_vibes > new_mem_thresh >= new_vibes:
+                    if member_receiver.joined_at:
+                        joined_at = member_receiver.joined_at
+                        if joined_at.tzinfo is None:
+                            joined_at = joined_at.replace(tzinfo=timezone.utc)
+                        now = datetime.now(timezone.utc)
+                        if (now - joined_at).total_seconds() < new_mem_age:
+                            reason = all_guild_settings.get('new_member_kick_reason')
+                            await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 3, f"{reason} (Score: {new_vibes})")
+                            triggered = True
 
-            # 3. Standard Kick
+            # 3. Standard Kick / Vote (Cross-Line Check OR New Vote Check)
             if not triggered and kick_thresh is not None and new_vibes <= kick_thresh:
-                reason = all_guild_settings.get('kick_reason')
-                await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 3, f"{reason} (Score: {new_vibes})")
-                triggered = True
+                mod_action_channel_id = all_guild_settings.get("mod_action_channel_id")
+                
+                if mod_action_channel_id:
+                     # START VOTE: Check for existing active vote first to prevent spam
+                    existing_vote = await self._get_active_vote_msg_id(target_guild, member_receiver.id)
+                    if not existing_vote:
+                        await self._start_kick_vote(target_guild, member_receiver, new_vibes, kick_thresh)
+                    # If vote exists, we do nothing (prevent spam)
+                    triggered = True 
+                else:
+                    # Fallback to immediate kick - Only trigger if crossing line
+                    if current_vibes > kick_thresh >= new_vibes:
+                        reason = all_guild_settings.get('kick_reason')
+                        await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 3, f"{reason} (Score: {new_vibes})")
+                    triggered = True
 
-            # 4. Standard Warn
-            if not triggered and warn_thresh is not None and new_vibes <= warn_thresh:
-                reason = all_guild_settings.get('warn_reason')
-                await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 1, f"{reason} (Score: {new_vibes})")
-                triggered = True
+            # 4. Standard Warn (Cross-Line Check)
+            if not triggered and warn_thresh is not None:
+                if current_vibes > warn_thresh >= new_vibes:
+                    reason = all_guild_settings.get('warn_reason')
+                    await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 1, f"{reason} (Score: {new_vibes})")
+                    triggered = True
         
         # 6. Perform Logging
         await self._log_vibe_change(target_guild, giver, member_receiver, amount, current_vibes, new_vibes)
         
+    async def _calculate_unique_haters(self, user_id: int) -> int:
+        """Count how many unique users have given bad vibes to this user."""
+        all_users = await self.conf.all_users()
+        unique_haters = 0
+        user_id_str = str(user_id)
+        
+        for giver_id, data in all_users.items():
+            interactions = data.get("interactions", {})
+            if user_id_str in interactions:
+                if interactions[user_id_str].get("bad", 0) > 0:
+                    unique_haters += 1
+        return unique_haters
+
+    async def _start_kick_vote(self, guild: discord.Guild, member: discord.Member, current_score: int, threshold: int):
+        """
+        Starts a vote in the configured Mod Action Channel.
+        """
+        channel_id = await self.conf.guild(guild).mod_action_channel_id()
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            return
+
+        unique_haters = await self._calculate_unique_haters(member.id)
+
+        embed = discord.Embed(
+            title="VIBECHECK - VibeScore below threshold",
+            description=f"{member.mention}'s score has fallen below {threshold}.\n"
+                        f"**User ID:** {member.id}\n"
+                        f"**Current Score:** {current_score}\n"
+                        f"They got bad vibes from **{unique_haters}** users.",
+            color=discord.Color.orange()
+        )
+        if member.display_avatar:
+            embed.set_thumbnail(url=member.display_avatar.url)
+
+        msg = await channel.send(embed=embed, view=self.vote_view)
+
+        # Store Vote State
+        async with self.conf.guild(guild).active_votes() as votes:
+            votes[str(msg.id)] = {
+                "target_id": member.id,
+                "boot_votes": [],
+                "wait_votes": [],
+                "threshold_score": threshold,
+                "created_at": time.time()
+            }
+
+    async def process_vote(self, interaction: discord.Interaction, vote_type: str):
+        """
+        Processes a button click on a voting embed.
+        """
+        await interaction.response.defer()
+        
+        msg_id = str(interaction.message.id)
+        guild = interaction.guild
+        
+        async with self.conf.guild(guild).active_votes() as votes:
+            if msg_id not in votes:
+                return await interaction.followup.send("This vote is no longer active.", ephemeral=True)
+            
+            vote_data = votes[msg_id]
+            user_id = interaction.user.id
+            
+            # Check if user already voted in either category
+            if user_id in vote_data["boot_votes"] or user_id in vote_data["wait_votes"]:
+                return await interaction.followup.send("You have already voted on this.", ephemeral=True)
+            
+            # Register Vote
+            if vote_type == "boot":
+                vote_data["boot_votes"].append(user_id)
+            else:
+                vote_data["wait_votes"].append(user_id)
+            
+            # Save required to read updated counts below
+            votes[msg_id] = vote_data 
+
+        # Log the vote
+        log_chan_id = await self.conf.guild(guild).mod_log_channel_id()
+        if log_chan_id:
+            log_chan = guild.get_channel(log_chan_id)
+            if log_chan:
+                emoji = "🥾" if vote_type == "boot" else "🛑"
+                await log_chan.send(f"{emoji} **{interaction.user}** voted to **{vote_type.upper()}** (Msg: {msg_id})")
+
+        # Check Thresholds
+        settings = await self.conf.guild(guild).all()
+        votes_needed_boot = settings.get("votes_needed_boot", 2)
+        votes_needed_wait = settings.get("votes_needed_wait", 2)
+        
+        boot_count = len(vote_data["boot_votes"])
+        wait_count = len(vote_data["wait_votes"])
+
+        target_member = guild.get_member(vote_data["target_id"])
+        
+        action_taken = False
+        
+        if boot_count >= votes_needed_boot:
+            action_taken = True
+            if target_member:
+                reason = settings.get("kick_reason", "VibeCheck: Very low vibe score")
+                # Trigger WarnSystem Level 3 (Kick) - Author is Bot
+                await self._trigger_warnsystem(guild, target_member, guild.me, 3, f"{reason} (Score: {vote_data['threshold_score']})")
+                
+                embed = interaction.message.embeds[0]
+                embed.color = discord.Color.red()
+                embed.add_field(name="Result", value=f"👢 **Booted** by {boot_count} votes.", inline=False)
+                await interaction.message.edit(embed=embed, view=None)
+            else:
+                await interaction.followup.send("User is no longer in the server.")
+                await interaction.message.delete()
+
+        elif wait_count >= votes_needed_wait:
+            action_taken = True
+            if target_member:
+                # Trigger WarnSystem Level 1 (Warning) with Custom Message
+                current_score = await self.conf.user(target_member).vibes()
+                reason = f"Your VibeScore is now {current_score}"
+                await self._trigger_warnsystem(guild, target_member, guild.me, 1, reason)
+                
+                embed = interaction.message.embeds[0]
+                embed.color = discord.Color.green()
+                embed.add_field(name="Result", value=f"🛑 **Waited** (Warned) by {wait_count} votes.", inline=False)
+                await interaction.message.edit(embed=embed, view=None)
+            else:
+                await interaction.message.delete()
+
+        if action_taken:
+            async with self.conf.guild(guild).active_votes() as votes:
+                if msg_id in votes:
+                    del votes[msg_id]
+
     async def _trigger_warnsystem(self, guild: discord.Guild, member: discord.Member, author: discord.User, level: int, reason: str):
         """
         Attempts to trigger Laggron's WarnSystem if loaded.
@@ -1202,6 +1472,9 @@ class VibeCheck(getattr(commands, "Cog", object)):
             )
         elif isinstance(error, commands.MemberNotFound):
             await ctx.send(f"Member not found: {str(error)}", ephemeral=True)
+        elif isinstance(error, commands.MissingRequiredArgument):
+            # This catches other missing args, but kick/ban are handled manually now
+            await ctx.send_help()
         else:
             raise error 
                 
