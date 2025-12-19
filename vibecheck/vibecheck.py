@@ -1056,6 +1056,14 @@ class VibeCheck(getattr(commands, "Cog", object)):
         except Exception as e:
             log.error(f"Failed to grant LevelUp XP: {e}")
 
+    async def _get_active_vote_msg_id(self, guild: discord.Guild, user_id: int) -> Optional[str]:
+        """Check if user has an ongoing kick vote."""
+        active_votes = await self.conf.guild(guild).active_votes()
+        for msg_id, data in active_votes.items():
+            if data["target_id"] == user_id:
+                return msg_id
+        return None
+
     async def _add_vibes(self, giver: discord.User, receiver: discord.User, amount: int, is_good: bool):
         """
         Handles the core logic for adding/subtracting vibes and triggering checks.
@@ -1128,7 +1136,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
                                     await self._give_levelup_xp(target_guild, member_receiver, xp_amount)
                                     await receiver_settings.new_member_xp_awarded.set(True)
 
-        # 5. Run WarnSystem Integration Check
+        # 5. Run WarnSystem Integration Check (With Anti-Spam)
         if new_vibes < current_vibes:
             guild_conf = self.conf.guild(target_guild)
             all_guild_settings = await guild_conf.all()
@@ -1150,56 +1158,64 @@ class VibeCheck(getattr(commands, "Cog", object)):
             # Warn Author is always the Bot
             warn_author = target_guild.me
 
-            # 0. Negative Nancy Check (New)
-            if (nn_score_thresh is not None and nn_ratio_thresh is not None and 
-                new_vibes <= nn_score_thresh and receiver_ratio <= nn_ratio_thresh):
-                
-                reason = f"Your vibe score is {new_vibes}, and your vibe ratio is {receiver_ratio}"
-                
-                level_map = {"warn": 1, "kick": 3, "ban": 5}
-                level = level_map.get(nn_action, 1)
-                
-                await self._trigger_warnsystem(target_guild, member_receiver, warn_author, level, reason)
-                triggered = True
+            # 0. Negative Nancy Check (Cross-Line Check for Anti-Spam)
+            if (nn_score_thresh is not None and nn_ratio_thresh is not None):
+                # Only trigger if they JUST crossed the score threshold downwards
+                # (Assuming ratio was already low or became low simultaneously, but score drop triggered this)
+                if (current_vibes > nn_score_thresh >= new_vibes) and (receiver_ratio <= nn_ratio_thresh):
+                    
+                    reason = f"Your vibe score is {new_vibes}, and your vibe ratio is {receiver_ratio}"
+                    
+                    level_map = {"warn": 1, "kick": 3, "ban": 5}
+                    level = level_map.get(nn_action, 1)
+                    
+                    await self._trigger_warnsystem(target_guild, member_receiver, warn_author, level, reason)
+                    triggered = True
 
-            # 1. Ban
-            if not triggered and ban_thresh is not None and new_vibes <= ban_thresh:
-                reason = all_guild_settings.get('ban_reason')
-                await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 5, f"{reason} (Score: {new_vibes})")
-                triggered = True
+            # 1. Ban (Cross-Line Check)
+            if not triggered and ban_thresh is not None:
+                if current_vibes > ban_thresh >= new_vibes:
+                    reason = all_guild_settings.get('ban_reason')
+                    await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 5, f"{reason} (Score: {new_vibes})")
+                    triggered = True
             
-            # 2. New Member Kick (If not banned)
-            if not triggered and new_mem_age is not None and new_mem_thresh is not None and new_vibes <= new_mem_thresh:
-                if member_receiver.joined_at:
-                    joined_at = member_receiver.joined_at
-                    if joined_at.tzinfo is None:
-                        joined_at = joined_at.replace(tzinfo=timezone.utc)
-                    now = datetime.now(timezone.utc)
-                    if (now - joined_at).total_seconds() < new_mem_age:
-                        reason = all_guild_settings.get('new_member_kick_reason')
-                        await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 3, f"{reason} (Score: {new_vibes})")
-                        triggered = True
+            # 2. New Member Kick (Cross-Line Check)
+            if not triggered and new_mem_age is not None and new_mem_thresh is not None:
+                if current_vibes > new_mem_thresh >= new_vibes:
+                    if member_receiver.joined_at:
+                        joined_at = member_receiver.joined_at
+                        if joined_at.tzinfo is None:
+                            joined_at = joined_at.replace(tzinfo=timezone.utc)
+                        now = datetime.now(timezone.utc)
+                        if (now - joined_at).total_seconds() < new_mem_age:
+                            reason = all_guild_settings.get('new_member_kick_reason')
+                            await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 3, f"{reason} (Score: {new_vibes})")
+                            triggered = True
 
-            # 3. Standard Kick (With Voting)
+            # 3. Standard Kick / Vote (Cross-Line Check OR New Vote Check)
             if not triggered and kick_thresh is not None and new_vibes <= kick_thresh:
-                # Check if voting channel is configured
                 mod_action_channel_id = all_guild_settings.get("mod_action_channel_id")
                 
                 if mod_action_channel_id:
-                     # START VOTE (Replaces immediate kick)
-                    await self._start_kick_vote(target_guild, member_receiver, new_vibes, kick_thresh)
-                    triggered = True # Triggered handled by vote
+                     # START VOTE: Check for existing active vote first to prevent spam
+                    existing_vote = await self._get_active_vote_msg_id(target_guild, member_receiver.id)
+                    if not existing_vote:
+                        await self._start_kick_vote(target_guild, member_receiver, new_vibes, kick_thresh)
+                    # If vote exists, we do nothing (prevent spam)
+                    triggered = True 
                 else:
-                    # Fallback to immediate kick
-                    reason = all_guild_settings.get('kick_reason')
-                    await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 3, f"{reason} (Score: {new_vibes})")
+                    # Fallback to immediate kick - Only trigger if crossing line
+                    if current_vibes > kick_thresh >= new_vibes:
+                        reason = all_guild_settings.get('kick_reason')
+                        await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 3, f"{reason} (Score: {new_vibes})")
                     triggered = True
 
-            # 4. Standard Warn
-            if not triggered and warn_thresh is not None and new_vibes <= warn_thresh:
-                reason = all_guild_settings.get('warn_reason')
-                await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 1, f"{reason} (Score: {new_vibes})")
-                triggered = True
+            # 4. Standard Warn (Cross-Line Check)
+            if not triggered and warn_thresh is not None:
+                if current_vibes > warn_thresh >= new_vibes:
+                    reason = all_guild_settings.get('warn_reason')
+                    await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 1, f"{reason} (Score: {new_vibes})")
+                    triggered = True
         
         # 6. Perform Logging
         await self._log_vibe_change(target_guild, giver, member_receiver, amount, current_vibes, new_vibes)
