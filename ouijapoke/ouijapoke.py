@@ -32,6 +32,10 @@ class OuijaSettings(BaseModel):
     poke_days: int = Field(default=30, ge=1, description="Days a member must be inactive to be eligible for a poke.")
     summon_days: int = Field(default=60, ge=1, description="Days a member must be inactive to be eligible for a summon.")
     
+    # Event Odds (Percentages 0-100)
+    poke_odds: int = Field(default=10, ge=0, le=100, description="Percentage chance to poke.")
+    summon_odds: int = Field(default=10, ge=0, le=100, description="Percentage chance to summon.")
+    
     # WarnSystem Integration (Inactivity)
     warn_level_1_days: int = Field(default=0, ge=0, description="Days inactive to trigger Level 1 warning (0 to disable).")
     warn_level_3_days: int = Field(default=0, ge=0, description="Days inactive to trigger Level 3 warning (0 to disable).")
@@ -548,14 +552,25 @@ class OuijaPoke(commands.Cog):
         await self.config.guild(guild).warned_users.set(warned_users)
 
     async def _run_daily_lottery(self, guild: discord.Guild, channel: discord.TextChannel, settings: OuijaSettings) -> str:
-        """Runs the 10/10/80 probability logic. Returns a status string."""
+        """Runs the configurable probability logic. Returns a status string."""
         roll = random.random() # 0.0 to 1.0
         
-        # 10% Chance Summon (0.0 <= roll < 0.1)
-        if roll < 0.10:
+        # Convert percentages to 0.0-1.0 range
+        summon_prob = settings.summon_odds / 100.0
+        poke_prob = settings.poke_odds / 100.0
+        
+        # Cumulative thresholds
+        # Range 0 to summon_prob -> Summon
+        # Range summon_prob to (summon_prob + poke_prob) -> Poke
+        # Remainder -> Nothing
+        
+        summon_threshold = summon_prob
+        poke_threshold = summon_prob + poke_prob
+        
+        # 1. Summon Chance
+        if roll < summon_threshold:
             p1, p2 = await self._get_eligible_members(guild, settings.summon_days, "last_summoned")
             candidates = p1 + p2
-            # Spam filter: Remove anyone poked/summoned in last 14 days
             candidates = await self._filter_spam_protected(guild, candidates)
             
             if candidates:
@@ -563,15 +578,14 @@ class OuijaPoke(commands.Cog):
                 await self._set_last_action_time(guild, target.id, "last_summoned")
                 await self._send_activity_message_channel(channel, target, settings.summon_message, settings.summon_gifs)
                 log.info(f"OuijaPoke: Automatically summoned {target} in {guild.name}")
-                return f"🎲 Roll: {roll:.3f} (< 0.10) -> **SUMMONED** {target.display_name} in {channel.mention}."
+                return f"🎲 Roll: {roll:.3f} (< {summon_threshold:.2f}) -> **SUMMONED** {target.display_name} in {channel.mention}."
             else:
-                return f"🎲 Roll: {roll:.3f} (< 0.10) -> Summon triggered, but **NO ELIGIBLE CANDIDATES** found."
+                return f"🎲 Roll: {roll:.3f} (< {summon_threshold:.2f}) -> Summon triggered, but **NO ELIGIBLE CANDIDATES** found."
 
-        # 10% Chance Poke (0.1 <= roll < 0.2)
-        elif roll < 0.20:
+        # 2. Poke Chance
+        elif roll < poke_threshold:
             p1, p2 = await self._get_eligible_members(guild, settings.poke_days, "last_poked")
             candidates = p1 + p2
-            # Spam filter: Remove anyone poked/summoned in last 14 days
             candidates = await self._filter_spam_protected(guild, candidates)
             
             if candidates:
@@ -579,13 +593,13 @@ class OuijaPoke(commands.Cog):
                 await self._set_last_action_time(guild, target.id, "last_poked")
                 await self._send_activity_message_channel(channel, target, settings.poke_message, settings.poke_gifs)
                 log.info(f"OuijaPoke: Automatically poked {target} in {guild.name}")
-                return f"🎲 Roll: {roll:.3f} (< 0.20) -> **POKED** {target.display_name} in {channel.mention}."
+                return f"🎲 Roll: {roll:.3f} (< {poke_threshold:.2f}) -> **POKED** {target.display_name} in {channel.mention}."
             else:
-                return f"🎲 Roll: {roll:.3f} (< 0.20) -> Poke triggered, but **NO ELIGIBLE CANDIDATES** found."
+                return f"🎲 Roll: {roll:.3f} (< {poke_threshold:.2f}) -> Poke triggered, but **NO ELIGIBLE CANDIDATES** found."
 
-        # 80% Chance Nothing (0.2 <= roll <= 1.0)
+        # 3. Nothing
         else:
-            return f"🎲 Roll: {roll:.3f} (>= 0.20) -> **The spirits are quiet.** (No action taken)."
+            return f"🎲 Roll: {roll:.3f} (>= {poke_threshold:.2f}) -> **The spirits are quiet.** (No action taken)."
 
     async def _send_activity_message_channel(self, channel: discord.TextChannel, member: discord.Member, message_text: str, gif_list: list[str]):
         """Sends the message text and the GIF URL as two separate messages to a specific channel."""
@@ -1017,7 +1031,7 @@ class OuijaPoke(commands.Cog):
             value=(
                 f"**Auto Channel:** {auto_chan_mention}\n"
                 f"**Next Run:** {next_run_str}\n"
-                f"**Odds:** 10% Poke / 10% Summon / 80% Idle"
+                f"**Odds:** {settings.poke_odds}% Poke / {settings.summon_odds}% Summon / {100 - settings.poke_odds - settings.summon_odds}% Idle"
             ),
             inline=False
         )
@@ -1067,7 +1081,7 @@ class OuijaPoke(commands.Cog):
         """
         [Debug] Forces the automatic daily routine to run immediately.
         
-        Note: This ignores the schedule but still respects the probability (10/10/80) and spam filters.
+        Note: This ignores the schedule but still respects the configured odds and spam filters.
         It will reschedule the next run after completion.
         """
         settings = await self._get_settings(ctx.guild)
@@ -1099,6 +1113,57 @@ class OuijaPoke(commands.Cog):
         settings.summon_days = days
         await self._set_settings(ctx.guild, settings)
         await ctx.send(f"Summon eligibility set to **{days}** days.")
+
+    # --- New Odds Configuration ---
+    
+    @ouijaset.group(name="odds", invoke_without_command=True)
+    async def ouijaset_odds(self, ctx: commands.Context):
+        """Manages the probabilities for automatic pokes and summons."""
+        settings = await self._get_settings(ctx.guild)
+        total = settings.poke_odds + settings.summon_odds
+        
+        embed = discord.Embed(
+            title="🎲 Event Odds",
+            description=f"Total Event Chance: **{total}%**\nIdle Chance: **{max(0, 100 - total)}%**",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="Poke Odds", value=f"{settings.poke_odds}%")
+        embed.add_field(name="Summon Odds", value=f"{settings.summon_odds}%")
+        embed.set_footer(text="Use [p]ouijaset odds poke/summon <percent> to change.")
+        
+        await ctx.send(embed=embed)
+
+    @ouijaset_odds.command(name="poke")
+    async def odds_poke(self, ctx: commands.Context, percent: int):
+        """Sets the percentage chance (0-100) for a poke event."""
+        if percent < 0 or percent > 100:
+            return await ctx.send("Percentage must be between 0 and 100.")
+            
+        settings = await self._get_settings(ctx.guild)
+        
+        if percent + settings.summon_odds > 100:
+            return await ctx.send(f"Cannot set poke to {percent}% because summon is {settings.summon_odds}%. Total cannot exceed 100%.")
+            
+        settings.poke_odds = percent
+        await self._set_settings(ctx.guild, settings)
+        await ctx.send(f"Poke odds set to **{percent}%**.")
+
+    @ouijaset_odds.command(name="summon")
+    async def odds_summon(self, ctx: commands.Context, percent: int):
+        """Sets the percentage chance (0-100) for a summon event."""
+        if percent < 0 or percent > 100:
+            return await ctx.send("Percentage must be between 0 and 100.")
+            
+        settings = await self._get_settings(ctx.guild)
+        
+        if percent + settings.poke_odds > 100:
+            return await ctx.send(f"Cannot set summon to {percent}% because poke is {settings.poke_odds}%. Total cannot exceed 100%.")
+            
+        settings.summon_odds = percent
+        await self._set_settings(ctx.guild, settings)
+        await ctx.send(f"Summon odds set to **{percent}%**.")
+
+    # --- End Odds Configuration ---
 
     @ouijaset.command(name="activitythreshold")
     async def ouijaset_activitythreshold(self, ctx: commands.Context, messages: int, hours: float):
