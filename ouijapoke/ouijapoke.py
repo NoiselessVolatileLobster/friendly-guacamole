@@ -1640,6 +1640,32 @@ class OuijaPoke(commands.Cog):
 
     # --- Override/Reset ---
 
+    @ouijaset.command(name="backfill")
+    async def ouijaset_backfill(self, ctx: commands.Context, days_ago: int):
+        """
+        Assigns a 'last active' date to all members who currently have NO data.
+        
+        This command is useful for initializing the cog on a server with existing members,
+        ensuring they don't show up as having "Unknown" or "Never" activity.
+        """
+        if days_ago < 0: return await ctx.send("Days must be >= 0.")
+        
+        async with ctx.typing():
+            target_dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
+            target_str = target_dt.isoformat()
+            
+            async with self.config.guild(ctx.guild).last_seen() as data:
+                count = 0
+                for member in ctx.guild.members:
+                    if member.bot:
+                        continue
+                    
+                    if str(member.id) not in data:
+                        data[str(member.id)] = target_str
+                        count += 1
+                        
+        await ctx.send(f"✅ Initialized data for **{count}** members. They are now marked as active **{days_ago} days ago**.")
+
     @ouijaset.command(name="override")
     async def ouijaset_override(self, ctx: commands.Context, role: discord.Role, days_ago: int):
         """Overrides the last active date for all members of a given role."""
