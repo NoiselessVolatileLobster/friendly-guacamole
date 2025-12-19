@@ -27,12 +27,29 @@ class VibeCheckActionView(discord.ui.View):
         self.cog = cog
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        """Ensure only moderators can click the buttons."""
-        # Using Red's permission logic check
-        if await self.cog.bot.is_owner(interaction.user):
+        """Ensure only authorized users can click the buttons."""
+        guild = interaction.guild
+        if not guild:
+            return False
+
+        # 1. Always allow Bot Owner and Guild Owner
+        if await self.cog.bot.is_owner(interaction.user) or interaction.user.id == guild.owner_id:
             return True
+
+        # 2. Check for Specific Authorized Roles
+        authorized_role_ids = await self.cog.conf.guild(guild).authorized_voter_role_ids()
         
-        # Check for Mod permissions (Manage Messages or Manage Guild as a heuristic for Mod)
+        if authorized_role_ids:
+            # If roles are configured, the user MUST have one of them
+            user_role_ids = [r.id for r in interaction.user.roles]
+            if any(rid in user_role_ids for rid in authorized_role_ids):
+                return True
+            
+            # If they don't have the role, deny entry
+            await interaction.response.send_message("You are not authorized to vote on this vibe check.", ephemeral=True)
+            return False
+
+        # 3. Fallback: Standard Mod Permissions (Manage Messages or Manage Guild)
         perms = interaction.channel.permissions_for(interaction.user)
         if perms.manage_messages or perms.manage_guild:
             return True
@@ -114,6 +131,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
             mod_log_channel_id=None,    # Where votes are logged
             votes_needed_boot=2,
             votes_needed_wait=2,
+            authorized_voter_role_ids=[], # List of Role IDs allowed to vote
             active_votes={} # {message_id_str: {target_id: int, boot_votes: [uid], wait_votes: [uid], threshold_score: int}}
         )
 
@@ -608,6 +626,23 @@ class VibeCheck(getattr(commands, "Cog", object)):
         await self.conf.guild(ctx.guild).votes_needed_wait.set(wait_votes)
         await ctx.send(f"**Vote Requirements Updated:**\nBoot: {boot_votes} votes\nWait: {wait_votes} votes")
 
+    @mod_actions_group.command(name="voteroles")
+    async def set_vote_roles(self, ctx: commands.Context, *roles: discord.Role):
+        """
+        Set the roles allowed to vote on VibeChecks.
+        
+        Usage: [p]vibecheckset modactions voteroles @Moderator @Admin
+        Run without arguments to reset to default (Mods/Admins permissions).
+        """
+        if not roles:
+            await self.conf.guild(ctx.guild).authorized_voter_role_ids.set([])
+            return await ctx.send("Vote restriction removed. Defaulting to Mods/Admins permissions.")
+
+        role_ids = [r.id for r in roles]
+        await self.conf.guild(ctx.guild).authorized_voter_role_ids.set(role_ids)
+        role_mentions = ", ".join(r.mention for r in roles)
+        await ctx.send(f"The following roles are now authorized to vote: {role_mentions}")
+
 
     # --- COOLDOWN COMMANDS ---
 
@@ -837,6 +872,15 @@ class VibeCheck(getattr(commands, "Cog", object)):
         
         votes_boot = settings.get('votes_needed_boot', 2)
         votes_wait = settings.get('votes_needed_wait', 2)
+        
+        # Authorized Roles
+        auth_role_ids = settings.get('authorized_voter_role_ids', [])
+        if auth_role_ids:
+            # We can't guarantee fetching role objects here cleanly without extra calls, so we show count or IDs
+            # But context is available, so we can try
+            auth_roles_str = f"{len(auth_role_ids)} Roles Set"
+        else:
+            auth_roles_str = "Default (Mods/Admins)"
 
         embed = discord.Embed(title=f"VibeCheck Settings for {ctx.guild.name}", color=discord.Color.blue())
         embed.add_field(name="Log Channel", value=log_text, inline=False)
@@ -862,6 +906,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
         embed.add_field(name="Mod Action Channel", value=mod_act_str, inline=True)
         embed.add_field(name="Mod Log Channel", value=mod_log_str, inline=True)
         embed.add_field(name="Votes (Boot/Wait)", value=f"{votes_boot}/{votes_wait}", inline=True)
+        embed.add_field(name="Authorized Voter Roles", value=auth_roles_str, inline=True)
         
         await ctx.send(embed=embed)
 
