@@ -278,10 +278,36 @@ class VibeCheck(getattr(commands, "Cog", object)):
         await ctx.send("You sent bad vibes to {}!".format(user.name))
 
     @commands.command(name="vibes")
-    @checks.mod_or_permissions(manage_messages=True)
     @commands.guild_only()
     async def get_vibes(self, ctx: commands.Context, user: discord.Member = None):
-        """Check a user's vibes (Mods/Admins only)."""
+        """
+        Check a user's vibes.
+        
+        Authorized for:
+        - Moderators (Manage Messages/Guild)
+        - Users with specific roles configured in `[p]vibecheckset modactions voteroles`
+        """
+        # --- Authorization Check ---
+        is_authorized = False
+        
+        # 1. Check Standard Permissions (Owner/Admin/Mod/Manage Messages)
+        if await self.bot.is_owner(ctx.author) or await self.bot.is_mod(ctx.author):
+            is_authorized = True
+        elif ctx.channel.permissions_for(ctx.author).manage_messages:
+            is_authorized = True
+        
+        # 2. Check Custom Roles (If not already authorized)
+        if not is_authorized:
+            authorized_role_ids = await self.conf.guild(ctx.guild).authorized_voter_role_ids()
+            if authorized_role_ids:
+                user_role_ids = [r.id for r in ctx.author.roles]
+                if any(rid in user_role_ids for rid in authorized_role_ids):
+                    is_authorized = True
+        
+        if not is_authorized:
+            return await ctx.send("You are not authorized to view vibe details.", ephemeral=True)
+        # ---------------------------
+
         if user is None:
             user = ctx.author
 
@@ -1612,7 +1638,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
             raise error 
                 
     async def _get_all_members(self, bot):
-        """Get a list of members which have vibes."""
+        """Get a list of members with vibes."""
         ret = []
         for user_id, conf in (await self.conf.all_users()).items():
             vibes = conf.get("vibes")
