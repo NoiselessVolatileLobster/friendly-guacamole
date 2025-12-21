@@ -5,7 +5,7 @@ import re
 import datetime
 import json
 import os
-from typing import Optional, Literal, Dict
+from typing import Optional, Literal, Dict, List
 from collections import Counter
 import math
 
@@ -33,8 +33,10 @@ class Gortle(commands.Cog):
         # Initialize lists
         self.solutions = []
         self.guesses = []
-        # Cache for emoji IDs to avoid async config calls in rendering
-        self.emoji_cache: Dict[str, int] = {} 
+        
+        # Caches
+        self.emoji_cache: Dict[str, int] = {} # Synced Guild Emojis (ID based)
+        self.app_emoji_cache: List[discord.Emoji] = [] # Application Emojis (Object based)
         
         self._load_word_lists()
 
@@ -85,8 +87,11 @@ class Gortle(commands.Cog):
         self.config.register_member(**default_member)
 
         self.game_loop_task = self.bot.loop.create_task(self.game_loop())
-        # Start a task to load emoji cache immediately
+        
+        # Start tasks to load caches
         self.bot.loop.create_task(self._load_emoji_cache())
+        self.bot.loop.create_task(self._fetch_app_emojis())
+        
         self.lock = asyncio.Lock()
 
     def cog_unload(self):
@@ -94,8 +99,18 @@ class Gortle(commands.Cog):
             self.game_loop_task.cancel()
 
     async def _load_emoji_cache(self):
-        """Loads the emoji map from config into memory."""
+        """Loads the guild emoji map from config into memory."""
         self.emoji_cache = await self.config.emoji_map()
+
+    async def _fetch_app_emojis(self):
+        """Fetches emojis uploaded directly to the Discord Application."""
+        try:
+            # wait_until_ready is crucial ensuring the bot is connected before API calls
+            await self.bot.wait_until_ready()
+            self.app_emoji_cache = await self.bot.fetch_application_emojis()
+            print(f"[Gortle] Cached {len(self.app_emoji_cache)} Application Emojis.")
+        except Exception as e:
+            print(f"[Gortle] Failed to fetch application emojis (Ignore this if not using App Emojis): {e}")
 
     def _load_word_lists(self):
         """Loads words from JSON files in the data directory."""
@@ -108,7 +123,6 @@ class Gortle(commands.Cog):
             with open(data_path / "guesses.json", "r", encoding="utf-8") as f:
                 raw_guesses = json.load(f)
                 
-            # Combine and deduplicate to ensure solutions are valid guesses
             combined = set(raw_guesses + self.solutions)
             self.guesses = list(combined)
             
@@ -124,19 +138,25 @@ class Gortle(commands.Cog):
     def _find_emoji(self, name_query: str) -> Optional[discord.Emoji]:
         """
         Search for an emoji.
-        Priority 1: Check the synced emoji map (ID based).
-        Priority 2: Scan all shared servers for a matching name.
+        Priority 1: Application Emojis (Uploaded to Dev Portal).
+        Priority 2: Synced Emoji ID (from [p]gortleset syncemojis).
+        Priority 3: Global search of all emojis the bot can see.
         """
         target = name_query.lower()
 
-        # 1. Check Cache (Synced ID)
+        # 1. Priority: Application Emojis
+        for emoji in self.app_emoji_cache:
+            if emoji.name.lower() == target:
+                return emoji
+
+        # 2. Priority: Synced ID Cache
         if target in self.emoji_cache:
             emoji_id = self.emoji_cache[target]
             emoji = self.bot.get_emoji(emoji_id)
             if emoji:
                 return emoji
 
-        # 2. Fallback: Search all emojis the bot can see by name
+        # 3. Fallback: Search all guild emojis
         for emoji in self.bot.emojis:
             if emoji.name.lower() == target:
                 return emoji
@@ -176,14 +196,11 @@ class Gortle(commands.Cog):
                     else:
                         letter_status[char] = self.EMOJI_PRESENT
         
-        # Fetch spacer emoji
         spacer = self._find_emoji("greysquare")
         spacer_str = str(spacer) if spacer else ":greysquare:"
 
         for i, row in enumerate(rows):
             line = ""
-            
-            # Left padding for row 3 (before Z)
             if i == 2:
                 line += f"{spacer_str}"
 
@@ -191,11 +208,8 @@ class Gortle(commands.Cog):
                 color = letter_status.get(char, self.EMOJI_UNUSED)
                 line += self._get_emoji_str(char, color)
             
-            # Right padding for row 2 (after L)
             if i == 1:
                 line += f"{spacer_str}"
-            
-            # Right padding for row 3 (after M) - two instances
             if i == 2:
                 line += f"{spacer_str}{spacer_str}"
 
@@ -204,7 +218,6 @@ class Gortle(commands.Cog):
         return "\n".join(visual_rows)
 
     def _calculate_next_auto_time(self, now, freq):
-        """Calculates the next timestamp for an auto-game based on frequency per hour."""
         if freq <= 0:
             return 0
             
@@ -215,30 +228,23 @@ class Gortle(commands.Cog):
         next_minute = int(next_slot_index * interval_minutes)
         
         if next_minute >= 60:
-            # Move to next hour
             next_time = now.replace(minute=0, second=0, microsecond=0) + datetime.timedelta(hours=1)
         else:
-            # Same hour
             next_time = now.replace(minute=next_minute, second=0, microsecond=0)
             
         return int(next_time.timestamp())
 
     async def game_loop(self):
-        """Checks schedule for new games and weekly roles."""
         await self.bot.wait_until_ready()
         while True:
             try:
                 now = datetime.datetime.now(datetime.timezone.utc)
                 timestamp = int(now.timestamp())
 
-                # 1. Check Weekly Role
                 await self.check_weekly_role(now)
 
-                # 2. Check Game Schedule
                 next_game_ts = await self.config.next_game_timestamp()
                 auto_freq = await self.config.schedule_auto_freq()
-                
-                # Check Sleep Status
                 sleep_streak = await self.config.consecutive_no_guesses()
                 
                 if auto_freq > 0 and sleep_streak < 3:
@@ -256,10 +262,8 @@ class Gortle(commands.Cog):
 
     async def start_new_game(self, manual=False):
         async with self.lock:
-            # Update Reset Timestamp for Cooldowns (Everyone starts fresh)
             await self.config.cooldown_reset_timestamp.set(int(datetime.datetime.now(datetime.timezone.utc).timestamp()))
 
-            # Check if previous game needs revealing or counting for sleep
             active = await self.config.game_active()
             old_word = await self.config.current_word()
             
@@ -279,14 +283,12 @@ class Gortle(commands.Cog):
                 return
 
             if active and old_word:
-                # Handle Expiration of previous game
                 embed = discord.Embed(title="Gortle Expired!", description=f"The word was **{old_word.upper()}**.", color=discord.Color.red())
                 thumb = await self.config.guild(target_channel.guild).thumbnail_url()
                 if thumb:
                     embed.set_thumbnail(url=thumb)
                 await target_channel.send(embed=embed)
 
-                # SLEEP LOGIC: Check if the expired game had 0 guesses
                 state = await self.config.game_state()
                 history = state.get("history", [])
                 
@@ -295,7 +297,6 @@ class Gortle(commands.Cog):
                     await self.config.consecutive_no_guesses.set(current_streak)
                     
                     if current_streak >= 3 and not manual:
-                        # New sleep embed message
                         sleep_embed = discord.Embed(
                             title="Gortle's Gone To Sleep", 
                             description=f"Three games with no guesses. Zzz...\nSay `wake up` to wake me up!",
@@ -315,7 +316,6 @@ class Gortle(commands.Cog):
             if manual:
                 await self.config.consecutive_no_guesses.set(0)
 
-            # Pick new word
             used = await self.config.used_words()
             available = [w for w in self.solutions if w not in used and len(w) == 6]
             
@@ -338,7 +338,6 @@ class Gortle(commands.Cog):
             await self.config.current_word.set(new_word)
             await self.config.game_active.set(True)
             
-            # Reset State
             new_state = {
                 "solved_indices": [],
                 "found_letters": [],
@@ -349,7 +348,6 @@ class Gortle(commands.Cog):
             }
             await self.config.game_state.set(new_state)
 
-            # Announce
             role_id = await self.config.guild(target_channel.guild).mention_role()
             mention = f"<@&{role_id}>" if role_id else ""
             
@@ -447,12 +445,10 @@ class Gortle(commands.Cog):
 
         content = message.content.lower().strip()
 
-        # Wake Up Check
         if "wake up" in content:
             is_active = await self.config.game_active()
             sleep_streak = await self.config.consecutive_no_guesses()
             
-            # If game is inactive and has a sleep streak >= 3
             if not is_active and sleep_streak >= 3:
                 await message.channel.send("🥱 I'm awake! Getting a new game ready...")
                 await self.start_new_game(manual=True)
@@ -468,7 +464,6 @@ class Gortle(commands.Cog):
         if not await self.config.game_active():
             return
             
-        # 1. Cooldown Check FIRST
         cooldown = await self.config.guild(message.guild).cooldown_seconds()
         last_guess = await self.config.member(message.author).last_guess_time()
         reset_ts = await self.config.cooldown_reset_timestamp()
@@ -486,7 +481,6 @@ class Gortle(commands.Cog):
                 pass
             return
 
-        # 2. Dictionary Check SECOND
         if guess not in self.guesses:
             await message.channel.send("I do not think that word is in my dictionary.", delete_after=5)
             return
@@ -494,15 +488,12 @@ class Gortle(commands.Cog):
         await self.config.member(message.author).last_guess_time.set(int(now))
         
         async with self.lock:
-            # Race Condition Check 1: Game ended while user was typing/in cooldown check
             if not await self.config.game_active():
                 await message.channel.send("The game has already ended.", delete_after=5)
                 return
 
-            # Race Condition Check 2: Word already guessed by someone else milliseconds ago
             state = await self.config.game_state()
             history = state.get("history", [])
-            # Check if word is already in history
             if any(entry.get("word") == guess for entry in history):
                 await message.channel.send("That word has already been guessed.", delete_after=5)
                 return
@@ -514,12 +505,10 @@ class Gortle(commands.Cog):
         state = await self.config.game_state()
         solved_indices = set(state['solved_indices'])
         
-        # Pre-calculate counts of letters that are ALREADY locked (Green)
         locked_chars = Counter()
         for idx in solved_indices:
             locked_chars[solution[idx]] += 1
 
-        # Track how many of each letter we have matched IN THIS GUESS
         matched_in_guess = Counter()
         
         guess_visual = [""] * 6
@@ -529,31 +518,21 @@ class Gortle(commands.Cog):
         guess_chars = list(guess)
         sol_remaining = list(solution) 
         
-        # 1. Pass for GREENS
         for i, char in enumerate(guess_chars):
             if char == sol_chars[i]:
                 guess_visual[i] = self._get_emoji_str(char, self.EMOJI_CORRECT)
                 sol_remaining[i] = None 
-                
-                # Mark this instance as matched in this guess
                 matched_in_guess[char] += 1
                 
                 if i not in solved_indices:
-                    # Determine if this is a "new" instance or an "upgrade"
                     k = matched_in_guess[char]
-                    
-                    # Calculate how many "Floating" (Yellow) instances of this char we knew about
                     total_known = state['found_letters'].count(char)
                     locked_count = locked_chars[char]
                     floating_known = max(0, total_known - locked_count)
                     
                     if floating_known >= k:
-                        # We knew about 'k' floating instances. This Green consumes one.
-                        # Upgrading from Yellow -> Green = 1 point
                         points += 1
                     else:
-                        # We didn't know about this many instances. New discovery.
-                        # Finding new Green = 2 points
                         points += 2
                         state['found_letters'].append(char)
                     
@@ -561,7 +540,6 @@ class Gortle(commands.Cog):
                 else:
                     points += 0 
 
-        # 2. Pass for YELLOWS / ABSENT
         for i, char in enumerate(guess_chars):
             if guess_visual[i] != "": continue
 
@@ -569,25 +547,18 @@ class Gortle(commands.Cog):
                 guess_visual[i] = self._get_emoji_str(char, self.EMOJI_PRESENT)
                 sol_remaining[sol_remaining.index(char)] = None 
                 
-                # Mark match
                 matched_in_guess[char] += 1
                 k = matched_in_guess[char]
                 current_known = state['found_letters'].count(char)
                 
-                # Point Logic
                 if current_known >= k:
-                    # We already knew about K instances of this letter.
-                    # Since this is just Yellow (re-finding), NO POINTS.
                     points += 0
                 else:
-                    # New instance found.
-                    # Finding new Yellow = 1 point
                     points += 1
                     state['found_letters'].append(char)
             else:
                 guess_visual[i] = self._get_emoji_str(char, self.EMOJI_ABSENT)
 
-        # Update History
         history_entry = {
             "visual": ' '.join(guess_visual),
             "user_id": message.author.id,
@@ -597,13 +568,11 @@ class Gortle(commands.Cog):
             state['history'] = []
         state['history'].append(history_entry)
 
-        # Update guessed letters
         current_guessed = set(state['guessed_letters'])
         for c in guess:
             current_guessed.add(c)
         state['guessed_letters'] = sorted(list(current_guessed))
         
-        # Update Round Scores (for later payout)
         round_scores = state.get('round_scores', {})
         str_uid = str(message.author.id)
         round_scores[str_uid] = round_scores.get(str_uid, 0) + points
@@ -611,7 +580,6 @@ class Gortle(commands.Cog):
 
         await self.config.game_state.set(state)
 
-        # Update Score
         async with self.config.member(message.author).words_guessed() as wg:
             wg[guess] = wg.get(guess, 0) + 1
         
@@ -626,13 +594,11 @@ class Gortle(commands.Cog):
         game_num = await self.config.game_number()
         keyboard_view = self._get_keyboard_visual(state, solution)
 
-        # Add expiration timestamp if schedule is active
         next_ts = await self.config.next_game_timestamp()
         now_ts = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
         if next_ts > now_ts:
              keyboard_view += f"\n\n**Next Game:** <t:{next_ts}:R>"
         
-        # Build History Display
         full_history = state['history']
         display_history = full_history if len(full_history) < 20 else full_history[-20:]
         
@@ -649,7 +615,6 @@ class Gortle(commands.Cog):
 
         embed = discord.Embed(title=f"Gortle #{game_num}", description=description, color=discord.Color.blue())
         
-        # Get total round points for the embed
         total_round_points = round_scores.get(str_uid, 0)
         
         embed.add_field(name="Points Gained", value=f"+{points} ({total_round_points} points this round)", inline=True)
@@ -750,15 +715,11 @@ class Gortle(commands.Cog):
             
         await channel.send(embed=embed)
 
-    # --- Commands ---
-
     @commands.command(aliases=["gortlehow"])
     async def teachmehowtogortle(self, ctx):
         """Shows the Gortle rules and settings."""
-        # Data Gathering
         cooldown_s = await self.config.guild(ctx.guild).cooldown_seconds()
         cooldown_m = cooldown_s / 60
-        # Format minutes nicely (e.g., 1 instead of 1.0 if whole number)
         if cooldown_m.is_integer():
             cooldown_str = str(int(cooldown_m))
         else:
@@ -768,7 +729,6 @@ class Gortle(commands.Cog):
         if freq == 0:
             schedule_str = "never (Manual only)"
         else:
-            # Freq is times per hour. 1 = 60m, 2 = 30m.
             minutes = 60 / freq
             if minutes.is_integer():
                 schedule_str = f"{int(minutes)} minutes"
@@ -833,23 +793,19 @@ class Gortle(commands.Cog):
     @gortleset.command()
     async def view(self, ctx):
         """View all current Gortle settings."""
-        # Guild Settings
         guild_data = await self.config.guild(ctx.guild).all()
         channel_id = guild_data.get('channel_id')
         role_id = guild_data.get('mention_role')
         thumb_url = guild_data.get('thumbnail_url') or "None"
         cooldown = guild_data.get('cooldown_seconds', 60)
         
-        # Resolving Objects
         channel_obj = ctx.guild.get_channel(channel_id) if channel_id else "Not Set"
         role_obj = ctx.guild.get_role(role_id) if role_id else "Not Set"
 
-        # Global Settings
         freq = await self.config.schedule_auto_freq()
         manual_max = await self.config.schedule_manual_max()
         prize = await self.config.win_amount()
         
-        # Weekly Settings
         w_role_id = await self.config.weekly_role_id()
         w_day = await self.config.weekly_role_day()
         w_hour = await self.config.weekly_role_hour()
@@ -858,8 +814,8 @@ class Gortle(commands.Cog):
         days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
         w_day_str = days[w_day] if 0 <= w_day <= 6 else w_day
 
-        # Emoji Sync Status
         synced_count = len(self.emoji_cache)
+        app_count = len(self.app_emoji_cache)
 
         table_data = [
             ["Channel", str(channel_obj)],
@@ -871,12 +827,11 @@ class Gortle(commands.Cog):
             ["Manual Max", f"{manual_max}/hr"],
             ["Weekly Role", str(w_role_obj)],
             ["Weekly Time", f"{w_day_str} @ {w_hour}:00 UTC"],
-            ["Synced Emojis", f"{synced_count} IDs"]
+            ["Synced Emojis", f"{synced_count} IDs"],
+            ["App Emojis", f"{app_count} found"]
         ]
         
-        # Using Red's box util for table formatting
         table = tabulate(table_data, headers=["Setting", "Value"], tablefmt="presto")
-        
         await ctx.send(box(table))
 
     @gortleset.command()
@@ -918,7 +873,6 @@ class Gortle(commands.Cog):
         await self.config.schedule_auto_freq.set(auto_freq)
         await self.config.schedule_manual_max.set(manual_max)
         
-        # Reset next game timestamp so logic recalculates immediately
         await self.config.next_game_timestamp.set(0)
         
         msg = f"Schedule updated:\n- Auto-post: {auto_freq} times/hour\n- Manual limit: {manual_max} games/hour"
@@ -1000,7 +954,6 @@ class Gortle(commands.Cog):
         found_count = 0
         new_map = {}
 
-        # Scan for letters
         for char in "abcdefghijklmnopqrstuvwxyz":
             for prefix in valid_prefixes:
                 target_name = f"{prefix}{char}"
@@ -1009,7 +962,6 @@ class Gortle(commands.Cog):
                     new_map[target_name] = emoji.id
                     found_count += 1
         
-        # Scan for extras
         extras = ["yay", "yay2", "greysquare"]
         for name in extras:
             emoji = discord.utils.get(ctx.guild.emojis, name=name)
@@ -1017,11 +969,20 @@ class Gortle(commands.Cog):
                 new_map[name] = emoji.id
                 found_count += 1
         
-        # Save to Config
         async with self.config.emoji_map() as m:
             m.update(new_map)
         
-        # Update Cache
         self.emoji_cache.update(new_map)
         
         await ctx.send(f"Synced {found_count} emojis from **{ctx.guild.name}** to the global Gortle database.")
+        
+    @gortleset.command()
+    @checks.is_owner()
+    async def refreshappemojis(self, ctx):
+        """Manually refreshes the cache of Application Emojis."""
+        try:
+            emojis = await self.bot.fetch_application_emojis()
+            self.app_emoji_cache = emojis
+            await ctx.send(f"Refreshed. Found {len(emojis)} Application Emojis.")
+        except Exception as e:
+            await ctx.send(f"Failed: {e}")
