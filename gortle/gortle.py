@@ -5,7 +5,7 @@ import re
 import datetime
 import json
 import os
-from typing import Optional, Literal
+from typing import Optional, Literal, Dict
 from collections import Counter
 import math
 
@@ -33,6 +33,9 @@ class Gortle(commands.Cog):
         # Initialize lists
         self.solutions = []
         self.guesses = []
+        # Cache for emoji IDs to avoid async config calls in rendering
+        self.emoji_cache: Dict[str, int] = {} 
+        
         self._load_word_lists()
 
         default_global = {
@@ -45,21 +48,22 @@ class Gortle(commands.Cog):
             "used_words": [],
             "game_number": 0,
             "game_active": False,
-            "cooldown_reset_timestamp": 0, # Timestamp when cooldowns were last "cleared" (new game start)
-            "consecutive_no_guesses": 0, # Tracks how many games in a row had zero interaction
+            "cooldown_reset_timestamp": 0, 
+            "consecutive_no_guesses": 0, 
             "game_state": {
                 "solved_indices": [],
-                "found_letters": [], # Letters found (Yellow or Green)
-                "guessed_letters": [], # Letters guessed at least once
+                "found_letters": [], 
+                "guessed_letters": [], 
                 "guesses_made": 0,
-                "history": [], # Stores list of {visual: str, user_id: int}
-                "round_scores": {} # Tracks points earned specifically in this round {user_id: points}
+                "history": [], 
+                "round_scores": {} 
             },
-            "win_amount": 100, # Legacy, kept for config safety but unused
+            "win_amount": 100, 
             "weekly_role_id": None,
             "weekly_role_day": 0,
             "weekly_role_hour": 9,
-            "last_weekly_award": 0
+            "last_weekly_award": 0,
+            "emoji_map": {} # Stores "name" -> emoji_id
         }
 
         default_guild = {
@@ -81,11 +85,17 @@ class Gortle(commands.Cog):
         self.config.register_member(**default_member)
 
         self.game_loop_task = self.bot.loop.create_task(self.game_loop())
+        # Start a task to load emoji cache immediately
+        self.bot.loop.create_task(self._load_emoji_cache())
         self.lock = asyncio.Lock()
 
     def cog_unload(self):
         if self.game_loop_task:
             self.game_loop_task.cancel()
+
+    async def _load_emoji_cache(self):
+        """Loads the emoji map from config into memory."""
+        self.emoji_cache = await self.config.emoji_map()
 
     def _load_word_lists(self):
         """Loads words from JSON files in the data directory."""
@@ -112,9 +122,21 @@ class Gortle(commands.Cog):
             self.guesses = ["failed"]
 
     def _find_emoji(self, name_query: str) -> Optional[discord.Emoji]:
-        """Case-insensitive search for an emoji."""
+        """
+        Search for an emoji.
+        Priority 1: Check the synced emoji map (ID based).
+        Priority 2: Scan all shared servers for a matching name.
+        """
         target = name_query.lower()
-        # Search all emojis the bot can see
+
+        # 1. Check Cache (Synced ID)
+        if target in self.emoji_cache:
+            emoji_id = self.emoji_cache[target]
+            emoji = self.bot.get_emoji(emoji_id)
+            if emoji:
+                return emoji
+
+        # 2. Fallback: Search all emojis the bot can see by name
         for emoji in self.bot.emojis:
             if emoji.name.lower() == target:
                 return emoji
@@ -836,6 +858,9 @@ class Gortle(commands.Cog):
         days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
         w_day_str = days[w_day] if 0 <= w_day <= 6 else w_day
 
+        # Emoji Sync Status
+        synced_count = len(self.emoji_cache)
+
         table_data = [
             ["Channel", str(channel_obj)],
             ["Mention Role", str(role_obj)],
@@ -845,7 +870,8 @@ class Gortle(commands.Cog):
             ["Auto Freq", f"{freq}/hr"],
             ["Manual Max", f"{manual_max}/hr"],
             ["Weekly Role", str(w_role_obj)],
-            ["Weekly Time", f"{w_day_str} @ {w_hour}:00 UTC"]
+            ["Weekly Time", f"{w_day_str} @ {w_hour}:00 UTC"],
+            ["Synced Emojis", f"{synced_count} IDs"]
         ]
         
         # Using Red's box util for table formatting
@@ -960,3 +986,42 @@ class Gortle(commands.Cog):
                 await self.config.member_from_ids(ctx.guild.id, uid).clear()
                 count += 1
         await ctx.send(f"Removed {count} users no longer in the server.")
+
+    @gortleset.command()
+    @checks.is_owner()
+    async def syncemojis(self, ctx):
+        """
+        Scans THIS server for Gortle emojis and saves their IDs globally.
+        Run this command inside the server that holds your custom emojis.
+        
+        Looks for: greena-z, yellowa-z, greya-z, whitea-z, yay, yay2, greysquare.
+        """
+        valid_prefixes = ["green", "yellow", "grey", "white"]
+        found_count = 0
+        new_map = {}
+
+        # Scan for letters
+        for char in "abcdefghijklmnopqrstuvwxyz":
+            for prefix in valid_prefixes:
+                target_name = f"{prefix}{char}"
+                emoji = discord.utils.get(ctx.guild.emojis, name=target_name)
+                if emoji:
+                    new_map[target_name] = emoji.id
+                    found_count += 1
+        
+        # Scan for extras
+        extras = ["yay", "yay2", "greysquare"]
+        for name in extras:
+            emoji = discord.utils.get(ctx.guild.emojis, name=name)
+            if emoji:
+                new_map[name] = emoji.id
+                found_count += 1
+        
+        # Save to Config
+        async with self.config.emoji_map() as m:
+            m.update(new_map)
+        
+        # Update Cache
+        self.emoji_cache.update(new_map)
+        
+        await ctx.send(f"Synced {found_count} emojis from **{ctx.guild.name}** to the global Gortle database.")
