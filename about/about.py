@@ -490,6 +490,7 @@ class About(commands.Cog):
         reward_roles_config = await self.config.guild(guild).reward_roles()
         secret_rewards_config = await self.config.guild(guild).secret_rewards()
         advanced_config = await self.config.guild(guild).advanced_rewards()
+        optin_config = await self.config.guild(guild).optin_roles()
 
         # Cache basic rewards
         active_rewards = []
@@ -515,7 +516,7 @@ class About(commands.Cog):
                 if req_role and r1 and r2:
                     active_advanced.append((req_role, r1, r2, data['level'], data['days_min'], data['duration']))
 
-        if not active_rewards and not active_advanced:
+        if not active_rewards and not active_advanced and not optin_config:
             return
 
         try:
@@ -603,6 +604,30 @@ class About(commands.Cog):
                             async with self.config.member(member).role_start_times() as times:
                                 times[str(r1.id)] = now.timestamp()
                                 
+                            await asyncio.sleep(2)
+                        except (discord.Forbidden, discord.HTTPException):
+                            pass
+
+            # 3. Opt-in Rewards (Auto-Grant if base role held and reqs met)
+            for base_id, data in optin_config.items():
+                base_role = guild.get_role(int(base_id))
+                target_role = guild.get_role(int(data.get("target_id", 0)))
+                
+                if not base_role or not target_role:
+                    continue
+
+                # If member has target already, skip
+                if target_role in member.roles:
+                    continue
+
+                # If member has base role, check requirements
+                if base_role in member.roles:
+                    req_days = data.get("days", 0)
+                    req_level = data.get("level", 0)
+
+                    if days_in >= req_days and level >= req_level:
+                        try:
+                            await member.add_roles(target_role, reason="About Cog: Auto-Optin")
                             await asyncio.sleep(2)
                         except (discord.Forbidden, discord.HTTPException):
                             pass
