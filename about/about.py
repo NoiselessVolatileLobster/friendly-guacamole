@@ -636,7 +636,7 @@ class About(commands.Cog):
             print(f"Error checking rewards for {member}: {e}")
 
     # --- Background Loop for Time-Based Checks ---
-    @tasks.loop(minutes=60)
+    @tasks.loop(minutes=15)
     async def check_rewards(self):
         """Periodically checks all members (mostly for 'days in server' requirements)."""
         await self.bot.wait_until_ready()
