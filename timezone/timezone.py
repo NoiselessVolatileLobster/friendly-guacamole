@@ -6,102 +6,156 @@ from redbot.core.utils.chat_formatting import box, pagify
 
 class TimezoneView(discord.ui.View):
     """
-    An ephemeral View that mimics a multi-step form:
+    A 3-step ephemeral View:
     1. Select Continent
-    2. Select City
+    2. Select Country (Split into multiple dropdowns if > 25)
+    3. Select Timezone (City)
     """
     def __init__(self, cog, user_id):
         super().__init__(timeout=120)
         self.cog = cog
         self.user_id = user_id
         self.selected_continent = None
-        
-        # 1. Prepare Continent Data
-        # We group common timezones by their primary region (e.g., 'America', 'Europe')
-        self.tz_map = {}
-        for tz in pytz.common_timezones:
-            if "/" in tz:
-                continent, city = tz.split("/", 1)
-                if continent not in self.tz_map:
-                    self.tz_map[continent] = []
-                self.tz_map[continent].append(city)
-        
-        # 2. Add Continent Select Menu
-        self.continent_select = discord.ui.Select(
-            placeholder="Step 1: Select your Continent",
-            options=[
-                discord.SelectOption(label=c, value=c) 
-                for c in sorted(self.tz_map.keys())
-            ],
-            min_values=1,
-            max_values=1,
-            row=0
-        )
-        self.continent_select.callback = self.on_continent_select
-        self.add_item(self.continent_select)
+        self.selected_country_code = None
 
-        # Placeholder for City Select (added dynamically later)
-        self.city_select = None
+        # Build Continent List
+        # We filter for continents that actually have countries in pytz
+        self.continents = sorted(list(set(
+            tz.split('/')[0] for tz in pytz.common_timezones if '/' in tz
+        )))
+        
+        # Step 1: Continent Select
+        self.add_item(ContinentSelect(self.continents))
 
-    async def on_continent_select(self, interaction: discord.Interaction):
-        self.selected_continent = self.continent_select.values[0]
+    async def show_countries(self, interaction: discord.Interaction, continent: str):
+        self.selected_continent = continent
         
-        # Filter cities for the selected continent
-        cities = sorted(self.tz_map[self.selected_continent])
+        # 1. Identify countries in this continent
+        # pytz.country_timezones is { 'US': ['America/New_York', ...], ... }
+        # pytz.country_names is { 'US': 'United States', ... }
         
-        # SAFETY: Discord allows max 25 options. 
-        # If a continent has >25 cities, we slice the list. 
-        # (A production bot might need a "Next Page" logic here, but this prevents crashes)
-        cities = cities[:25]
+        relevant_countries = []
+        for code, timezones in pytz.country_timezones.items():
+            # Check if any timezone for this country belongs to the selected continent
+            if any(tz.startswith(f"{continent}/") for tz in timezones):
+                name = pytz.country_names.get(code, code)
+                relevant_countries.append((name, code))
         
-        options = [
-            discord.SelectOption(
-                label=city.replace("_", " "), 
-                value=f"{self.selected_continent}/{city}"
-            ) 
-            for city in cities
-        ]
+        relevant_countries.sort(key=lambda x: x[0]) # Sort by Name
 
-        # Remove the old city select if the user changed their mind and re-picked continent
-        if self.city_select in self.children:
-            self.remove_item(self.city_select)
+        # Clear previous items (Continent Select)
+        self.clear_items()
 
-        # Create the City Select Menu
-        self.city_select = discord.ui.Select(
-            placeholder=f"Step 2: Select City in {self.selected_continent}",
-            options=options,
-            min_values=1,
-            max_values=1,
-            row=1
-        )
-        self.city_select.callback = self.on_city_select
-        self.add_item(self.city_select)
+        # 2. Create Country Dropdowns
+        # Discord limits select menus to 25 options. 
+        # If we have > 25 countries, we split them into multiple Select menus.
         
-        # Update the view with the new dropdown
+        chunk_size = 25
+        chunks = [relevant_countries[i:i + chunk_size] for i in range(0, len(relevant_countries), chunk_size)]
+
+        if not chunks:
+             await interaction.response.edit_message(content=f"No countries found for {continent}. This is odd.", view=self)
+             return
+
+        for index, chunk in enumerate(chunks):
+            # Label distinction: "Countries A-M", "Countries N-Z" if multiple
+            start_letter = chunk[0][0][0].upper()
+            end_letter = chunk[-1][0][0].upper()
+            placeholder = f"Select Country ({start_letter}-{end_letter})" if len(chunks) > 1 else "Select Country"
+            
+            self.add_item(CountrySelect(chunk, placeholder))
+
         await interaction.response.edit_message(
-            content=f"Continent **{self.selected_continent}** selected. Now choose your city:", 
+            content=f"**{continent}** selected. Now choose your Country:", 
             view=self
         )
 
-    async def on_city_select(self, interaction: discord.Interaction):
-        chosen_tz = self.city_select.values[0]
+    async def show_timezones(self, interaction: discord.Interaction, country_code: str, country_name: str):
+        self.selected_country_code = country_code
         
-        # Save to Config
-        await self.cog.config.user_from_id(self.user_id).timezone.set(chosen_tz)
+        # Get timezones for this country
+        # We filter again to ensure we only show ones matching the selected continent
+        # (Russia, for example, is in both Europe and Asia)
+        all_timezones = pytz.country_timezones.get(country_code, [])
+        filtered_timezones = [
+            tz for tz in all_timezones 
+            if tz.startswith(f"{self.selected_continent}/")
+        ]
         
-        # Disable all inputs to show it is "locked in"
+        # Fallback: if strict filtering removes everything (rare edge cases), show all for country
+        if not filtered_timezones:
+            filtered_timezones = all_timezones
+
+        filtered_timezones.sort()
+        
+        # Slice to 25 just in case a single country has > 25 zones (rare, but possible)
+        filtered_timezones = filtered_timezones[:25]
+
+        self.clear_items()
+        self.add_item(CitySelect(filtered_timezones))
+
+        await interaction.response.edit_message(
+            content=f"**{country_name}** selected. Finally, choose your local Timezone:", 
+            view=self
+        )
+
+    async def finish(self, interaction: discord.Interaction, timezone: str):
+        await self.cog.config.user_from_id(self.user_id).timezone.set(timezone)
+        
+        # Disable inputs
         for child in self.children:
             child.disabled = True
             
         await interaction.response.edit_message(
-            content=f"✅ Timezone successfully set to: **{chosen_tz}**", 
+            content=f"✅ Timezone set to: **{timezone}**", 
             view=self
         )
         self.stop()
 
+
+class ContinentSelect(discord.ui.Select):
+    def __init__(self, continents):
+        options = [discord.SelectOption(label=c, value=c) for c in continents[:25]]
+        super().__init__(placeholder="Step 1: Select Continent", options=options, row=0)
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.view.show_countries(interaction, self.values[0])
+
+
+class CountrySelect(discord.ui.Select):
+    def __init__(self, countries, placeholder):
+        # countries is a list of tuples: (Name, ISO_Code)
+        options = [
+            discord.SelectOption(label=name[:100], value=code) 
+            for name, code in countries
+        ]
+        super().__init__(placeholder=placeholder, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        # Find the name for the selected code for display purposes
+        selected_code = self.values[0]
+        selected_name = next((opt.label for opt in self.options if opt.value == selected_code), selected_code)
+        await self.view.show_timezones(interaction, selected_code, selected_name)
+
+
+class CitySelect(discord.ui.Select):
+    def __init__(self, timezones):
+        # timezones is a list of strings like "America/New_York"
+        options = []
+        for tz in timezones:
+            # Clean up label: "America/New_York" -> "New York"
+            city_label = tz.split('/', 1)[1].replace('_', ' ')
+            options.append(discord.SelectOption(label=city_label, value=tz))
+            
+        super().__init__(placeholder="Step 3: Select Timezone", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        await self.view.finish(interaction, self.values[0])
+
+
 class Timezone(commands.Cog):
     """
-    Allow users to set their timezone via an interactive View.
+    Allow users to set their timezone via a 3-step interactive View (Continent -> Country -> City).
     """
 
     def __init__(self, bot):
@@ -113,23 +167,18 @@ class Timezone(commands.Cog):
     # --- Public API ---
 
     async def get_user_timezone(self, user_id: int) -> Optional[str]:
-        """
-        Public API method to get a user's timezone string (e.g., 'America/New_York').
-        Returns None if not set.
-        """
         return await self.config.user_from_id(user_id).timezone()
 
     # --- Commands ---
 
-    @app_commands.command(name="mytimezone", description="Set your timezone using a dropdown menu.")
+    @app_commands.command(name="mytimezone", description="Set your timezone.")
     async def mytimezone(self, interaction: discord.Interaction):
         """
         Launch the Timezone selector view.
         """
         view = TimezoneView(self, interaction.user.id)
-        # We send this as ephemeral=True so it acts like a private "modal" popup
         await interaction.response.send_message(
-            "Please select your continent to begin:", 
+            "Let's configure your timezone. Select your continent:", 
             view=view, 
             ephemeral=True
         )
@@ -166,7 +215,6 @@ class Timezone(commands.Cog):
              return
 
         headers = ["User", "Timezone"]
-        # Basic column width calculation
         col1_w = max(len(r[0]) for r in data + [headers])
         col2_w = max(len(r[1]) for r in data + [headers])
 
@@ -180,8 +228,3 @@ class Timezone(commands.Cog):
 
         for page in pagify(full_table):
             await ctx.send(box(page, lang="prolog"))
-
-    @commands.Cog.listener()
-    async def on_interaction(self, interaction: discord.Interaction):
-        # Listener to ensure interaction contexts are processed if needed
-        pass
