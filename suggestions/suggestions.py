@@ -417,6 +417,36 @@ class Suggestions(commands.Cog):
         await ctx.tick()
         await self.refresh_dashboard(ctx.guild, force_repost=True)
 
+    @suggestionsset.command(name="nextid")
+    async def ss_nextid(self, ctx, id_number: int):
+        """
+        Set the next suggestion ID manually.
+        Useful if you want to continue numbering from a previous system.
+        """
+        current_data = await self.config.guild(ctx.guild).suggestions()
+        # Find the highest ID currently in use
+        existing_ids = [int(k) for k in current_data.keys()]
+        max_id = max(existing_ids) if existing_ids else 0
+
+        if id_number <= max_id:
+            msg = await ctx.send(
+                f"⚠️ **Warning:** You are setting the Next ID to `{id_number}`, but the highest existing suggestion ID is `{max_id}`.\n"
+                "This may cause future suggestions to overwrite existing ones or cause errors.\n\n"
+                "Are you sure you want to proceed?"
+            )
+            pred = MessagePredicate.yes_or_no(ctx)
+            try:
+                await self.bot.wait_for("message", check=pred, timeout=30)
+            except asyncio.TimeoutError:
+                return await ctx.send("Timed out. Action cancelled.")
+            
+            if not pred.result:
+                return await ctx.send("Cancelled.")
+
+        await self.config.guild(ctx.guild).next_id.set(id_number)
+        await ctx.send(f"Next suggestion ID set to `{id_number}`.")
+        await self.refresh_dashboard(ctx.guild, force_repost=False)
+
     @suggestionsset.command(name="levelcreate")
     async def ss_levelcreate(self, ctx, level: int):
         """Set required LevelUp level to create suggestions."""
