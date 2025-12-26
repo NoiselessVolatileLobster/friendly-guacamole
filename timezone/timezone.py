@@ -1,5 +1,7 @@
 import discord
 import pytz
+import datetime
+from dateutil import parser
 from typing import Optional
 from redbot.core import commands, Config, app_commands
 from redbot.core.utils.chat_formatting import box, pagify
@@ -19,46 +21,33 @@ class TimezoneView(discord.ui.View):
         self.selected_country_code = None
 
         # Build Continent List
-        # We filter for continents that actually have countries in pytz
         self.continents = sorted(list(set(
             tz.split('/')[0] for tz in pytz.common_timezones if '/' in tz
         )))
         
-        # Step 1: Continent Select
         self.add_item(ContinentSelect(self.continents))
 
     async def show_countries(self, interaction: discord.Interaction, continent: str):
         self.selected_continent = continent
         
-        # 1. Identify countries in this continent
-        # pytz.country_timezones is { 'US': ['America/New_York', ...], ... }
-        # pytz.country_names is { 'US': 'United States', ... }
-        
         relevant_countries = []
         for code, timezones in pytz.country_timezones.items():
-            # Check if any timezone for this country belongs to the selected continent
             if any(tz.startswith(f"{continent}/") for tz in timezones):
                 name = pytz.country_names.get(code, code)
                 relevant_countries.append((name, code))
         
-        relevant_countries.sort(key=lambda x: x[0]) # Sort by Name
+        relevant_countries.sort(key=lambda x: x[0])
 
-        # Clear previous items (Continent Select)
         self.clear_items()
 
-        # 2. Create Country Dropdowns
-        # Discord limits select menus to 25 options. 
-        # If we have > 25 countries, we split them into multiple Select menus.
-        
         chunk_size = 25
         chunks = [relevant_countries[i:i + chunk_size] for i in range(0, len(relevant_countries), chunk_size)]
 
         if not chunks:
-             await interaction.response.edit_message(content=f"No countries found for {continent}. This is odd.", view=self)
+             await interaction.response.edit_message(content=f"No countries found for {continent}.", view=self)
              return
 
         for index, chunk in enumerate(chunks):
-            # Label distinction: "Countries A-M", "Countries N-Z" if multiple
             start_letter = chunk[0][0][0].upper()
             end_letter = chunk[-1][0][0].upper()
             placeholder = f"Select Country ({start_letter}-{end_letter})" if len(chunks) > 1 else "Select Country"
@@ -73,22 +62,16 @@ class TimezoneView(discord.ui.View):
     async def show_timezones(self, interaction: discord.Interaction, country_code: str, country_name: str):
         self.selected_country_code = country_code
         
-        # Get timezones for this country
-        # We filter again to ensure we only show ones matching the selected continent
-        # (Russia, for example, is in both Europe and Asia)
         all_timezones = pytz.country_timezones.get(country_code, [])
         filtered_timezones = [
             tz for tz in all_timezones 
             if tz.startswith(f"{self.selected_continent}/")
         ]
         
-        # Fallback: if strict filtering removes everything (rare edge cases), show all for country
         if not filtered_timezones:
             filtered_timezones = all_timezones
 
         filtered_timezones.sort()
-        
-        # Slice to 25 just in case a single country has > 25 zones (rare, but possible)
         filtered_timezones = filtered_timezones[:25]
 
         self.clear_items()
@@ -101,11 +84,8 @@ class TimezoneView(discord.ui.View):
 
     async def finish(self, interaction: discord.Interaction, timezone: str):
         await self.cog.config.user_from_id(self.user_id).timezone.set(timezone)
-        
-        # Disable inputs
         for child in self.children:
             child.disabled = True
-            
         await interaction.response.edit_message(
             content=f"✅ Timezone set to: **{timezone}**", 
             view=self
@@ -124,7 +104,6 @@ class ContinentSelect(discord.ui.Select):
 
 class CountrySelect(discord.ui.Select):
     def __init__(self, countries, placeholder):
-        # countries is a list of tuples: (Name, ISO_Code)
         options = [
             discord.SelectOption(label=name[:100], value=code) 
             for name, code in countries
@@ -132,7 +111,6 @@ class CountrySelect(discord.ui.Select):
         super().__init__(placeholder=placeholder, options=options)
 
     async def callback(self, interaction: discord.Interaction):
-        # Find the name for the selected code for display purposes
         selected_code = self.values[0]
         selected_name = next((opt.label for opt in self.options if opt.value == selected_code), selected_code)
         await self.view.show_timezones(interaction, selected_code, selected_name)
@@ -140,13 +118,10 @@ class CountrySelect(discord.ui.Select):
 
 class CitySelect(discord.ui.Select):
     def __init__(self, timezones):
-        # timezones is a list of strings like "America/New_York"
         options = []
         for tz in timezones:
-            # Clean up label: "America/New_York" -> "New York"
             city_label = tz.split('/', 1)[1].replace('_', ' ')
             options.append(discord.SelectOption(label=city_label, value=tz))
-            
         super().__init__(placeholder="Step 3: Select Timezone", options=options)
 
     async def callback(self, interaction: discord.Interaction):
@@ -155,7 +130,7 @@ class CitySelect(discord.ui.Select):
 
 class Timezone(commands.Cog):
     """
-    Allow users to set their timezone via a 3-step interactive View (Continent -> Country -> City).
+    Allow users to set their timezone via a 3-step interactive View and generate timestamps.
     """
 
     def __init__(self, bot):
@@ -173,9 +148,7 @@ class Timezone(commands.Cog):
 
     @app_commands.command(name="mytimezone", description="Set your timezone.")
     async def mytimezone(self, interaction: discord.Interaction):
-        """
-        Launch the Timezone selector view.
-        """
+        """Launch the Timezone selector view."""
         view = TimezoneView(self, interaction.user.id)
         await interaction.response.send_message(
             "Let's configure your timezone. Select your continent:", 
@@ -183,19 +156,68 @@ class Timezone(commands.Cog):
             ephemeral=True
         )
 
+    @app_commands.command(name="timestamp", description="Get a discord timestamp for a specific time in your timezone.")
+    @app_commands.describe(time="The time to convert (e.g., '5pm', '17:00', '2:30 AM')")
+    async def timestamp(self, interaction: discord.Interaction, time: str):
+        """
+        Converts a time string (e.g. 5pm) to a Discord timestamp based on your stored timezone.
+        """
+        # 1. Get User Timezone
+        user_tz_str = await self.config.user_from_id(interaction.user.id).timezone()
+        
+        if not user_tz_str:
+            await interaction.response.send_message(
+                "❌ You haven't set your timezone yet! Run `/mytimezone` first.", 
+                ephemeral=True
+            )
+            return
+
+        try:
+            # 2. Parse the input time
+            # We use fuzzy=True to ignore extra text if they type sentences, though not strictly needed here.
+            # parser.parse defaults missing date fields to "today".
+            dt = parser.parse(time, fuzzy=True)
+            
+            # 3. Localize to user's timezone
+            tz = pytz.timezone(user_tz_str)
+            
+            # Combine 'today' from user's perspective with the parsed 'time'
+            now_in_tz = datetime.datetime.now(tz)
+            dt_localized = tz.localize(datetime.datetime.combine(now_in_tz.date(), dt.time()))
+            
+            # If the resulting time has already passed today by a significant margin (e.g. 12 hours), 
+            # some logic might prefer 'tomorrow', but usually standard behavior is "Today at X".
+            # We will stick to strict "Today at X" for consistency.
+
+            # 4. Convert to Unix Timestamp
+            timestamp_int = int(dt_localized.timestamp())
+
+            # 5. Send Response
+            # <t:TIMESTAMP:t> gives "5:00 PM"
+            # <t:TIMESTAMP:F> gives "Tuesday, 25 April 2025 5:00 PM"
+            # The prompt requested standard snowflake format or specific text.
+            # Using <t:ID> defaults to Short Date Time "25 April 2025 5:00 PM"
+            
+            await interaction.response.send_message(
+                f"Your local time: <t:{timestamp_int}>\n"
+                f"-# {interaction.user.mention}'s timezone is {user_tz_str}."
+            )
+
+        except (ValueError, pytz.UnknownTimeZoneError):
+            await interaction.response.send_message(
+                f"❌ I couldn't understand the time `{time}`. Please try formats like `17:00`, `5pm`, or `2:30 AM`.", 
+                ephemeral=True
+            )
+
     @commands.group(name="timezoneset")
     @commands.admin_or_permissions(administrator=True)
     async def timezoneset(self, ctx):
-        """
-        Administrator settings for Timezone.
-        """
+        """Administrator settings for Timezone."""
         pass
 
     @timezoneset.command(name="view")
     async def timezoneset_view(self, ctx):
-        """
-        View all users who have configured their timezone.
-        """
+        """View all users who have configured their timezone."""
         all_users = await self.config.all_users()
         
         if not all_users:
