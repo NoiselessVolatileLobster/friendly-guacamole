@@ -166,15 +166,17 @@ class Suggestions(commands.Cog):
         # Recently Approved Field
         if approved_sugs:
             lines = []
-            for s in approved_sugs[:5]: # Top 5
-                lines.append(f"• #{s['id']} {s['title']}")
+            for s in approved_sugs[:3]: # Top 3
+                link = f"https://discord.com/channels/{guild.id}/{s['thread_id']}"
+                lines.append(f"• [#{s['id']} {s['title']}]({link})")
             embed.add_field(name="✅ Recently Approved", value="\n".join(lines), inline=False)
 
         # Recently Rejected Field
         if rejected_sugs:
             lines = []
-            for s in rejected_sugs[:5]: # Top 5
-                lines.append(f"• #{s['id']} {s['title']}")
+            for s in rejected_sugs[:3]: # Top 3
+                link = f"https://discord.com/channels/{guild.id}/{s['thread_id']}"
+                lines.append(f"• [#{s['id']} {s['title']}]({link})")
             embed.add_field(name="❌ Recently Rejected", value="\n".join(lines), inline=False)
 
         embed.set_footer(text="Please keep titles short and provide details in the description.")
