@@ -48,6 +48,8 @@ class AdventCalendar(Cog):
             custom_rewards_ping_role=None,
             priority_multiplier_roles=[],
             include_opener_mention=False,
+            day_start_hour=0,
+            day_start_minute=0,
         )
         self.config.register_member(
             opened_days=[],
@@ -83,6 +85,14 @@ class AdventCalendar(Cog):
             "include_opener_mention": {
                 "converter": bool,
                 "description": "Whether to include the opener's mention in all messages.",
+            },
+            "day_start_hour": {
+                "converter": int,
+                "description": "The hour of the day (0-23) when the new day starts (default: 0).",
+            },
+            "day_start_minute": {
+                "converter": int,
+                "description": "The minute of the hour (0-59) when the new day starts (default: 0).",
             },
         }
         self.settings: Settings = Settings(
@@ -137,22 +147,36 @@ class AdventCalendar(Cog):
         self.christmas_tree.close()
         await super().cog_unload()
 
-    async def get_member_date(self, member_id: int) -> datetime.date:
+    async def get_member_date(self, member: discord.Member) -> datetime.date:
         """
-        Get the current date for a member based on their timezone.
-        Defaults to UTC if the Timezone cog is unavailable or user has no timezone set.
+        Get the current date for a member based on their timezone and the guild's start time configuration.
         """
+        # 1. Determine User Timezone
         timezone_cog = self.bot.get_cog("Timezone")
         tz = None
         if timezone_cog:
             try:
-                tz = await timezone_cog.get_user_timezone(member_id)
+                tz = await timezone_cog.get_user_timezone(member.id)
             except Exception:
                 pass
         
+        # 2. Get 'Now' in that timezone (or UTC)
         if tz:
-            return datetime.datetime.now(tz).date()
-        return datetime.datetime.now(datetime.timezone.utc).date()
+            now = datetime.datetime.now(tz)
+        else:
+            now = datetime.datetime.now(datetime.timezone.utc)
+
+        # 3. Apply the "Day Start" offset configured by the Admin
+        config = await self.config.guild(member.guild).all()
+        start_hour = config.get("day_start_hour", 0)
+        start_minute = config.get("day_start_minute", 0)
+
+        # We subtract the offset. 
+        # e.g. If day starts at 5:00 AM, and it is 4:00 AM:
+        # 4:00 - 5 hours = previous day 11:00 PM. -> Previous date.
+        adjusted_time = now - datetime.timedelta(hours=start_hour, minutes=start_minute)
+        
+        return adjusted_time.date()
 
     def align_text_center(
         self,
@@ -303,6 +327,7 @@ class AdventCalendar(Cog):
         to_file: bool = True,
     ) -> typing.Union[Image.Image, discord.File]:
         if today_day is None:
+            # We default to 25 if it's not currently December or we are just generating the image generically
             today_day = datetime.datetime.now(datetime.timezone.utc).day
         return await asyncio.to_thread(
             self._generate_advent_calendar,
@@ -562,7 +587,7 @@ class AdventCalendar(Cog):
     @commands.hybrid_command(aliases=["advent"])
     async def adventcalendar(self, ctx: commands.Context) -> None:
         """Open your Advent Calendar box for the day!"""
-        today = await self.get_member_date(ctx.author.id)
+        today = await self.get_member_date(ctx.author)
         
         if today.month != 12:
             first_december = today.replace(month=12, day=1)
@@ -621,8 +646,6 @@ class AdventCalendar(Cog):
                         datetime.datetime.combine(
                             today + datetime.timedelta(days=1), datetime.time(0, 0, 0)
                         ).replace(tzinfo=datetime.timezone.utc).timestamp() 
-                        # Note: relative timestamp with timezone support is tricky without exact tz object reuse.
-                        # Using raw timestamp might be offset if not careful, but usually acceptable for display.
                     )
                 )
         elif today_day == 25:
@@ -687,7 +710,7 @@ class AdventCalendar(Cog):
         self, ctx: commands.Context, *, member: discord.Member = commands.Author
     ) -> None:
         """Get the Advent Calendar for a member."""
-        today = await self.get_member_date(member.id)
+        today = await self.get_member_date(member)
         if not today.month == 12:
             raise commands.UserFeedbackCheckFailure(
                 _("The Advent Calendar is only available in December.")
@@ -719,7 +742,7 @@ class AdventCalendar(Cog):
         self, ctx: commands.Context, *, member: discord.Member = commands.Author
     ) -> None:
         """Get the stats of the Advent Calendar for a member."""
-        today = await self.get_member_date(member.id)
+        today = await self.get_member_date(member)
         if not today.month == 12:
             raise commands.UserFeedbackCheckFailure(
                 _("The Advent Calendar is only available in December.")
@@ -755,8 +778,13 @@ class AdventCalendar(Cog):
     @setadventcalendar.command()
     async def stats(self, ctx: commands.Context) -> None:
         """Get the stats of the Advent Calendar for the server."""
-        # For server-wide stats, we use UTC as the standard reference
-        today = datetime.datetime.now(datetime.timezone.utc).date()
+        # For server-wide stats, we use UTC as the standard reference, adjusted by the server's day start time
+        now = datetime.datetime.now(datetime.timezone.utc)
+        config = await self.config.guild(ctx.guild).all()
+        start_hour = config.get("day_start_hour", 0)
+        start_minute = config.get("day_start_minute", 0)
+        
+        today = (now - datetime.timedelta(hours=start_hour, minutes=start_minute)).date()
         
         if not today.month == 12:
             raise commands.UserFeedbackCheckFailure(
@@ -851,10 +879,6 @@ class AdventCalendar(Cog):
     @setadventcalendar.command(aliases=["pingadmuy"])
     async def pingalldaysmembersuntilyesterday(self, ctx: commands.Context) -> None:
         """Ping all members who have opened all boxes until yesterday and have not opened today's box."""
-        # NOTE: This command now checks EACH user's individual timezone.
-        # It ping users where it is actually "today" for them, and they haven't opened "today's" box.
-        
-        # We can't use global today anymore, so we iterate members_data
         members_data = await self.config.all_members(ctx.guild)
         members_to_ping = []
         
@@ -863,15 +887,11 @@ class AdventCalendar(Cog):
             if not member:
                 continue
             
-            # Get specific date for this member
-            member_today = await self.get_member_date(member.id)
+            # Get specific date for this member, respecting their timezone AND guild start time configuration
+            member_today = await self.get_member_date(member)
             
             if member_today.month != 12:
                 continue
-            
-            # Logic: All boxes opened until yesterday?
-            # e.g. if today is 5th, len(opened) should be 4 (days 1,2,3,4)
-            # AND day 5 should NOT be in opened.
             
             target_prev_count = min(member_today.day - 1, 25)
             today_box_val = member_today.day if member_today.day != 25 else None
