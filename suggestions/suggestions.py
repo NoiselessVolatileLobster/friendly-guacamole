@@ -28,9 +28,16 @@ class SuggestionModal(discord.ui.Modal):
         self.add_item(self.suggestion_text)
 
     async def on_submit(self, interaction: discord.Interaction):
+        # We fetch the configured channel ID here to ensure suggestions always go 
+        # to the main channel, even if triggered from elsewhere (future proofing)
+        conf_channel_id = await self.cog.config.guild(interaction.guild).channel_id()
+        if not conf_channel_id:
+             await interaction.response.send_message("Suggestions channel is not configured.", ephemeral=True)
+             return
+
         await self.cog.process_suggestion(
             interaction, 
-            interaction.channel_id, 
+            conf_channel_id, 
             self.short_title.value, 
             self.suggestion_text.value
         )
@@ -92,7 +99,9 @@ class Suggestions(commands.Cog):
         
         default_guild = {
             "channel_id": None,
-            "dashboard_msg_id": None, # ID of the sticky dashboard message
+            "dashboard_msg_id": None, # ID of the sticky interaction message in the main channel
+            "overview_channel_id": None, # ID of the live overview channel
+            "overview_msg_id": None, # ID of the live overview message
             "req_level_create": 0,
             "req_level_vote": 0,
             "next_id": 1,
@@ -125,8 +134,8 @@ class Suggestions(commands.Cog):
         except TypeError:
             return 0
 
-    async def generate_dashboard_embed(self, guild):
-        """Generates the sticky embed content based on current suggestions."""
+    async def generate_dashboard_embed(self, guild, is_overview=False):
+        """Generates the embed content based on current suggestions."""
         data = await self.config.guild(guild).suggestions()
         
         # Sort/Filter
@@ -142,9 +151,12 @@ class Suggestions(commands.Cog):
         # Sort rejected by timestamp descending (newest first)
         rejected_sugs.sort(key=lambda x: x['timestamp'], reverse=True)
 
+        title = "Suggestions Overview" if is_overview else "Suggestions"
+        desc = "Live status of all suggestions." if is_overview else "Have an idea for the server? Click the button below to submit a suggestion!"
+
         embed = discord.Embed(
-            title="Suggestions",
-            description="Have an idea for the server? Click the button below to submit a suggestion!",
+            title=title,
+            description=desc,
             color=discord.Color.green()
         )
         
@@ -179,14 +191,14 @@ class Suggestions(commands.Cog):
                 lines.append(f"• [#{s['id']} {s['title']}]({link})")
             embed.add_field(name="❌ Recently Rejected", value="\n".join(lines), inline=False)
 
-        embed.set_footer(text="Please keep titles short and provide details in the description.")
+        if not is_overview:
+            embed.set_footer(text="Please keep titles short and provide details in the description.")
+        
         return embed
 
     async def refresh_dashboard(self, guild, force_repost=False):
         """
-        Refreshes the dashboard message.
-        force_repost: If True, deletes the old message and sends a new one (to keep it at bottom).
-                      If False, attempts to edit the existing message.
+        Refreshes the 'sticky' interaction message in the main channel.
         """
         channel_id = await self.config.guild(guild).channel_id()
         if not channel_id:
@@ -197,9 +209,8 @@ class Suggestions(commands.Cog):
             return
 
         msg_id = await self.config.guild(guild).dashboard_msg_id()
-        embed = await self.generate_dashboard_embed(guild)
+        embed = await self.generate_dashboard_embed(guild, is_overview=False)
         
-        # Initialize msg to None to prevent UnboundLocalError
         msg = None
         
         if msg_id:
@@ -210,15 +221,45 @@ class Suggestions(commands.Cog):
                     msg = None # Signal to send new
                 else:
                     await msg.edit(embed=embed, view=self.entry_view)
-                    return # Edited successfully
+                    return 
             except discord.NotFound:
-                msg = None # Message deleted manually, need to resend
+                msg = None 
             except discord.Forbidden:
-                return # Cannot delete/edit
+                return 
 
         if msg is None:
             new_msg = await channel.send(embed=embed, view=self.entry_view)
             await self.config.guild(guild).dashboard_msg_id.set(new_msg.id)
+
+    async def update_live_overview(self, guild):
+        """
+        Updates the separate live overview dashboard in place.
+        """
+        overview_cid = await self.config.guild(guild).overview_channel_id()
+        if not overview_cid:
+            return
+
+        channel = guild.get_channel(overview_cid)
+        if not channel:
+            return
+
+        msg_id = await self.config.guild(guild).overview_msg_id()
+        embed = await self.generate_dashboard_embed(guild, is_overview=True)
+        
+        if msg_id:
+            try:
+                msg = await channel.fetch_message(msg_id)
+                await msg.edit(embed=embed)
+            except discord.NotFound:
+                # If deleted, send a new one
+                new_msg = await channel.send(embed=embed)
+                await self.config.guild(guild).overview_msg_id.set(new_msg.id)
+            except discord.Forbidden:
+                pass
+        else:
+            # Send initial if config exists but no msg id
+            new_msg = await channel.send(embed=embed)
+            await self.config.guild(guild).overview_msg_id.set(new_msg.id)
 
     async def update_suggestion_message(self, guild, data):
         channel_id = await self.config.guild(guild).channel_id()
@@ -287,8 +328,6 @@ class Suggestions(commands.Cog):
             timestamp=datetime.datetime.now()
         )
         
-        # Note: Footer removed here as the main instruction is now in the sticky dashboard
-        
         channel = guild.get_channel(channel_id)
         if not channel:
             await interaction.response.send_message("Configuration error: Channel not found.", ephemeral=True)
@@ -341,8 +380,10 @@ class Suggestions(commands.Cog):
         
         await interaction.response.send_message(f"Suggestion created in {thread.mention}", ephemeral=True)
 
-        # Update Dashboard: Repost it so it appears below the new suggestion
+        # Update Sticky Dashboard (Repost at bottom)
         await self.refresh_dashboard(guild, force_repost=True)
+        # Update Live Overview Dashboard (Edit in place)
+        await self.update_live_overview(guild)
 
     async def distribute_rewards(self, guild, data, thread, status):
         """Handles distributing credits for Approval, Voting, and Thread Participation."""
@@ -417,6 +458,23 @@ class Suggestions(commands.Cog):
         await ctx.tick()
         await self.refresh_dashboard(ctx.guild, force_repost=True)
 
+    @suggestionsset.command(name="dashboard")
+    async def ss_dashboard(self, ctx, channel: discord.TextChannel = None):
+        """
+        Set a channel for the live overview dashboard.
+        If a channel is provided, the dashboard will be created there and updated continuously.
+        If no channel is provided, it forces a refresh of existing dashboards.
+        """
+        if channel:
+            await self.config.guild(ctx.guild).overview_channel_id.set(channel.id)
+            await self.config.guild(ctx.guild).overview_msg_id.set(None)
+            await ctx.send(f"Live overview dashboard set to {channel.mention}.")
+        
+        # Refresh both
+        await self.refresh_dashboard(ctx.guild, force_repost=True)
+        await self.update_live_overview(ctx.guild)
+        await ctx.tick()
+
     @suggestionsset.command(name="nextid")
     async def ss_nextid(self, ctx, id_number: int):
         """
@@ -424,7 +482,6 @@ class Suggestions(commands.Cog):
         Useful if you want to continue numbering from a previous system.
         """
         current_data = await self.config.guild(ctx.guild).suggestions()
-        # Find the highest ID currently in use
         existing_ids = [int(k) for k in current_data.keys()]
         max_id = max(existing_ids) if existing_ids else 0
 
@@ -446,6 +503,7 @@ class Suggestions(commands.Cog):
         await self.config.guild(ctx.guild).next_id.set(id_number)
         await ctx.send(f"Next suggestion ID set to `{id_number}`.")
         await self.refresh_dashboard(ctx.guild, force_repost=False)
+        await self.update_live_overview(ctx.guild)
 
     @suggestionsset.command(name="levelcreate")
     async def ss_levelcreate(self, ctx, level: int):
@@ -505,11 +563,14 @@ class Suggestions(commands.Cog):
         channel = ctx.guild.get_channel(cfg['channel_id'])
         ch_name = channel.mention if channel else "Not Set"
         
+        ov_channel = ctx.guild.get_channel(cfg['overview_channel_id'])
+        ov_name = ov_channel.mention if ov_channel else "Not Set"
+        
         msg = f"""
 **Suggestions Configuration**
 ---------------------------
-Channel:        {ch_name}
-Dashboard ID:   {cfg['dashboard_msg_id'] or 'None'}
+Interaction Channel: {ch_name}
+Live Overview Chan:  {ov_name}
 Create Level:   {cfg['req_level_create']}
 Vote Level:     {cfg['req_level_vote']}
 Up Emoji:       {cfg['emoji_up']}
@@ -578,8 +639,10 @@ Thread Chat:    {cfg['credits_thread']} (Min Msgs: {cfg['thread_min_msgs']})
             if reward_logs:
                 await ctx.send(box("\n".join(reward_logs), lang="yaml"))
         
-        # Update dashboard (Just edit, no need to repost as no new message was sent to main channel)
+        # Update sticky dashboard (Edit, no repost)
         await self.refresh_dashboard(ctx.guild, force_repost=False)
+        # Update live overview
+        await self.update_live_overview(ctx.guild)
 
     @suggestionsset.command(name="reject")
     async def ss_reject(self, ctx, suggestion_id: str, *, message: str):
@@ -635,8 +698,10 @@ Thread Chat:    {cfg['credits_thread']} (Min Msgs: {cfg['thread_min_msgs']})
             if reward_logs:
                 await ctx.send(box("\n".join(reward_logs), lang="yaml"))
 
-        # Update dashboard (Just edit)
+        # Update sticky dashboard (Edit)
         await self.refresh_dashboard(ctx.guild, force_repost=False)
+        # Update live overview
+        await self.update_live_overview(ctx.guild)
 
     @suggestionsset.command(name="resetstats")
     async def ss_resetstats(self, ctx):
@@ -652,8 +717,9 @@ Thread Chat:    {cfg['credits_thread']} (Min Msgs: {cfg['thread_min_msgs']})
             await self.config.guild(ctx.guild).suggestions.set({})
             await self.config.guild(ctx.guild).next_id.set(1)
             await ctx.send("All suggestions and stats reset.")
-            # Refresh to clear the dashboard
+            # Refresh to clear dashboards
             await self.refresh_dashboard(ctx.guild, force_repost=False)
+            await self.update_live_overview(ctx.guild)
         else:
             await ctx.send("Cancelled.")
 
@@ -742,12 +808,6 @@ Thread Chat:    {cfg['credits_thread']} (Min Msgs: {cfg['thread_min_msgs']})
         embed.add_field(name="Lowest Vote Score (Received)", value=format_list(low_net), inline=True)
         
         await ctx.send(embed=embed)
-
-    @suggestionsset.command(name="dashboard")
-    async def ss_dashboard(self, ctx):
-        """View suggestion dashboard (Manually triggers refresh/post)."""
-        await self.refresh_dashboard(ctx.guild, force_repost=True)
-        await ctx.tick()
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
