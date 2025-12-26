@@ -4,84 +4,104 @@ from typing import Optional
 from redbot.core import commands, Config, app_commands
 from redbot.core.utils.chat_formatting import box, pagify
 
-class CityModal(discord.ui.Modal):
+class TimezoneView(discord.ui.View):
     """
-    Step 2: Modal to select the specific City based on the chosen Continent.
+    An ephemeral View that mimics a multi-step form:
+    1. Select Continent
+    2. Select City
     """
-    def __init__(self, cog, continent: str):
-        super().__init__(title=f"Select City in {continent}")
+    def __init__(self, cog, user_id):
+        super().__init__(timeout=120)
         self.cog = cog
-        self.continent = continent
-
-        # Filter cities for this continent
-        # Note: Discord Select Menus have a max of 25 options. 
-        # For 'America' or 'Europe', we take the first 25 common ones.
-        # In a full production bot, you might need sub-regions (e.g., 'America (North)', 'America (South)')
-        cities = [
-            tz.split("/", 1)[1] 
-            for tz in pytz.common_timezones 
-            if tz.startswith(f"{continent}/")
-        ]
-        # Sort and slice to strict limit of 25
-        cities = sorted(cities)[:25]
-
-        self.city_select = discord.ui.Select(
-            placeholder="Choose your city...",
-            min_values=1,
-            max_values=1,
-            options=[
-                discord.SelectOption(label=city.replace("_", " "), value=city) 
-                for city in cities
-            ]
-        )
-        self.add_item(self.city_select)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        city = self.city_select.values[0]
-        full_timezone = f"{self.continent}/{city}"
+        self.user_id = user_id
+        self.selected_continent = None
         
-        # Save to Red Config
-        await self.cog.config.user_from_id(interaction.user.id).timezone.set(full_timezone)
+        # 1. Prepare Continent Data
+        # We group common timezones by their primary region (e.g., 'America', 'Europe')
+        self.tz_map = {}
+        for tz in pytz.common_timezones:
+            if "/" in tz:
+                continent, city = tz.split("/", 1)
+                if continent not in self.tz_map:
+                    self.tz_map[continent] = []
+                self.tz_map[continent].append(city)
         
-        await interaction.response.send_message(
-            f"✅ Timezone set to: **{full_timezone}**", 
-            ephemeral=True
-        )
-
-class ContinentModal(discord.ui.Modal):
-    """
-    Step 1: Modal to select the Continent.
-    """
-    def __init__(self, cog):
-        super().__init__(title="Select Timezone Region")
-        self.cog = cog
-
-        # Group common timezones to find unique Continents
-        continents = sorted(list(set(
-            tz.split("/", 1)[0] 
-            for tz in pytz.common_timezones 
-            if "/" in tz
-        )))
-
+        # 2. Add Continent Select Menu
         self.continent_select = discord.ui.Select(
-            placeholder="Select your Continent...",
-            min_values=1,
-            max_values=1,
+            placeholder="Step 1: Select your Continent",
             options=[
                 discord.SelectOption(label=c, value=c) 
-                for c in continents
-            ]
+                for c in sorted(self.tz_map.keys())
+            ],
+            min_values=1,
+            max_values=1,
+            row=0
         )
+        self.continent_select.callback = self.on_continent_select
         self.add_item(self.continent_select)
 
-    async def on_submit(self, interaction: discord.Interaction):
-        selected_continent = self.continent_select.values[0]
-        # Chain the next Modal
-        await interaction.response.send_modal(CityModal(self.cog, selected_continent))
+        # Placeholder for City Select (added dynamically later)
+        self.city_select = None
+
+    async def on_continent_select(self, interaction: discord.Interaction):
+        self.selected_continent = self.continent_select.values[0]
+        
+        # Filter cities for the selected continent
+        cities = sorted(self.tz_map[self.selected_continent])
+        
+        # SAFETY: Discord allows max 25 options. 
+        # If a continent has >25 cities, we slice the list. 
+        # (A production bot might need a "Next Page" logic here, but this prevents crashes)
+        cities = cities[:25]
+        
+        options = [
+            discord.SelectOption(
+                label=city.replace("_", " "), 
+                value=f"{self.selected_continent}/{city}"
+            ) 
+            for city in cities
+        ]
+
+        # Remove the old city select if the user changed their mind and re-picked continent
+        if self.city_select in self.children:
+            self.remove_item(self.city_select)
+
+        # Create the City Select Menu
+        self.city_select = discord.ui.Select(
+            placeholder=f"Step 2: Select City in {self.selected_continent}",
+            options=options,
+            min_values=1,
+            max_values=1,
+            row=1
+        )
+        self.city_select.callback = self.on_city_select
+        self.add_item(self.city_select)
+        
+        # Update the view with the new dropdown
+        await interaction.response.edit_message(
+            content=f"Continent **{self.selected_continent}** selected. Now choose your city:", 
+            view=self
+        )
+
+    async def on_city_select(self, interaction: discord.Interaction):
+        chosen_tz = self.city_select.values[0]
+        
+        # Save to Config
+        await self.cog.config.user_from_id(self.user_id).timezone.set(chosen_tz)
+        
+        # Disable all inputs to show it is "locked in"
+        for child in self.children:
+            child.disabled = True
+            
+        await interaction.response.edit_message(
+            content=f"✅ Timezone successfully set to: **{chosen_tz}**", 
+            view=self
+        )
+        self.stop()
 
 class Timezone(commands.Cog):
     """
-    Allow users to set their timezone via chained Modals (Components V2) and expose it to other cogs.
+    Allow users to set their timezone via an interactive View.
     """
 
     def __init__(self, bot):
@@ -101,13 +121,18 @@ class Timezone(commands.Cog):
 
     # --- Commands ---
 
-    @app_commands.command(name="mytimezone", description="Set your timezone using the new Modal Selects.")
+    @app_commands.command(name="mytimezone", description="Set your timezone using a dropdown menu.")
     async def mytimezone(self, interaction: discord.Interaction):
         """
-        Launch the Timezone selector Modal.
+        Launch the Timezone selector view.
         """
-        # Step 1: Open Continent Modal
-        await interaction.response.send_modal(ContinentModal(self))
+        view = TimezoneView(self, interaction.user.id)
+        # We send this as ephemeral=True so it acts like a private "modal" popup
+        await interaction.response.send_message(
+            "Please select your continent to begin:", 
+            view=view, 
+            ephemeral=True
+        )
 
     @commands.group(name="timezoneset")
     @commands.admin_or_permissions(administrator=True)
