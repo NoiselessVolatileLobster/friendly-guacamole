@@ -1,9 +1,9 @@
 import discord
 import re
 import asyncio
-from datetime import datetime
+from datetime import datetime, time
 import pytz
-import io # <-- Fix: Added missing import for StringIO
+import io
 from typing import Optional, List, Dict, Union
 
 from redbot.core import commands, Config, checks
@@ -104,7 +104,6 @@ class TimezoneModal(discord.ui.Modal, title="Set Timezone"):
         tz_input = self.tz.value.strip()
         
         if tz_input not in pytz.all_timezones and tz_input != "EST" and tz_input != "MST" and tz_input != "GMT":
-            # Simple fuzzy check helper could go here, but keeping it strict for safety
             return await interaction.response.send_message(
                 "Invalid Timezone. Please check `https://en.wikipedia.org/wiki/List_of_tz_database_time_zones`", 
                 ephemeral=True
@@ -130,11 +129,10 @@ class BirthdayView(discord.ui.View):
     @discord.ui.button(label="Remove Data", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def remove_data(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.cog.config.user(interaction.user).clear()
-        # Update the original message to reflect the change
         await interaction.response.edit_message(
             content="Your birthday and timezone data have been removed. Use the buttons to set new data.", 
             embed=None, 
-            view=BirthdayView(self.cog) # Send a fresh view
+            view=BirthdayView(self.cog)
         )
 
 
@@ -152,6 +150,7 @@ class Birthday(commands.Cog):
             "announce_message_year": "Happy {ordinal} birthday, {mention}! 🎉",
             "announce_message_no_year": "Happy Birthday {mention}! 🎉",
             "birthday_role": None,
+            "announce_time": [0, 0] # [Hour, Minute] 24h format, default midnight
         }
         default_user = {
             "month": None,
@@ -166,12 +165,10 @@ class Birthday(commands.Cog):
         
         self.loop_task = self.bot.loop.create_task(self.birthday_loop())
         
-        # Month name mapping for display and export
         self.month_names = {
             1: "January", 2: "February", 3: "March", 4: "April", 5: "May", 6: "June",
             7: "July", 8: "August", 9: "September", 10: "October", 11: "November", 12: "December"
         }
-        # Abbreviated month names for export format (MMM)
         self.month_abbr = {
             1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
             7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"
@@ -197,13 +194,36 @@ class Birthday(commands.Cog):
         try:
             bday_this_year = now.replace(month=month, day=day)
         except ValueError:
-            # Handle leap years (Feb 29) on non-leap years
             bday_this_year = now.replace(month=3, day=1) 
 
         if bday_this_year.date() < now.date():
-            # Birthday passed this year, next is next year
             return bday_this_year.replace(year=now.year + 1)
         return bday_this_year
+
+    async def get_user_tz(self, user_id: int, u_conf: dict):
+        """
+        Attempts to get the timezone from the external Timezone cog.
+        Falls back to local config, then UTC.
+        """
+        # Try External Cog First
+        timezone_cog = self.bot.get_cog("Timezone")
+        if timezone_cog:
+            try:
+                # API Integration per user instructions
+                tz_data = await timezone_cog.get_user_timezone(user_id)
+                if tz_data:
+                    # Assuming API returns a string or something capable of initializing pytz
+                    return pytz.timezone(str(tz_data))
+            except Exception:
+                # Fail silently if user not found in external cog or API differs
+                pass
+        
+        # Fallback to internal config
+        tz_name = u_conf.get("timezone", "UTC")
+        try:
+            return pytz.timezone(tz_name)
+        except pytz.UnknownTimeZoneError:
+            return pytz.UTC
 
     # --- LOOPS ---
 
@@ -211,17 +231,15 @@ class Birthday(commands.Cog):
         await self.bot.wait_until_ready()
         while True:
             try:
-                # Run logic every 10 minutes to catch timezones
+                # Run logic every 5 minutes to be more accurate with time settings
                 await self.check_birthdays()
-                await asyncio.sleep(600) 
+                await asyncio.sleep(300) 
             except Exception as e:
                 print(f"Error in birthday loop: {e}")
                 await asyncio.sleep(60)
 
     async def check_birthdays(self):
         guilds_config = await self.config.all_guilds()
-        
-        # Pre-fetch configurations to minimize DB calls
         all_users = await self.config.all_users()
 
         for guild_id, g_conf in guilds_config.items():
@@ -235,6 +253,9 @@ class Birthday(commands.Cog):
             channel_id = g_conf.get("announce_channel")
             channel = guild.get_channel(channel_id) if channel_id else None
 
+            # Get target time for this guild
+            t_hour, t_min = g_conf.get("announce_time", [0, 0])
+
             for user_id, u_conf in all_users.items():
                 member = guild.get_member(int(user_id))
                 if not member:
@@ -243,21 +264,20 @@ class Birthday(commands.Cog):
                 if not u_conf.get("month") or not u_conf.get("day"):
                     continue
 
-                # Timezone logic
-                tz_name = u_conf.get("timezone", "UTC")
-                try:
-                    tz = pytz.timezone(tz_name)
-                except pytz.UnknownTimeZoneError:
-                    tz = pytz.UTC
+                # RESOLVE TIMEZONE (External -> Internal -> UTC)
+                tz = await self.get_user_tz(user_id, u_conf)
 
                 now_in_tz = datetime.now(tz)
                 today_str = now_in_tz.strftime("%Y-%m-%d")
                 
-                is_birthday = (now_in_tz.month == u_conf["month"]) and (now_in_tz.day == u_conf["day"])
+                is_day = (now_in_tz.month == u_conf["month"]) and (now_in_tz.day == u_conf["day"])
                 
+                # Check if we have passed the specific announcement time
+                # We use simple comparison: current hour/min >= target hour/min
+                is_time = (now_in_tz.hour > t_hour) or (now_in_tz.hour == t_hour and now_in_tz.minute >= t_min)
+
                 # 1. ANNOUNCEMENTS & ROLE ADDITION
-                if is_birthday:
-                    # Check if already celebrated this year (in their timezone)
+                if is_day and is_time:
                     last_celeb = u_conf.get("last_celebrated")
                     
                     if last_celeb != today_str:
@@ -277,14 +297,11 @@ class Birthday(commands.Cog):
                             has_year = bool(u_conf.get("year"))
                             
                             if has_year:
-                                # Use ordinal message and calculate age
                                 age = now_in_tz.year - u_conf["year"]
                                 ordinal_str = self.get_ordinal(age)
                                 msg_template = g_conf.get("announce_message_year", "Happy {ordinal} birthday, {mention}! 🎉")
                             else:
-                                # Use simple message
                                 msg_template = g_conf.get("announce_message_no_year", "Happy Birthday {mention}! 🎉")
-
 
                             try:
                                 msg = msg_template.replace("{mention}", member.mention)
@@ -294,9 +311,9 @@ class Birthday(commands.Cog):
                                 pass
 
                 # 2. ROLE REMOVAL (24 hours later logic)
-                # Logic: If user has role, but it is NOT their birthday in their timezone, remove it.
                 if role and role in member.roles:
-                    if not is_birthday:
+                    # If it is NOT the birthday day anymore, remove role.
+                    if not is_day:
                         try:
                             await member.remove_roles(role, reason="Birthday over")
                         except discord.Forbidden:
@@ -314,14 +331,15 @@ class Birthday(commands.Cog):
         if not conf["month"] or not conf["day"]:
             return await ctx.send(f"{user.display_name} hasn't set their birthday yet.")
         
-        # Use month name in seebirthday too for consistency
         month_name = self.month_names.get(conf['month'])
         
         date_str = f"{month_name} {conf['day']}"
         if conf["year"]:
             date_str += f", {conf['year']}"
             
-        tz_str = conf.get("timezone", "UTC")
+        # Try to show the ACTUAL timezone being used (External or Internal)
+        tz_obj = await self.get_user_tz(user.id, conf)
+        tz_str = str(tz_obj)
         
         embed = discord.Embed(color=user.color)
         embed.set_author(name=f"{user.display_name}'s Birthday", icon_url=user.display_avatar.url)
@@ -333,13 +351,11 @@ class Birthday(commands.Cog):
     @commands.command(name="listbirthdays")
     async def listbirthdays(self, ctx, count: int = 10):
         """List the next X upcoming birthdays."""
-        if count > 25: count = 25 # Cap to prevent abuse
+        if count > 25: count = 25
         
         data = await self.config.all_users()
         upcoming_list = []
         
-        # Use UTC for sorting comparison to keep it simple, 
-        # though ideally we'd project everyone's next birthday to UTC.
         now_utc = datetime.now(pytz.UTC)
 
         for uid, u_data in data.items():
@@ -350,16 +366,12 @@ class Birthday(commands.Cog):
             if not member:
                 continue
 
-            # Calculate next birthday timestamp
             next_bday = self.get_next_birthday(u_data["month"], u_data["day"], now_utc)
             delta = (next_bday - now_utc).days
             
             upcoming_list.append((member, next_bday, delta, u_data["year"]))
 
-        # Sort by delta (days until birthday)
         upcoming_list.sort(key=lambda x: x[2])
-        
-        # Slice top X
         top_x = upcoming_list[:count]
         
         if not top_x:
@@ -384,19 +396,18 @@ class Birthday(commands.Cog):
         """Manage birthdays."""
         
         user_conf = await self.config.user(ctx.author).all()
-        
-        # Get month name for display
         month_num = user_conf['month']
         
-        # Check if data exists and construct the status message
         if month_num and user_conf['day']:
             month_name = self.month_names.get(month_num)
-            # Display format: "MonthName Day"
             current_bday = f"{month_name} {user_conf['day']}"
         else:
             current_bday = "Not set"
         
-        current_tz = user_conf.get("timezone", "UTC")
+        # Display resolving timezone
+        tz_obj = await self.get_user_tz(ctx.author.id, user_conf)
+        current_tz = str(tz_obj)
+        
         current_year = f", {user_conf['year']}" if user_conf['year'] else ""
         
         status_msg = (
@@ -409,7 +420,8 @@ class Birthday(commands.Cog):
             status_msg + 
             "Use the buttons below to configure or change your birthday and timezone.\n\n"
             "**Timezones**: You can find your timezone code [here]"
-            "(https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)."
+            "(https://en.wikipedia.org/wiki/List_of_tz_database_time_zones).\n"
+            "*(If you have set a timezone in the global Timezone cog, that will take precedence)*"
         )
         
         view = BirthdayView(self)
@@ -428,6 +440,32 @@ class Birthday(commands.Cog):
         """Admin configuration for birthdays."""
         pass
 
+    @bset.command(name="view")
+    async def bset_view(self, ctx):
+        """View all current birthday settings for this guild."""
+        conf = await self.config.guild(ctx.guild).all()
+        
+        channel_id = conf.get("announce_channel")
+        channel = ctx.guild.get_channel(channel_id).mention if channel_id else "None"
+        
+        role_id = conf.get("birthday_role")
+        role = ctx.guild.get_role(role_id).name if role_id and ctx.guild.get_role(role_id) else "None"
+        
+        time_list = conf.get("announce_time", [0, 0])
+        time_str = f"{time_list[0]:02d}:{time_list[1]:02d}"
+
+        msg_no_year = conf.get("announce_message_no_year")
+        msg_year = conf.get("announce_message_year")
+
+        embed = discord.Embed(title="Birthday Settings", color=discord.Color.gold())
+        embed.add_field(name="Announcement Channel", value=channel, inline=True)
+        embed.add_field(name="Birthday Role", value=role, inline=True)
+        embed.add_field(name="Announcement Time", value=f"{time_str} (User Local Time)", inline=True)
+        embed.add_field(name="Message (No Year)", value=box(msg_no_year), inline=False)
+        embed.add_field(name="Message (With Year)", value=box(msg_year), inline=False)
+        
+        await ctx.send(embed=embed)
+
     @bset.command(name="channel")
     async def bset_channel(self, ctx, channel: discord.TextChannel = None):
         """Set the channel for birthday announcements."""
@@ -438,6 +476,18 @@ class Birthday(commands.Cog):
             await self.config.guild(ctx.guild).announce_channel.set(None)
             await ctx.send("Announcements disabled.")
 
+    @bset.command(name="time")
+    async def bset_time(self, ctx, hour: int, minute: int = 0):
+        """
+        Set the time (24h format) to wish users a happy birthday in THEIR timezone.
+        Usage: [p]bset time 8 0 (for 8:00 AM) or [p]bset time 14 30 (for 2:30 PM).
+        """
+        if not (0 <= hour <= 23) or not (0 <= minute <= 59):
+            return await ctx.send("Invalid time. Hour must be 0-23 and minute 0-59.")
+        
+        await self.config.guild(ctx.guild).announce_time.set([hour, minute])
+        await ctx.send(f"I will now greet users at **{hour:02d}:{minute:02d}** (their local time).")
+
     @bset.command(name="messagesimple")
     async def bset_message_simple(self, ctx, *, message: str):
         """Set the announcement message when the user has NO birth year (no ordinal). Use {mention} for the user."""
@@ -447,7 +497,6 @@ class Birthday(commands.Cog):
     @bset.command(name="messageordinal")
     async def bset_message_ordinal(self, ctx, *, message: str):
         """Set the announcement message when the user HAS a birth year. Use {mention} for the user and {ordinal} for age."""
-        # Fix the method name to match the implementation below
         await self.config.guild(ctx.guild).announce_message_year.set(message)
         await ctx.send(f"Ordinal message set to: {message}")
 
@@ -468,7 +517,6 @@ class Birthday(commands.Cog):
         all_users_data = await self.config.all_users()
         output = []
         
-        # Header
         output.append(f"Registered Birthdays for {ctx.guild.name}:\n")
         output.append("-" * 40)
         
@@ -480,18 +528,19 @@ class Birthday(commands.Cog):
             
             member = ctx.guild.get_member(user_id)
             if not member:
-                continue # Skip users not in this guild
+                continue 
             
             found_count += 1
             
-            # Format Date using month name
             month_name = self.month_names.get(u_data['month'])
             date_str = f"{month_name} {u_data['day']}"
             if u_data['year']:
                 date_str += f", {u_data['year']}"
             
-            # Format Output Line
-            tz_str = u_data.get('timezone', 'UTC')
+            # Show resolved timezone
+            tz_obj = await self.get_user_tz(user_id, u_data)
+            tz_str = str(tz_obj)
+
             line = f"{member.display_name} (ID: {user_id}): {date_str} | TZ: {tz_str}"
             output.append(line)
 
@@ -501,7 +550,6 @@ class Birthday(commands.Cog):
         output.append("-" * 40)
         output.append(f"Total registered members: {found_count}")
 
-        # Use pagify for potentially long output
         output_text = "\n".join(output)
         for page in pagify(output_text, delims=["\n"], page_length=1900):
             await ctx.send(box(page))
@@ -509,11 +557,8 @@ class Birthday(commands.Cog):
     @bset.command(name="export")
     async def bset_export(self, ctx):
         """
-        Export all registered birthdays and timezones for guild members
-        into a text file that can be used for re-importing.
-        Format: ● MMM-DD: <ID> <username> (<Display Name>) | Time zone: <Region/City>
+        Export all registered birthdays and timezones for guild members.
         """
-        
         all_users_data = await self.config.all_users()
         output_lines = [f"Birthdays in {ctx.guild.name}\n"]
         
@@ -530,19 +575,15 @@ class Birthday(commands.Cog):
             if not member:
                 continue
             
-            # 1. Date (MMM-DD)
             month_abbr = self.month_abbr.get(month_num)
-            date_part = f"{month_abbr}-{day_num:02}" # Ensure day is 2 digits for consistency
+            date_part = f"{month_abbr}-{day_num:02}" 
 
-            # 2. User info (ID, username, display name)
             user_part = f"{user_id} {member.name} ({member.display_name})"
             
-            # 3. Timezone
+            # Export internal stored timezone, not resolved one, to avoid dependency loop on import
             tz_str = u_data.get("timezone", "UTC")
             tz_part = f" | Time zone: {tz_str}"
             
-            # Combine into the import format
-            # Using the '●' as a common start marker, followed by a space
             line = f"● {date_part}: {user_part}{tz_part}\n"
             output_lines.append(line)
             exported_count += 1
@@ -553,7 +594,6 @@ class Birthday(commands.Cog):
         filename = f"{ctx.guild.name.replace(' ', '_')}_birthdays_export.txt"
         file_content = "".join(output_lines)
         
-        # Create and send the file
         buffer = discord.File(
             fp=io.StringIO(file_content), 
             filename=filename
@@ -561,12 +601,10 @@ class Birthday(commands.Cog):
         
         await ctx.send(f"Successfully exported {exported_count} birthdays.", file=buffer)
 
-
     @bset.command(name="import")
     async def bset_import(self, ctx):
         """
         Import birthdays from a text file attached to the message.
-        Format expected: ● MMM-DD: ID username (Display Name) ... | Time zone: Region/City
         """
         if not ctx.message.attachments:
             return await ctx.send("Please attach a .txt file with the data.")
@@ -581,15 +619,6 @@ class Birthday(commands.Cog):
         except Exception:
             return await ctx.send("Could not read file.")
 
-        # REGEX PATTERN:
-        # 1. Start of line or non-word char (like ●)
-        # 2. Captures Month (MMM) and Day (DD)
-        # 3. Captures Discord User ID (ID)
-        # 4. Non-greedy match for everything else (.*?)
-        # 5. Optional Time zone section:
-        #    (?: ... )? makes the whole timezone group optional
-        #    \|\s+Time zone:\s+ captures the literal separator
-        #    (?P<tz>.*) captures the rest of the line as the timezone
         pattern = re.compile(
             r"^\W*?(?P<month>[A-Za-z]{3})-(?P<day>\d{1,2}):\s+(?P<id>\d+).*?"
             r"(?:\|\s+Time zone:\s+(?P<tz>.*))?$", 
@@ -629,17 +658,12 @@ class Birthday(commands.Cog):
                     errors += 1
                     continue
 
-                # Clean timezone
                 final_tz = "UTC"
                 if tz_str:
                     clean_tz = tz_str.strip()
-                    # Accept common abbreviations used in your sample file (EST, MST, GMT) 
-                    # alongside official pytz names.
                     if clean_tz in pytz.all_timezones or clean_tz in ["EST", "MST", "GMT"]:
                         final_tz = clean_tz
                 
-                # Update user config directly using set
-                # Note: The import format provided didn't have years, so year is None
                 await self.config.user_from_id(uid_int).set({
                     "month": m_int,
                     "day": d_int,
@@ -650,7 +674,6 @@ class Birthday(commands.Cog):
                 
                 imported_count += 1
             else:
-                # Regex didn't match line structure
                 errors += 1
 
         await ctx.send(f"Import complete. Processed {total_lines} data lines. Imported: {imported_count}. Skipped/Errors: {errors}.")
