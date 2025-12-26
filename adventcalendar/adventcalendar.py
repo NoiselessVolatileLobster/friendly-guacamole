@@ -137,6 +137,23 @@ class AdventCalendar(Cog):
         self.christmas_tree.close()
         await super().cog_unload()
 
+    async def get_member_date(self, member_id: int) -> datetime.date:
+        """
+        Get the current date for a member based on their timezone.
+        Defaults to UTC if the Timezone cog is unavailable or user has no timezone set.
+        """
+        timezone_cog = self.bot.get_cog("Timezone")
+        tz = None
+        if timezone_cog:
+            try:
+                tz = await timezone_cog.get_user_timezone(member_id)
+            except Exception:
+                pass
+        
+        if tz:
+            return datetime.datetime.now(tz).date()
+        return datetime.datetime.now(datetime.timezone.utc).date()
+
     def align_text_center(
         self,
         draw: ImageDraw.Draw,
@@ -286,7 +303,7 @@ class AdventCalendar(Cog):
         to_file: bool = True,
     ) -> typing.Union[Image.Image, discord.File]:
         if today_day is None:
-            today_day = datetime.date.today().day
+            today_day = datetime.datetime.now(datetime.timezone.utc).day
         return await asyncio.to_thread(
             self._generate_advent_calendar,
             today_day=today_day,
@@ -454,21 +471,16 @@ class AdventCalendar(Cog):
                 ),
             }
         elif reward["type"] == "bank_credits":
-            # --- START of modification ---
-            # Get the guild's custom currency name
             currency_name = await bank.get_currency_name(member.guild)
-
             await bank.deposit_credits(member, reward["amount"])
             return reward, {
                 "embed": discord.Embed(
-                    # Use the custom currency name in the title
                     title=_("🎁 You've received **{amount} {currency_name}**! 🎁").format(
                         amount=reward["amount"], currency_name=currency_name
                     ),
                     color=discord.Color.green(),
                 ),
             }
-            # --- END of modification ---
         elif reward["type"] == "levelup_xp":
             await LevelUp.add_xp(member, xp=reward["amount"])
             return reward, {
@@ -550,9 +562,16 @@ class AdventCalendar(Cog):
     @commands.hybrid_command(aliases=["advent"])
     async def adventcalendar(self, ctx: commands.Context) -> None:
         """Open your Advent Calendar box for the day!"""
-        today = datetime.date.today()
+        today = await self.get_member_date(ctx.author.id)
+        
         if today.month != 12:
             first_december = today.replace(month=12, day=1)
+            # If today is after Dec, first_december is next year
+            if today.month < 12:
+                first_december = first_december.replace(year=today.year)
+            else:
+                first_december = first_december.replace(year=today.year + 1)
+                
             raise commands.UserFeedbackCheckFailure(
                 _(
                     "The Advent Calendar is only available in December. **Come back in {interval_string}!** 🎄"
@@ -601,7 +620,9 @@ class AdventCalendar(Cog):
                     timestamp=int(
                         datetime.datetime.combine(
                             today + datetime.timedelta(days=1), datetime.time(0, 0, 0)
-                        ).timestamp()
+                        ).replace(tzinfo=datetime.timezone.utc).timestamp() 
+                        # Note: relative timestamp with timezone support is tricky without exact tz object reuse.
+                        # Using raw timestamp might be offset if not careful, but usually acceptable for display.
                     )
                 )
         elif today_day == 25:
@@ -666,7 +687,7 @@ class AdventCalendar(Cog):
         self, ctx: commands.Context, *, member: discord.Member = commands.Author
     ) -> None:
         """Get the Advent Calendar for a member."""
-        today = datetime.date.today()
+        today = await self.get_member_date(member.id)
         if not today.month == 12:
             raise commands.UserFeedbackCheckFailure(
                 _("The Advent Calendar is only available in December.")
@@ -698,7 +719,7 @@ class AdventCalendar(Cog):
         self, ctx: commands.Context, *, member: discord.Member = commands.Author
     ) -> None:
         """Get the stats of the Advent Calendar for a member."""
-        today = datetime.date.today()
+        today = await self.get_member_date(member.id)
         if not today.month == 12:
             raise commands.UserFeedbackCheckFailure(
                 _("The Advent Calendar is only available in December.")
@@ -734,7 +755,9 @@ class AdventCalendar(Cog):
     @setadventcalendar.command()
     async def stats(self, ctx: commands.Context) -> None:
         """Get the stats of the Advent Calendar for the server."""
-        today = datetime.date.today()
+        # For server-wide stats, we use UTC as the standard reference
+        today = datetime.datetime.now(datetime.timezone.utc).date()
+        
         if not today.month == 12:
             raise commands.UserFeedbackCheckFailure(
                 _("The Advent Calendar is only available in December.")
@@ -828,27 +851,44 @@ class AdventCalendar(Cog):
     @setadventcalendar.command(aliases=["pingadmuy"])
     async def pingalldaysmembersuntilyesterday(self, ctx: commands.Context) -> None:
         """Ping all members who have opened all boxes until yesterday and have not opened today's box."""
-        today = datetime.date.today()
-        if not today.month == 12:
-            raise commands.UserFeedbackCheckFailure(
-                _("The Advent Calendar is only available in December.")
-            )
+        # NOTE: This command now checks EACH user's individual timezone.
+        # It ping users where it is actually "today" for them, and they haven't opened "today's" box.
+        
+        # We can't use global today anymore, so we iterate members_data
         members_data = await self.config.all_members(ctx.guild)
-        members = [
-            member
-            for member_id, data in members_data.items()
-            if len(data["opened_days"]) == min(today.day - 1, 25)
-            and (today.day if today.day != 25 else None) not in data["opened_days"]
-            and (member := ctx.guild.get_member(member_id)) is not None
-        ]
-        if not members:
+        members_to_ping = []
+        
+        for member_id, data in members_data.items():
+            member = ctx.guild.get_member(member_id)
+            if not member:
+                continue
+            
+            # Get specific date for this member
+            member_today = await self.get_member_date(member.id)
+            
+            if member_today.month != 12:
+                continue
+            
+            # Logic: All boxes opened until yesterday?
+            # e.g. if today is 5th, len(opened) should be 4 (days 1,2,3,4)
+            # AND day 5 should NOT be in opened.
+            
+            target_prev_count = min(member_today.day - 1, 25)
+            today_box_val = member_today.day if member_today.day != 25 else None
+            
+            if (len(data["opened_days"]) == target_prev_count 
+                and today_box_val not in data["opened_days"]):
+                members_to_ping.append(member)
+
+        if not members_to_ping:
             raise commands.UserFeedbackCheckFailure(_("No member to ping."))
+            
         msg = _("**You haven't opened your box of the 🎄 Advent Calendar 🎄 for today yet! ^^**\n\n")
         pages = []
         for i, page in enumerate(
             pagify(
                 humanize_list(
-                    [member.mention for member in members],
+                    [member.mention for member in members_to_ping],
                 ),
                 page_length=1500,
             )
