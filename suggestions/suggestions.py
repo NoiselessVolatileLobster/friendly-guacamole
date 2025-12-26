@@ -40,7 +40,7 @@ class EntryView(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
 
-    @discord.ui.button(label="陶 Make a suggestion", style=discord.ButtonStyle.primary, custom_id="suggestions:create_btn")
+    @discord.ui.button(label="📩 Make a suggestion", style=discord.ButtonStyle.primary, custom_id="suggestions:create_btn")
     async def create_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
         conf_channel = await self.cog.config.guild(interaction.guild).channel_id()
         if interaction.channel_id != conf_channel:
@@ -96,8 +96,8 @@ class Suggestions(commands.Cog):
             "req_level_create": 0,
             "req_level_vote": 0,
             "next_id": 1,
-            "emoji_up": "総",
-            "emoji_down": "綜",
+            "emoji_up": "👍",
+            "emoji_down": "👎",
             "suggestions": {},
             # Economy Settings
             "credits_create": 0,
@@ -325,7 +325,7 @@ class Suggestions(commands.Cog):
             try:
                 await bank.deposit_credits(interaction.user, create_amt)
                 currency = await bank.get_currency_name(guild)
-                reward_msg = f"\n\n腸 **Reward:** You received {create_amt} {currency} for submitting a suggestion!"
+                reward_msg = f"\n\n💰 **Reward:** You received {create_amt} {currency} for submitting a suggestion!"
             except:
                 pass
 
