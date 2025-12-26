@@ -40,7 +40,7 @@ class EntryView(discord.ui.View):
         super().__init__(timeout=None)
         self.cog = cog
 
-    @discord.ui.button(label="📩 Make a suggestion", style=discord.ButtonStyle.primary, custom_id="suggestions:create_btn")
+    @discord.ui.button(label="陶 Make a suggestion", style=discord.ButtonStyle.primary, custom_id="suggestions:create_btn")
     async def create_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
         conf_channel = await self.cog.config.guild(interaction.guild).channel_id()
         if interaction.channel_id != conf_channel:
@@ -92,11 +92,12 @@ class Suggestions(commands.Cog):
         
         default_guild = {
             "channel_id": None,
+            "dashboard_msg_id": None, # ID of the sticky dashboard message
             "req_level_create": 0,
             "req_level_vote": 0,
             "next_id": 1,
-            "emoji_up": "👍",
-            "emoji_down": "👎",
+            "emoji_up": "総",
+            "emoji_down": "綜",
             "suggestions": {},
             # Economy Settings
             "credits_create": 0,
@@ -123,6 +124,96 @@ class Suggestions(commands.Cog):
             return 0
         except TypeError:
             return 0
+
+    async def generate_dashboard_embed(self, guild):
+        """Generates the sticky embed content based on current suggestions."""
+        data = await self.config.guild(guild).suggestions()
+        
+        # Sort/Filter
+        open_sugs = [v for v in data.values() if v['status'] == 'open']
+        # Sort open by ID (oldest first)
+        open_sugs.sort(key=lambda x: x['id'])
+        
+        approved_sugs = [v for v in data.values() if v['status'] == 'approved']
+        # Sort approved by timestamp descending (newest first)
+        approved_sugs.sort(key=lambda x: x['timestamp'], reverse=True)
+        
+        rejected_sugs = [v for v in data.values() if v['status'] == 'rejected']
+        # Sort rejected by timestamp descending (newest first)
+        rejected_sugs.sort(key=lambda x: x['timestamp'], reverse=True)
+
+        embed = discord.Embed(
+            title="Suggestions",
+            description="Have an idea for the server? Click the button below to submit a suggestion!",
+            color=discord.Color.green()
+        )
+        
+        # Open Suggestions Field
+        if open_sugs:
+            lines = []
+            for s in open_sugs:
+                chan_id = await self.config.guild(guild).channel_id()
+                # Create a jump link to the message
+                link = f"https://discord.com/channels/{guild.id}/{chan_id}/{s['message_id']}"
+                lines.append(f"• [#{s['id']} {s['title']}]({link})")
+            
+            # Prevent hitting character limits
+            val = "\n".join(lines)
+            if len(val) > 1024:
+                val = val[:1020] + "..."
+            embed.add_field(name=f"Open Suggestions ({len(open_sugs)})", value=val, inline=False)
+
+        # Recently Approved Field
+        if approved_sugs:
+            lines = []
+            for s in approved_sugs[:5]: # Top 5
+                lines.append(f"• #{s['id']} {s['title']}")
+            embed.add_field(name="✅ Recently Approved", value="\n".join(lines), inline=False)
+
+        # Recently Rejected Field
+        if rejected_sugs:
+            lines = []
+            for s in rejected_sugs[:5]: # Top 5
+                lines.append(f"• #{s['id']} {s['title']}")
+            embed.add_field(name="❌ Recently Rejected", value="\n".join(lines), inline=False)
+
+        embed.set_footer(text="Please keep titles short and provide details in the description.")
+        return embed
+
+    async def refresh_dashboard(self, guild, force_repost=False):
+        """
+        Refreshes the dashboard message.
+        force_repost: If True, deletes the old message and sends a new one (to keep it at bottom).
+                      If False, attempts to edit the existing message.
+        """
+        channel_id = await self.config.guild(guild).channel_id()
+        if not channel_id:
+            return
+
+        channel = guild.get_channel(channel_id)
+        if not channel:
+            return
+
+        msg_id = await self.config.guild(guild).dashboard_msg_id()
+        embed = await self.generate_dashboard_embed(guild)
+        
+        if msg_id:
+            try:
+                msg = await channel.fetch_message(msg_id)
+                if force_repost:
+                    await msg.delete()
+                    msg = None # Signal to send new
+                else:
+                    await msg.edit(embed=embed, view=self.entry_view)
+                    return # Edited successfully
+            except discord.NotFound:
+                msg = None # Message deleted manually, need to resend
+            except discord.Forbidden:
+                return # Cannot delete/edit
+
+        if msg is None:
+            new_msg = await channel.send(embed=embed, view=self.entry_view)
+            await self.config.guild(guild).dashboard_msg_id.set(new_msg.id)
 
     async def update_suggestion_message(self, guild, data):
         channel_id = await self.config.guild(guild).channel_id()
@@ -190,8 +281,9 @@ class Suggestions(commands.Cog):
             color=discord.Color.blue(),
             timestamp=datetime.datetime.now()
         )
-        embed.set_footer(text="Check the pinned message to make a suggestion.")
-
+        
+        # Note: Footer removed here as the main instruction is now in the sticky dashboard
+        
         channel = guild.get_channel(channel_id)
         if not channel:
             await interaction.response.send_message("Configuration error: Channel not found.", ephemeral=True)
@@ -230,7 +322,7 @@ class Suggestions(commands.Cog):
             try:
                 await bank.deposit_credits(interaction.user, create_amt)
                 currency = await bank.get_currency_name(guild)
-                reward_msg = f"\n\n💰 **Reward:** You received {create_amt} {currency} for submitting a suggestion!"
+                reward_msg = f"\n\n腸 **Reward:** You received {create_amt} {currency} for submitting a suggestion!"
             except:
                 pass
 
@@ -243,6 +335,9 @@ class Suggestions(commands.Cog):
             pass 
         
         await interaction.response.send_message(f"Suggestion created in {thread.mention}", ephemeral=True)
+
+        # Update Dashboard: Repost it so it appears below the new suggestion
+        await self.refresh_dashboard(guild, force_repost=True)
 
     async def distribute_rewards(self, guild, data, thread, status):
         """Handles distributing credits for Approval, Voting, and Thread Participation."""
@@ -311,15 +406,11 @@ class Suggestions(commands.Cog):
     async def ss_channel(self, ctx, channel: discord.TextChannel):
         """Set the suggestions channel and post the menu."""
         await self.config.guild(ctx.guild).channel_id.set(channel.id)
+        # Reset current dashboard ID if changing channels
+        await self.config.guild(ctx.guild).dashboard_msg_id.set(None)
         
-        embed = discord.Embed(
-            title="Suggestions",
-            description="Have an idea for the server? Click the button below to submit a suggestion!\n\n"
-                        "Please keep titles short and provide details in the description.",
-            color=discord.Color.green()
-        )
-        await channel.send(embed=embed, view=self.entry_view)
         await ctx.tick()
+        await self.refresh_dashboard(ctx.guild, force_repost=True)
 
     @suggestionsset.command(name="levelcreate")
     async def ss_levelcreate(self, ctx, level: int):
@@ -383,6 +474,7 @@ class Suggestions(commands.Cog):
 **Suggestions Configuration**
 ---------------------------
 Channel:        {ch_name}
+Dashboard ID:   {cfg['dashboard_msg_id'] or 'None'}
 Create Level:   {cfg['req_level_create']}
 Vote Level:     {cfg['req_level_vote']}
 Up Emoji:       {cfg['emoji_up']}
@@ -450,6 +542,9 @@ Thread Chat:    {cfg['credits_thread']} (Min Msgs: {cfg['thread_min_msgs']})
             
             if reward_logs:
                 await ctx.send(box("\n".join(reward_logs), lang="yaml"))
+        
+        # Update dashboard (Just edit, no need to repost as no new message was sent to main channel)
+        await self.refresh_dashboard(ctx.guild, force_repost=False)
 
     @suggestionsset.command(name="reject")
     async def ss_reject(self, ctx, suggestion_id: str, *, message: str):
@@ -476,7 +571,6 @@ Thread Chat:    {cfg['credits_thread']} (Min Msgs: {cfg['thread_min_msgs']})
                     await thread.edit(locked=True, archived=True)
 
                 # Distribute Rewards (Status = rejected)
-                # Voters and thread participants still get paid.
                 reward_logs = await self.distribute_rewards(ctx.guild, data, thread, status='rejected')
 
                 embed = discord.Embed(title=f"Suggestion #{suggestion_id} Rejected", description=message, color=discord.Color.red())
@@ -506,6 +600,9 @@ Thread Chat:    {cfg['credits_thread']} (Min Msgs: {cfg['thread_min_msgs']})
             if reward_logs:
                 await ctx.send(box("\n".join(reward_logs), lang="yaml"))
 
+        # Update dashboard (Just edit)
+        await self.refresh_dashboard(ctx.guild, force_repost=False)
+
     @suggestionsset.command(name="resetstats")
     async def ss_resetstats(self, ctx):
         """Reset all suggestion statistics (Wipes all suggestions)."""
@@ -520,6 +617,8 @@ Thread Chat:    {cfg['credits_thread']} (Min Msgs: {cfg['thread_min_msgs']})
             await self.config.guild(ctx.guild).suggestions.set({})
             await self.config.guild(ctx.guild).next_id.set(1)
             await ctx.send("All suggestions and stats reset.")
+            # Refresh to clear the dashboard
+            await self.refresh_dashboard(ctx.guild, force_repost=False)
         else:
             await ctx.send("Cancelled.")
 
@@ -611,44 +710,9 @@ Thread Chat:    {cfg['credits_thread']} (Min Msgs: {cfg['thread_min_msgs']})
 
     @suggestionsset.command(name="dashboard")
     async def ss_dashboard(self, ctx):
-        """View suggestion dashboard."""
-        suggestions = await self.config.guild(ctx.guild).suggestions()
-        if not suggestions:
-            return await ctx.send("No suggestions found.")
-            
-        open_list = [v for k,v in suggestions.items() if v['status'] == 'open']
-        approved_list = sorted([v for k,v in suggestions.items() if v['status'] == 'approved'], key=lambda x: x['timestamp'], reverse=True)[:5]
-        rejected_list = sorted([v for k,v in suggestions.items() if v['status'] == 'rejected'], key=lambda x: x['timestamp'], reverse=True)[:5]
-
-        embed = discord.Embed(title="Suggestions Dashboard", color=discord.Color.gold())
-        
-        if open_list:
-            lines = []
-            for s in open_list:
-                ups = len(s['upvotes'])
-                downs = len(s['downvotes'])
-                
-                chan_id = await self.config.guild(ctx.guild).channel_id()
-                link = f"https://discord.com/channels/{ctx.guild.id}/{chan_id}/{s['message_id']}"
-                
-                line = (
-                    f"[#{s['id']} {s['title']}]({link})\n"
-                    f"👍 {ups} | 👎 {downs} | <t:{int(s['timestamp'])}:R>"
-                )
-                lines.append(line)
-            open_str = "\n\n".join(lines)
-        else:
-            open_str = "None"
-
-        embed.add_field(name=f"Open ({len(open_list)})", value=open_str, inline=False)
-        
-        app_str = "\n".join([f"#{x['id']} {x['title']}" for x in approved_list]) or "None"
-        embed.add_field(name="Recently Approved", value=app_str, inline=False)
-        
-        rej_str = "\n".join([f"#{x['id']} {x['title']}" for x in rejected_list]) or "None"
-        embed.add_field(name="Recently Rejected", value=rej_str, inline=False)
-        
-        await ctx.send(embed=embed)
+        """View suggestion dashboard (Manually triggers refresh/post)."""
+        await self.refresh_dashboard(ctx.guild, force_repost=True)
+        await ctx.tick()
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
