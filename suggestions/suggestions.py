@@ -197,6 +197,9 @@ class Suggestions(commands.Cog):
         msg_id = await self.config.guild(guild).dashboard_msg_id()
         embed = await self.generate_dashboard_embed(guild)
         
+        # Initialize msg to None to prevent UnboundLocalError
+        msg = None
+        
         if msg_id:
             try:
                 msg = await channel.fetch_message(msg_id)
