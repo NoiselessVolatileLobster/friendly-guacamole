@@ -102,7 +102,11 @@ class VibeCheck(getattr(commands, "Cog", object)):
             interactions={},
             last_good_vibe=0,  # Timestamp of last usage
             last_bad_vibe=0,   # Timestamp of last usage
-            new_member_xp_awarded=False  # Tracks if they already got their newbie bonus
+            new_member_xp_awarded=False,  # Tracks if they already got their newbie bonus
+
+            # New Period Tracking
+            monthly_data={"score": 0, "good_sent": 0, "bad_sent": 0, "good_rx": 0, "bad_rx": 0},
+            yearly_data={"score": 0, "good_sent": 0, "bad_sent": 0, "good_rx": 0, "bad_rx": 0}
         )
         
         # Guild settings
@@ -367,6 +371,182 @@ class VibeCheck(getattr(commands, "Cog", object)):
     async def vibecheckset(self, ctx: commands.Context):
         """Configuration settings for VibeCheck."""
         pass
+    
+    @vibecheckset.command(name="report")
+    async def generate_report(self, ctx: commands.Context, period: str = "monthly"):
+        """
+        Generates a statistical report of the best/worst vibes.
+        
+        Args:
+            period: 'monthly', 'yearly', or 'alltime'.
+        """
+        period = period.lower()
+        if period not in ["monthly", "yearly", "alltime"]:
+            return await ctx.send("Period must be `monthly`, `yearly`, or `alltime`.")
+
+        await ctx.typing()
+
+        # Initialize placeholders for Top 1
+        # Tuple format: (user_id, value)
+        stats = {
+            "most_good_sent": (None, -1),
+            "most_good_rx": (None, -1),
+            "most_bad_sent": (None, -1),
+            "most_bad_rx": (None, -1),
+            "high_score": (None, float('-inf')),
+            "low_score": (None, float('inf')),
+            "high_ratio": (None, float('-inf')),
+            "low_ratio": (None, float('inf'))
+        }
+
+        all_users = await self.conf.all_users()
+        users_processed = 0
+
+        for uid, data in all_users.items():
+            user_id = int(uid)
+            
+            # Extract data based on period
+            if period == "monthly":
+                d = data.get("monthly_data", {})
+                score = d.get("score", 0)
+                good_sent = d.get("good_sent", 0)
+                bad_sent = d.get("bad_sent", 0)
+                good_rx = d.get("good_rx", 0)
+                bad_rx = d.get("bad_rx", 0)
+            elif period == "yearly":
+                d = data.get("yearly_data", {})
+                score = d.get("score", 0)
+                good_sent = d.get("good_sent", 0)
+                bad_sent = d.get("bad_sent", 0)
+                good_rx = d.get("good_rx", 0)
+                bad_rx = d.get("bad_rx", 0)
+            else: # All Time
+                score = data.get("vibes", 0)
+                good_sent = data.get("good_vibes_sent", 0)
+                bad_sent = data.get("bad_vibes_sent", 0)
+                # For All Time, we don't track RX explicitly in the old schema, 
+                # so we can only show Sent/Score/Ratio for All Time unless we iterate ALL interactions (too slow).
+                good_rx = 0 
+                bad_rx = 0
+
+            # Skip empty records to avoid cluttering stats with 0s if they aren't relevant
+            if score == 0 and good_sent == 0 and bad_sent == 0 and good_rx == 0 and bad_rx == 0:
+                continue
+
+            users_processed += 1
+            ratio = good_sent - bad_sent
+
+            # Update Winners
+            if good_sent > stats["most_good_sent"][1]:
+                stats["most_good_sent"] = (user_id, good_sent)
+            
+            if bad_sent > stats["most_bad_sent"][1]:
+                stats["most_bad_sent"] = (user_id, bad_sent)
+
+            if score > stats["high_score"][1]:
+                stats["high_score"] = (user_id, score)
+            
+            if score < stats["low_score"][1]:
+                stats["low_score"] = (user_id, score)
+
+            if ratio > stats["high_ratio"][1]:
+                stats["high_ratio"] = (user_id, ratio)
+            
+            if ratio < stats["low_ratio"][1]:
+                stats["low_ratio"] = (user_id, ratio)
+
+            # Rx Stats (Only valid for Monthly/Yearly with new schema)
+            if period != "alltime":
+                if good_rx > stats["most_good_rx"][1]:
+                    stats["most_good_rx"] = (user_id, good_rx)
+                if bad_rx > stats["most_bad_rx"][1]:
+                    stats["most_bad_rx"] = (user_id, bad_rx)
+
+        if users_processed == 0:
+            return await ctx.send(f"No data found for the **{period}** period.")
+
+        # Formatting Helper
+        def fmt_winner(key, label, value_label=""):
+            uid, val = stats[key]
+            if uid is None:
+                return "N/A"
+            user = self.bot.get_user(uid)
+            name = user.name if user else f"ID:{uid}"
+            return f"**{name}** ({val} {value_label})"
+
+        embed = discord.Embed(
+            title=f"📊 VibeCheck Report: {period.title()}",
+            description=f"Generated: <t:{int(time.time())}:R>",
+            color=discord.Color.gold()
+        )
+
+        embed.add_field(name="😇 Most Good Vibes Sent", value=fmt_winner("most_good_sent", "sent"), inline=True)
+        if period != "alltime":
+            embed.add_field(name="🥰 Most Good Vibes Received", value=fmt_winner("most_good_rx", "rx"), inline=True)
+        else:
+            embed.add_field(name="🥰 Most Good Vibes Received", value="*Not tracked globally*", inline=True)
+
+        embed.add_field(name="\u200b", value="\u200b", inline=False) # Spacer
+
+        embed.add_field(name="😈 Most Bad Vibes Sent", value=fmt_winner("most_bad_sent", "sent"), inline=True)
+        if period != "alltime":
+            embed.add_field(name="💀 Most Bad Vibes Received", value=fmt_winner("most_bad_rx", "rx"), inline=True)
+        else:
+            embed.add_field(name="💀 Most Bad Vibes Received", value="*Not tracked globally*", inline=True)
+
+        embed.add_field(name="\u200b", value="\u200b", inline=False) # Spacer
+
+        embed.add_field(name="📈 Highest Vibe Score", value=fmt_winner("high_score", "pts"), inline=True)
+        embed.add_field(name="📉 Lowest Vibe Score", value=fmt_winner("low_score", "pts"), inline=True)
+
+        embed.add_field(name="\u200b", value="\u200b", inline=False) # Spacer
+
+        embed.add_field(name="⚖️ Best Vibe Ratio", value=fmt_winner("high_ratio", "ratio"), inline=True)
+        embed.add_field(name="🔻 Worst Vibe Ratio", value=fmt_winner("low_ratio", "ratio"), inline=True)
+
+        await ctx.send(embed=embed)
+
+    @vibecheckset.command(name="resetperiod")
+    async def reset_period_stats(self, ctx: commands.Context, period: str):
+        """
+        Resets all stats for a specific period (monthly or yearly).
+        Use this at the start of a month/year to clear the [p]vibecheckset report data.
+        """
+        period = period.lower()
+        if period not in ["monthly", "yearly"]:
+            return await ctx.send("You can only reset `monthly` or `yearly` stats.")
+        
+        confirmation_msg = await ctx.send(
+            f"⚠️ **WARNING:** This will reset **ALL {period.upper()}** stats for every user. "
+            "React with ✅ within 15 seconds to confirm."
+        )
+        
+        try:
+            await self.bot.wait_for(
+                "reaction_add",
+                check=lambda r, u: u == ctx.author and str(r.emoji) == "✅" and r.message.id == confirmation_msg.id,
+                timeout=15.0,
+            )
+        except asyncio.TimeoutError:
+            return await confirmation_msg.edit(content="Reset command timed out.")
+
+        await confirmation_msg.edit(content=f"Resetting {period} stats... please wait.")
+        
+        all_users = await self.conf.all_users()
+        key = f"{period}_data"
+        empty_struct = {"score": 0, "good_sent": 0, "bad_sent": 0, "good_rx": 0, "bad_rx": 0}
+
+        count = 0
+        for uid in all_users:
+            user = self.bot.get_user(int(uid)) or self.bot.get_user(int(uid)) # Try to get user obj
+            if not user:
+                 # If user obj not found, we use config user_from_id context
+                 await self.conf.user_from_id(int(uid)).set_raw(key, value=empty_struct)
+            else:
+                await self.conf.user(user).set_raw(key, value=empty_struct)
+            count += 1
+            
+        await ctx.send(f"✅ Reset **{period}** stats for {count} users.")
 
     @vibecheckset.command(name="board")
     async def vibe_board(self, ctx: commands.Context, top: int = 10):
@@ -1083,6 +1263,11 @@ class VibeCheck(getattr(commands, "Cog", object)):
                 await self.conf.user(user_obj).bad_vibes_sent.set(0)
                 await self.conf.user(user_obj).interactions.set({})
                 await self.conf.user(user_obj).new_member_xp_awarded.set(False)
+                
+                # New Period Data Reset
+                await self.conf.user(user_obj).monthly_data.set({"score": 0, "good_sent": 0, "bad_sent": 0, "good_rx": 0, "bad_rx": 0})
+                await self.conf.user(user_obj).yearly_data.set({"score": 0, "good_sent": 0, "bad_sent": 0, "good_rx": 0, "bad_rx": 0})
+                
                 reset_count += 1
                 
         await ctx.send(f"✅ **Success!** Reset data for **{reset_count}** users globally.")
@@ -1272,6 +1457,25 @@ class VibeCheck(getattr(commands, "Cog", object)):
                 return msg_id
         return None
 
+    async def _update_stats_bucket(self, user: discord.User, amount: int, bucket_name: str, is_good: bool, is_sender: bool):
+        """Helper to update monthly/yearly buckets."""
+        async with self.conf.user(user).get_attr(bucket_name)() as data:
+            # Update Score
+            if not is_sender: # Receiver gets the score change
+                data["score"] = data.get("score", 0) + amount
+
+            # Update Counts
+            if is_sender:
+                if is_good:
+                    data["good_sent"] = data.get("good_sent", 0) + 1
+                else:
+                    data["bad_sent"] = data.get("bad_sent", 0) + 1
+            else: # Receiver
+                if is_good:
+                    data["good_rx"] = data.get("good_rx", 0) + 1
+                else:
+                    data["bad_rx"] = data.get("bad_rx", 0) + 1
+
     async def _add_vibes(self, giver: discord.User, receiver: discord.User, amount: int, is_good: bool):
         """
         Handles the core logic for adding/subtracting vibes and triggering checks.
@@ -1307,7 +1511,16 @@ class VibeCheck(getattr(commands, "Cog", object)):
             interactions[receiver_id_str][interaction_key] += 1
             giver_data["interactions"] = interactions
 
-        # 3. Find the Guild context and Member object for Receiver
+        # 3. Update Monthly & Yearly Stats (New Logic)
+        # Giver (Sender) updates
+        await self._update_stats_bucket(giver, amount, "monthly_data", is_good, is_sender=True)
+        await self._update_stats_bucket(giver, amount, "yearly_data", is_good, is_sender=True)
+        
+        # Receiver (Recipient) updates
+        await self._update_stats_bucket(receiver, amount, "monthly_data", is_good, is_sender=False)
+        await self._update_stats_bucket(receiver, amount, "yearly_data", is_good, is_sender=False)
+
+        # 4. Find the Guild context and Member object for Receiver
         member_receiver = None
         target_guild = None
         
@@ -1321,7 +1534,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
         if not member_receiver or not target_guild:
             return 
             
-        # 4. Check for New Member XP Reward
+        # 5. Check for New Member XP Reward
         if new_vibes > current_vibes: 
             guild_conf = self.conf.guild(target_guild)
             xp_minutes = await guild_conf.new_member_xp_minutes()
@@ -1344,7 +1557,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
                                     await self._give_levelup_xp(target_guild, member_receiver, xp_amount)
                                     await receiver_settings.new_member_xp_awarded.set(True)
 
-        # 5. Run WarnSystem Integration Check (With Anti-Spam)
+        # 6. Run WarnSystem Integration Check (With Anti-Spam)
         if new_vibes < current_vibes:
             guild_conf = self.conf.guild(target_guild)
             all_guild_settings = await guild_conf.all()
@@ -1425,7 +1638,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
                     await self._trigger_warnsystem(target_guild, member_receiver, warn_author, 1, f"{reason} (Score: {new_vibes})")
                     triggered = True
         
-        # 6. Perform Logging
+        # 7. Perform Logging
         await self._log_vibe_change(target_guild, giver, member_receiver, amount, current_vibes, new_vibes)
         
     async def _calculate_unique_haters(self, user_id: int) -> int:
