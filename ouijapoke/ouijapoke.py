@@ -29,6 +29,9 @@ log = logging.getLogger("red.ouijapoke")
 
 class OuijaSettings(BaseModel):
     """Schema for guild configuration settings."""
+    # Safety Switch
+    policing_enabled: bool = Field(default=False, description="Master switch. If False, no automated warnings/kicks will occur.")
+
     poke_days: int = Field(default=30, ge=1, description="Days a member must be inactive to be eligible for a poke.")
     summon_days: int = Field(default=60, ge=1, description="Days a member must be inactive to be eligible for a summon.")
     
@@ -412,6 +415,10 @@ class OuijaPoke(commands.Cog):
     async def _process_automated_checks(self, guild: discord.Guild, settings: OuijaSettings):
         """Checks for inactive users, No Intro violations, and Level 0 lurkers."""
         
+        # If policing is disabled, we do absolutely nothing in this loop.
+        if not settings.policing_enabled:
+            return
+
         warn_cog = self.bot.get_cog("WarnSystem")
         levelup_cog = self.bot.get_cog("LevelUp")
         
@@ -439,10 +446,8 @@ class OuijaPoke(commands.Cog):
             except ValueError:
                 pass
 
-        # Iterate over MEMBERS in the guild to cover "No Intro" and "Level 0" logic (which uses join date)
-        # We also check "last_seen" for inactivity logic.
-        
-        for member in guild.members:
+        # Iterate over a COPY (list) of members to avoid runtime errors if someone is kicked mid-loop.
+        for member in list(guild.members):
             if member.bot or self._is_excluded(member, excluded_roles):
                 continue
             
@@ -494,15 +499,16 @@ class OuijaPoke(commands.Cog):
                                     pass
                     
                     # 2. Kick Warning (WarnSystem Level 3)
-                    # NOTE: We do not rate limit kicks generally, as they are severe, but user can request otherwise.
-                    # Current request only specified "post a bunch of messages", so kicks remain standard.
                     if settings.level0_kick_days > 0 and warn_cog and days_joined >= settings.level0_kick_days:
                         if "level0_kick" not in user_warnings:
                             try:
+                                # Append condition to the reason for clarity in ModLog
+                                final_reason = f"{settings.level0_kick_reason} (Level 0 after {days_joined} days)"
+                                
                                 await warn_cog.api.warn(
                                     member=member,
                                     author=guild.me,
-                                    reason=settings.level0_kick_reason,
+                                    reason=final_reason,
                                     level=3
                                 )
                                 user_warnings["level0_kick"] = now.isoformat()
@@ -525,6 +531,7 @@ class OuijaPoke(commands.Cog):
                             if "level3" not in user_warnings:
                                 try:
                                     reason = f"Inactive for over {days_inactive} days (Threshold: {settings.warn_level_3_days})."
+                                    # WarnSystem will handle the kick if configured for Level 3
                                     await warn_cog.api.warn(member=member, author=guild.me, reason=reason, level=3)
                                     user_warnings["level3"] = now.isoformat()
                                     has_changes = True
@@ -951,6 +958,10 @@ class OuijaPoke(commands.Cog):
             color=discord.Color.purple()
         )
         
+        # Status Header
+        status_icon = "🟢 Enabled" if settings.policing_enabled else "🔴 Disabled"
+        embed.add_field(name="🚦 Policing Status", value=f"**{status_icon}**", inline=False)
+
         # 1. Inactivity Thresholds
         embed.add_field(
             name="🕒 Inactivity Thresholds",
@@ -1057,6 +1068,144 @@ class OuijaPoke(commands.Cog):
         )
 
         await ctx.send(embed=embed)
+
+    # --- Safety / Enable / Disable / Preview ---
+
+    @ouijaset.command(name="policing")
+    async def ouijaset_policing(self, ctx: commands.Context, enable: bool):
+        """
+        Enables or disables the automated policing system (Warnings and Kicks).
+        
+        Usage: `[p]ouijaset policing true` (Enable) or `[p]ouijaset policing false` (Disable).
+        """
+        settings = await self._get_settings(ctx.guild)
+        settings.policing_enabled = enable
+        await self._set_settings(ctx.guild, settings)
+        
+        state = "Enabled" if enable else "Disabled"
+        color = discord.Color.green() if enable else discord.Color.red()
+        
+        embed = discord.Embed(title=f"Policing System {state}", color=color)
+        embed.description = f"Automated warnings and kicks are now **{state.upper()}**."
+        await ctx.send(embed=embed)
+
+    @ouijaset.command(name="preview")
+    async def ouijaset_preview(self, ctx: commands.Context):
+        """
+        [Dry Run] Lists all users who WOULD be warned or kicked if the policing system were enabled.
+        
+        This allows you to check your settings before enabling the auto-kicker.
+        """
+        async with ctx.typing():
+            guild = ctx.guild
+            settings = await self._get_settings(guild)
+            data = await self.config.guild(guild).all()
+            
+            warned_users = data["warned_users"]
+            last_seen_data = data["last_seen"]
+            excluded_roles = data["excluded_roles"]
+            
+            levelup_cog = self.bot.get_cog("LevelUp")
+            warn_cog = self.bot.get_cog("WarnSystem")
+            
+            if not warn_cog:
+                return await ctx.send("⚠️ WarnSystem is not loaded. Kick/Warn actions cannot be previewed correctly.")
+
+            now = datetime.now(timezone.utc)
+            
+            nointro_role = guild.get_role(settings.nointro_role_id) if settings.nointro_role_id else None
+            
+            action_list = [] # List of tuples: (Member, ActionString)
+            
+            for member in list(guild.members):
+                if member.bot or self._is_excluded(member, excluded_roles):
+                    continue
+                    
+                user_id_str = str(member.id)
+                user_warnings = warned_users.get(user_id_str, {})
+                
+                actions = []
+
+                # A. No Intro Check
+                if settings.nointro_days > 0 and nointro_role:
+                    if nointro_role in member.roles:
+                        days_joined = (now - member.joined_at.replace(tzinfo=timezone.utc)).days
+                        if days_joined >= settings.nointro_days:
+                            if "nointro" not in user_warnings:
+                                actions.append(f"🔵 **No Intro Ping** (Joined {days_joined}d ago)")
+
+                # B. Level 0 Checks
+                if levelup_cog:
+                    level = levelup_cog.get_level(member)
+                    if level == 0:
+                        days_joined = (now - member.joined_at.replace(tzinfo=timezone.utc)).days
+                        
+                        # Warn
+                        if settings.level0_warn_days > 0 and days_joined >= settings.level0_warn_days:
+                             if "level0_warn" not in user_warnings:
+                                 actions.append(f"🟠 **Level 0 Warning** (Joined {days_joined}d ago)")
+                        
+                        # Kick
+                        if settings.level0_kick_days > 0 and days_joined >= settings.level0_kick_days:
+                            if "level0_kick" not in user_warnings:
+                                actions.append(f"🔴 **Level 0 KICK** (Joined {days_joined}d ago)")
+
+                # C. Inactivity Checks
+                if settings.warn_level_1_days > 0 or settings.warn_level_3_days > 0:
+                    last_seen_dt_str = last_seen_data.get(user_id_str)
+                    if last_seen_dt_str:
+                        try:
+                            last_seen_dt = datetime.fromisoformat(last_seen_dt_str).replace(tzinfo=timezone.utc)
+                            days_inactive = (now - last_seen_dt).days
+                            
+                            # L3 Kick
+                            if settings.warn_level_3_days > 0 and days_inactive >= settings.warn_level_3_days:
+                                if "level3" not in user_warnings:
+                                    actions.append(f"🔴 **Inactivity KICK** (Inactive {days_inactive}d)")
+                            
+                            # L1 Warn (only if not getting kicked, usually)
+                            # But technically the system might do both if configured poorly, so show both.
+                            if settings.warn_level_1_days > 0 and days_inactive >= settings.warn_level_1_days:
+                                if "level1" not in user_warnings:
+                                    actions.append(f"🟠 **Inactivity Warning** (Inactive {days_inactive}d)")
+                        except ValueError:
+                            pass
+
+                if actions:
+                    action_list.append((member, "\n".join(actions)))
+            
+            # Display Results
+            if not action_list:
+                return await ctx.send("✅ **Preview Result:** No users would be warned or kicked with current settings.")
+            
+            # Paginate Logic
+            pages = []
+            current_page = ""
+            count = 0
+            
+            for member, act_str in action_list:
+                line = f"**{member.display_name}** ({member.id})\n{act_str}\n"
+                if len(current_page) + len(line) > 1000:
+                    pages.append(current_page)
+                    current_page = line
+                else:
+                    current_page += line
+                count += 1
+            
+            if current_page:
+                pages.append(current_page)
+                
+            for i, page_content in enumerate(pages):
+                embed = discord.Embed(
+                    title=f"⚠️ Policing Preview (Dry Run)",
+                    description=page_content,
+                    color=discord.Color.orange()
+                )
+                embed.set_footer(text=f"Page {i+1}/{len(pages)} | Total Affected: {count} users")
+                await ctx.send(embed=embed)
+            
+            if not settings.policing_enabled:
+                await ctx.send("ℹ️ **Note:** The system is currently **DISABLED**. Use `[p]ouijaset policing true` to activate.")
 
     # --- Configuration Commands ---
 
