@@ -24,7 +24,8 @@ class LevelUpTracker(commands.Cog):
         }
         default_member = {
             "join_timestamp": None,
-            "levels": {}  # Format: {"level_int": timestamp_float}
+            "initial_level": None,  # None = unknown, 0 = new user, >0 = legacy user
+            "levels": {}            # Format: {"level_int": timestamp_float}
         }
 
         self.config.register_guild(**default_guild)
@@ -48,7 +49,6 @@ class LevelUpTracker(commands.Cog):
         col_widths = [len(h) for h in headers]
         for row in rows:
             for i, cell in enumerate(row):
-                # Ensure we handle non-string cells gracefully
                 cell_str = str(cell)
                 if len(cell_str) > col_widths[i]:
                     col_widths[i] = len(cell_str)
@@ -80,10 +80,8 @@ class LevelUpTracker(commands.Cog):
         if not cog:
             return 0
         try:
-            # Attempt to use the method provided in the prompt
             return cog.get_level(member)
         except AttributeError:
-            # Fallback if the specific method structure differs in current version
             try:
                 return await cog.config.member(member).level()
             except Exception:
@@ -97,10 +95,7 @@ class LevelUpTracker(commands.Cog):
     # --------------------------------------------------------------------------
     @commands.Cog.listener()
     async def on_connect(self):
-        """
-        Run initialization logic when bot connects.
-        This handles the 'first install' requirement.
-        """
+        """Run initialization logic when bot connects."""
         await self.bot.wait_until_red_ready()
         for guild in self.bot.guilds:
             if not await self.config.guild(guild).initialized():
@@ -110,27 +105,27 @@ class LevelUpTracker(commands.Cog):
         """Snapshot current state for all members."""
         log.info(f"Initializing LevelUpTracker for guild: {guild.name}")
         
-        async with self.config.guild(guild).members() as members_data:
-            for member in guild.members:
-                if member.bot:
-                    continue
-                
-                # Set Join Date
-                # If joined_at is None (rare API edge case), use now
-                join_ts = member.joined_at.timestamp() if member.joined_at else datetime.now(timezone.utc).timestamp()
-                
-                # Set Current Level
-                current_level = await self._get_current_level(member)
-                
-                # We update the config directly to avoid race conditions
-                # Note: We must interact with the member config object, not the bulk dict context 
-                # because register_member puts data under specific keys
-                await self.config.member(member).join_timestamp.set(join_ts)
-                
-                # If they already have a level, snapshot it as "reached now"
-                # This is the "skew" discussed in the response
-                if current_level > 0:
-                     await self.config.member(member).levels.set_raw(str(current_level), value=datetime.now(timezone.utc).timestamp())
+        for member in guild.members:
+            if member.bot:
+                continue
+            
+            # Set Join Date
+            join_ts = member.joined_at.timestamp() if member.joined_at else datetime.now(timezone.utc).timestamp()
+            
+            # Set Current Level (Snapshot)
+            current_level = await self._get_current_level(member)
+            now_ts = datetime.now(timezone.utc).timestamp()
+            
+            member_conf = self.config.member(member)
+            await member_conf.join_timestamp.set(join_ts)
+            
+            # Record their starting point
+            await member_conf.initial_level.set(current_level)
+            
+            # If they are already leveled, snapshot that level as 'reached now'
+            # (Used for calculating FUTURE deltas, handled carefully in reports)
+            if current_level > 0:
+                 await member_conf.levels.set_raw(str(current_level), value=now_ts)
         
         await self.config.guild(guild).initialized.set(True)
 
@@ -138,9 +133,12 @@ class LevelUpTracker(commands.Cog):
     async def on_member_join(self, member: discord.Member):
         if member.bot:
             return
-        # Record join timestamp
         ts = datetime.now(timezone.utc).timestamp()
-        await self.config.member(member).join_timestamp.set(ts)
+        
+        member_conf = self.config.member(member)
+        await member_conf.join_timestamp.set(ts)
+        # New members always start at 0
+        await member_conf.initial_level.set(0)
 
     @commands.Cog.listener()
     async def on_member_levelup(
@@ -149,18 +147,20 @@ class LevelUpTracker(commands.Cog):
         member: discord.Member,
         message: Optional[str],
         channel: Union[discord.TextChannel, discord.VoiceChannel, discord.Thread, discord.ForumChannel],
-        nev_level: int, # Using the variable name provided in prompt
+        new_level: int, 
     ):
-        """
-        Listener to see when people level up.
-        """
         if member.bot:
             return
             
         now_ts = datetime.now(timezone.utc).timestamp()
         
-        # Store the timestamp for this specific level
-        await self.config.member(member).levels.set_raw(str(nev_level), value=now_ts)
+        # Ensure we have an initial level set if this is the first interaction
+        if await self.config.member(member).initial_level() is None:
+            # If we missed the join/init, assume previous level was the start
+            # This is a fallback to prevent crashes
+            await self.config.member(member).initial_level.set(max(0, new_level - 1))
+
+        await self.config.member(member).levels.set_raw(str(new_level), value=now_ts)
 
     # --------------------------------------------------------------------------
     # Admin Commands
@@ -174,9 +174,7 @@ class LevelUpTracker(commands.Cog):
 
     @leveluptrackerset.command(name="view")
     async def leveluptrackerset_view(self, ctx):
-        """
-        View current settings and status.
-        """
+        """View current settings and status."""
         is_init = await self.config.guild(ctx.guild).initialized()
         vertyco_loaded = self.bot.get_cog("LevelUp") is not None
         
@@ -191,10 +189,7 @@ class LevelUpTracker(commands.Cog):
 
     @leveluptrackerset.command(name="reindex")
     async def leveluptrackerset_reindex(self, ctx):
-        """
-        Manually trigger the initialization check.
-        Useful if the cog was loaded before LevelUp was ready.
-        """
+        """Manually trigger the initialization check."""
         await ctx.send("Starting manual re-index of members...")
         await self._initialize_guild(ctx.guild)
         await ctx.send("Re-index complete.")
@@ -213,86 +208,138 @@ class LevelUpTracker(commands.Cog):
         
         join_ts = data.get("join_timestamp")
         levels = data.get("levels", {})
+        initial_level = data.get("initial_level")
+        
+        if initial_level is None:
+             # Fallback for old data or errors
+             initial_level = 0
         
         if not join_ts:
-            # Attempt to fix missing join time if they are in guild
             if member.joined_at:
                 join_ts = member.joined_at.timestamp()
-                await self.config.member(member).join_timestamp.set(join_ts)
             else:
-                return await ctx.send(f"I don't have join date tracking for {member.display_name} yet.")
-        
-        if not levels:
+                return await ctx.send(f"I don't have tracking data for {member.display_name} yet.")
+
+        # Header info
+        info_text = f"**Level History for {member.display_name}**\n"
+        if initial_level > 0:
+            info_text += f"User started tracking at **Level {initial_level}** (Legacy User).\n"
+        else:
+            info_text += "User tracked from join (New User).\n"
+
+        if not levels and initial_level == 0:
             return await ctx.send(f"{member.display_name} hasn't leveled up since I started tracking.")
 
-        # Sort levels by int key
         sorted_levels = sorted([(int(k), v) for k, v in levels.items()], key=lambda x: x[0])
         
-        headers = ["Level", "Date Reached", "Time Since Join", "Time Since Prev"]
+        headers = ["Level", "Date Reached", "Time from Start", "Time from Prev"]
         rows = []
         
-        join_dt = datetime.fromtimestamp(join_ts, timezone.utc)
-        prev_ts = join_ts
+        # Determine the "Start Time" for stats
+        # For new users, it's join time. For legacy, it's the timestamp of their initial level.
+        # However, we only have timestamps in 'levels' dict.
         
+        join_dt = datetime.fromtimestamp(join_ts, timezone.utc)
+        
+        # Previous timestamp for calculating steps
+        # If legacy, we try to find the timestamp of the initial level in the levels dict
+        prev_ts = join_ts
+        if initial_level > 0:
+            # If we have the timestamp for the initial level (snapshot), use it
+            if str(initial_level) in levels:
+                prev_ts = levels[str(initial_level)]
+            else:
+                # Should not happen given _initialize_guild logic, but safety first
+                prev_ts = join_ts 
+
         for lvl, ts in sorted_levels:
+            # Skip levels below initial tracking (shouldn't exist, but safety)
+            if lvl < initial_level:
+                continue
+                
             current_dt = datetime.fromtimestamp(ts, timezone.utc)
-            
-            # Time since join
-            total_delta = current_dt - join_dt
-            # Sanity check for negative times (join date sync issues)
-            if total_delta.total_seconds() < 0:
-                total_delta = timedelta(0)
-                
-            total_str = humanize_timedelta(timedelta=total_delta) or "0s"
-            
-            # Time since previous recorded event
-            step_delta = current_dt - datetime.fromtimestamp(prev_ts, timezone.utc)
-            if step_delta.total_seconds() < 0:
-                step_delta = timedelta(0)
-                
-            step_str = humanize_timedelta(timedelta=step_delta) or "0s"
-            
             date_str = current_dt.strftime("%Y-%m-%d")
+
+            # Calculate Deltas
             
+            # 1. Time from Start
+            # If this is the initial level snapshot, time is 0 (or N/A)
+            if lvl == initial_level:
+                rows.append([f"Lvl {lvl} (Start)", date_str, "-", "-"])
+                prev_ts = ts
+                continue
+
+            # Total time from Join (only valid for New Users)
+            if initial_level == 0:
+                total_delta = current_dt - join_dt
+                total_str = humanize_timedelta(timedelta=total_delta) or "0s"
+            else:
+                # For legacy, "Time from Start" is ambiguous. 
+                # We will show time since the Initial Level snapshot
+                start_ts = levels.get(str(initial_level), join_ts)
+                total_delta = current_dt - datetime.fromtimestamp(start_ts, timezone.utc)
+                total_str = (humanize_timedelta(timedelta=total_delta) or "0s") + "*"
+
+            # 2. Time from Previous
+            step_delta = current_dt - datetime.fromtimestamp(prev_ts, timezone.utc)
+            step_str = humanize_timedelta(timedelta=step_delta) or "0s"
+
             rows.append([f"Level {lvl}", date_str, total_str, step_str])
-            prev_ts = ts # Update previous for next iteration
+            prev_ts = ts 
 
         table = self._make_table(headers, rows)
-        await ctx.send(f"**Level History for {member.display_name}**\n" + box(table, lang="txt"))
+        if initial_level > 0:
+            info_text += "*Time from Start counts from when the bot first saw this user at their initial level.\n"
+            
+        await ctx.send(info_text + box(table, lang="txt"))
 
     @commands.command()
     @commands.guild_only()
     async def levelaverages(self, ctx):
         """
-        See the average time it takes members to reach specific levels.
+        Average time for NEW users to reach levels (from Join).
+        Excludes users who were already leveled when tracking started.
         """
         level_times = {} # { level_int: [seconds_float, ... ] }
         
-        # We need to iterate over all members in config
-        # This can be heavy on very large servers, but fine for typical use
         all_members = await self.config.all_members(ctx.guild)
         
+        skipped_legacy = 0
+        included_users = 0
+
         for user_id, data in all_members.items():
             join_ts = data.get("join_timestamp")
             levels = data.get("levels", {})
+            initial_level = data.get("initial_level")
+
+            # STRICT FILTER: Only include users who started at Level 0
+            if initial_level is not None and initial_level > 0:
+                skipped_legacy += 1
+                continue
             
+            # If initial_level is None (old data), we skip to be safe, 
+            # or if levels is empty.
             if not join_ts or not levels:
                 continue
+            
+            included_users += 1
                 
             for lvl_str, reached_ts in levels.items():
                 lvl = int(lvl_str)
                 time_to_reach = reached_ts - join_ts
                 
-                # Only count valid positive times (filter out glitched/legacy syncs)
                 if time_to_reach > 0:
                     if lvl not in level_times:
                         level_times[lvl] = []
                     level_times[lvl].append(time_to_reach)
 
         if not level_times:
-            return await ctx.send("Not enough data to calculate averages yet.")
+            msg = "Not enough data from **New Users** to calculate averages yet."
+            if skipped_legacy > 0:
+                msg += f"\n(Skipped {skipped_legacy} legacy users who started > Level 0)."
+            return await ctx.send(msg)
 
-        headers = ["Level", "Avg Time from Join", "Sample Size"]
+        headers = ["Level", "Avg Time (From Join)", "Sample Size"]
         rows = []
 
         for lvl in sorted(level_times.keys()):
@@ -305,4 +352,4 @@ class LevelUpTracker(commands.Cog):
             rows.append([lvl, time_str, len(times)])
 
         table = self._make_table(headers, rows)
-        await ctx.send("**Average Time to Reach Levels**\n" + box(table, lang="txt"))
+        await ctx.send(f"**Average Leveling Speed (New Users Only)**\nBased on {included_users} new members.\n" + box(table, lang="txt"))
