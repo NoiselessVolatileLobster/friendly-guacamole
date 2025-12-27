@@ -184,7 +184,7 @@ class OuijaPoke(commands.Cog):
             last_poked={}, # {user_id: "ISO_DATETIME_STRING"}
             last_summoned={}, # {user_id: "ISO_DATETIME_STRING"}
             warned_users={}, # {user_id: {"level1": ts, "level3": ts, "nointro": ts, "level0_warn": ts, "level0_kick": ts}}
-            last_level0_warn_time=None, # ISO_DATETIME_STRING - Tracks the last time a Level 0 warning was sent (1 per 24h)
+            last_level0_warn_time=None, # ISO_DATETIME_STRING - Tracks the last time a Level 0 warning OR KICK was sent
             excluded_roles=[], # [role_id, ...] -> "Hibernating Roles"
             excluded_channels=[], # [channel_id, ...]
             ouija_settings=OuijaSettings().model_dump(),
@@ -434,15 +434,16 @@ class OuijaPoke(commands.Cog):
         nointro_channel = guild.get_channel(settings.nointro_channel_id) if settings.nointro_channel_id else None
         level0_channel = guild.get_channel(settings.level0_channel_id) if settings.level0_channel_id else None
 
-        # Check global cooldown for Level 0 warnings to prevent spam
-        # We only want to warn ONE person per 24 hours.
-        last_level0_warn_str = await self.config.guild(guild).last_level0_warn_time()
-        allow_level0_warn = True
-        if last_level0_warn_str:
+        # Check global cooldown for Level 0 Actions (Warns OR Kicks)
+        # We only want to act on ONE person per 12 hours.
+        last_level0_action_str = await self.config.guild(guild).last_level0_warn_time()
+        allow_level0_action = True
+        
+        if last_level0_action_str:
             try:
-                last_l0_dt = datetime.fromisoformat(last_level0_warn_str).replace(tzinfo=timezone.utc)
-                if (now - last_l0_dt) < timedelta(hours=24):
-                    allow_level0_warn = False
+                last_l0_dt = datetime.fromisoformat(last_level0_action_str).replace(tzinfo=timezone.utc)
+                if (now - last_l0_dt) < timedelta(hours=12):
+                    allow_level0_action = False
             except ValueError:
                 pass
 
@@ -473,7 +474,8 @@ class OuijaPoke(commands.Cog):
                                 pass
 
             # --- B. LEVEL 0 CHECKS ---
-            if levelup_cog:
+            # Rate limit applies to this entire block: Only one user per 12h will trigger a warn OR a kick.
+            if levelup_cog and allow_level0_action:
                 # Check levels
                 # FIX: Await the async function
                 level = await levelup_cog.get_level(member)
@@ -481,30 +483,10 @@ class OuijaPoke(commands.Cog):
                 if level == 0:
                     days_joined = (now - member.joined_at.replace(tzinfo=timezone.utc)).days
                     
-                    # 1. Message Warning (Rate Limited to 1 per 24h)
-                    if settings.level0_warn_days > 0 and level0_channel and days_joined >= settings.level0_warn_days:
-                        # Only proceed if we haven't warned this user yet
-                        if "level0_warn" not in user_warnings:
-                            # And only if the global cooldown allows it
-                            if allow_level0_warn:
-                                try:
-                                    msg = settings.level0_message.replace("{mention}", member.mention)
-                                    await level0_channel.send(msg)
-                                    
-                                    # Mark user as warned
-                                    user_warnings["level0_warn"] = now.isoformat()
-                                    has_changes = True
-                                    
-                                    # Lock the mechanism for the next 24 hours
-                                    await self.config.guild(guild).last_level0_warn_time.set(now.isoformat())
-                                    allow_level0_warn = False 
-                                    
-                                except discord.Forbidden:
-                                    pass
+                    # We check for Kicks first (more severe), then Warns.
+                    # Since we only allow one action per 12h, checking order matters.
                     
-                    # 2. Kick Warning (WarnSystem Level 3)
-                    # NOTE: We do not rate limit kicks generally, as they are severe, but user can request otherwise.
-                    # Current request only specified "post a bunch of messages", so kicks remain standard.
+                    # 1. Kick Warning (WarnSystem Level 3)
                     if settings.level0_kick_days > 0 and warn_cog and days_joined >= settings.level0_kick_days:
                         if "level0_kick" not in user_warnings:
                             try:
@@ -517,8 +499,31 @@ class OuijaPoke(commands.Cog):
                                 user_warnings["level0_kick"] = now.isoformat()
                                 has_changes = True
                                 log.info(f"OuijaPoke: Level 0 Kick warning for {member} in {guild.name}")
+                                
+                                # Consumed our one action for the 12h window
+                                await self.config.guild(guild).last_level0_warn_time.set(now.isoformat())
+                                allow_level0_action = False 
                             except Exception as e:
                                 log.error(f"Failed Level 0 kick for {member}: {e}")
+
+                    # 2. Message Warning (Rate Limited to 1 per 12h, shared with Kicks)
+                    # Only check if we are still allowed to act (didn't just kick them)
+                    elif settings.level0_warn_days > 0 and level0_channel and days_joined >= settings.level0_warn_days:
+                        if "level0_warn" not in user_warnings and allow_level0_action:
+                            try:
+                                msg = settings.level0_message.replace("{mention}", member.mention)
+                                await level0_channel.send(msg)
+                                
+                                # Mark user as warned
+                                user_warnings["level0_warn"] = now.isoformat()
+                                has_changes = True
+                                
+                                # Consumed our one action for the 12h window
+                                await self.config.guild(guild).last_level0_warn_time.set(now.isoformat())
+                                allow_level0_action = False 
+                                
+                            except discord.Forbidden:
+                                pass
 
             # --- C. INACTIVITY CHECKS (Uses Last Seen) ---
             # Only run if inactivity warnings are enabled
