@@ -1316,20 +1316,40 @@ class OuijaPoke(commands.Cog):
         """
         [Debug] Forces the automatic daily routine to run immediately.
         
-        Note: This ignores the schedule but still respects the configured odds and spam filters.
+        This executes:
+        1. Automated Policing (Level 0 checks, No Intro checks, Inactivity Warnings)
+        2. Daily Lottery (Auto Pokes or Summons)
+        
+        Note: This ignores the schedule but still respects the configured odds, spam filters, 
+        and rate limits (e.g., Level 0 checks only fire once every 12h).
         It will reschedule the next run after completion.
         """
         settings = await self._get_settings(ctx.guild)
+        
+        # 1. Run Policing Checks
+        # This function logs to console and sends messages to configured channels if criteria are met.
+        if settings.policing_enabled:
+            await self._process_automated_checks(ctx.guild, settings)
+            await ctx.send("✅ Automated policing checks (Level 0, Warnings, No Intro) executed.")
+        else:
+            await ctx.send("ℹ️ Policing checks skipped (Policing is disabled in settings).")
+
+        # 2. Run Daily Lottery
         if not settings.auto_channel_id:
-            return await ctx.send("No auto channel set. Run `[p]ouijaset autochannel` first.")
+            return await ctx.send("⚠️ No auto channel set. Skipping lottery (Pokes/Summons). Run `[p]ouijaset autochannel` to enable.")
         
         channel = ctx.guild.get_channel(settings.auto_channel_id)
         if not channel:
-            return await ctx.send("The configured auto channel no longer exists.")
+            return await ctx.send("⚠️ The configured auto channel no longer exists. Skipping lottery.")
             
         result = await self._run_daily_lottery(ctx.guild, channel, settings)
-        await ctx.send(result)
-        await self._schedule_next_auto_event(ctx.guild)
+        await ctx.send(f"🎰 **Lottery Result:** {result}")
+        
+        # 3. Reschedule
+        next_run = await self._schedule_next_auto_event(ctx.guild)
+        # Calculate pretty time string
+        dt_str = f"<t:{int(next_run.timestamp())}:R>"
+        await ctx.send(f"📅 Next auto run scheduled for: {dt_str}")
 
     @ouijaset.command(name="pokedays")
     async def ouijaset_pokedays(self, ctx: commands.Context, days: int):
