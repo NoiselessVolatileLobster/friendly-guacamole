@@ -1,6 +1,6 @@
 import discord
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Union
 
 from redbot.core import commands, Config, checks
@@ -35,7 +35,7 @@ class LevelUpTracker(commands.Cog):
         await self.config.user_from_id(user_id).clear()
 
     # --------------------------------------------------------------------------
-    # Helper: Table Formatting (Matching your preference)
+    # Helper: Table Formatting
     # --------------------------------------------------------------------------
     def _make_table(self, headers: list, rows: list) -> str:
         """
@@ -48,8 +48,10 @@ class LevelUpTracker(commands.Cog):
         col_widths = [len(h) for h in headers]
         for row in rows:
             for i, cell in enumerate(row):
-                if len(str(cell)) > col_widths[i]:
-                    col_widths[i] = len(str(cell))
+                # Ensure we handle non-string cells gracefully
+                cell_str = str(cell)
+                if len(cell_str) > col_widths[i]:
+                    col_widths[i] = len(cell_str)
 
         # Build separator
         separator = "+" + "+".join(["-" * (w + 2) for w in col_widths]) + "+"
@@ -82,7 +84,6 @@ class LevelUpTracker(commands.Cog):
             return cog.get_level(member)
         except AttributeError:
             # Fallback if the specific method structure differs in current version
-            # Most LevelUp versions store data in config
             try:
                 return await cog.config.member(member).level()
             except Exception:
@@ -110,22 +111,26 @@ class LevelUpTracker(commands.Cog):
         log.info(f"Initializing LevelUpTracker for guild: {guild.name}")
         
         async with self.config.guild(guild).members() as members_data:
-            # We don't iterate member_data here because it's empty on first run
-            # We iterate actual guild members
             for member in guild.members:
                 if member.bot:
                     continue
                 
                 # Set Join Date
+                # If joined_at is None (rare API edge case), use now
                 join_ts = member.joined_at.timestamp() if member.joined_at else datetime.now(timezone.utc).timestamp()
                 
                 # Set Current Level
                 current_level = await self._get_current_level(member)
                 
-                # Save to Config
+                # We update the config directly to avoid race conditions
+                # Note: We must interact with the member config object, not the bulk dict context 
+                # because register_member puts data under specific keys
                 await self.config.member(member).join_timestamp.set(join_ts)
+                
+                # If they already have a level, snapshot it as "reached now"
+                # This is the "skew" discussed in the response
                 if current_level > 0:
-                    await self.config.member(member).levels.set_raw(str(current_level), value=datetime.now(timezone.utc).timestamp())
+                     await self.config.member(member).levels.set_raw(str(current_level), value=datetime.now(timezone.utc).timestamp())
         
         await self.config.guild(guild).initialized.set(True)
 
@@ -155,11 +160,10 @@ class LevelUpTracker(commands.Cog):
         now_ts = datetime.now(timezone.utc).timestamp()
         
         # Store the timestamp for this specific level
-        # Keys must be strings in JSON
         await self.config.member(member).levels.set_raw(str(nev_level), value=now_ts)
 
     # --------------------------------------------------------------------------
-    # Commands
+    # Admin Commands
     # --------------------------------------------------------------------------
     @commands.group(name="leveluptrackerset")
     @commands.guild_only()
@@ -174,11 +178,12 @@ class LevelUpTracker(commands.Cog):
         View current settings and status.
         """
         is_init = await self.config.guild(ctx.guild).initialized()
+        vertyco_loaded = self.bot.get_cog("LevelUp") is not None
         
         headers = ["Setting", "Value"]
         rows = [
             ["Initialized", str(is_init)],
-            ["VertyCo LevelUp Loaded", str(self.bot.get_cog("LevelUp") is not None)]
+            ["VertyCo LevelUp Loaded", str(vertyco_loaded)]
         ]
         
         table = self._make_table(headers, rows)
@@ -210,7 +215,12 @@ class LevelUpTracker(commands.Cog):
         levels = data.get("levels", {})
         
         if not join_ts:
-            return await ctx.send(f"I don't have join date tracking for {member.display_name} yet.")
+            # Attempt to fix missing join time if they are in guild
+            if member.joined_at:
+                join_ts = member.joined_at.timestamp()
+                await self.config.member(member).join_timestamp.set(join_ts)
+            else:
+                return await ctx.send(f"I don't have join date tracking for {member.display_name} yet.")
         
         if not levels:
             return await ctx.send(f"{member.display_name} hasn't leveled up since I started tracking.")
@@ -229,10 +239,17 @@ class LevelUpTracker(commands.Cog):
             
             # Time since join
             total_delta = current_dt - join_dt
+            # Sanity check for negative times (join date sync issues)
+            if total_delta.total_seconds() < 0:
+                total_delta = timedelta(0)
+                
             total_str = humanize_timedelta(timedelta=total_delta) or "0s"
             
             # Time since previous recorded event
             step_delta = current_dt - datetime.fromtimestamp(prev_ts, timezone.utc)
+            if step_delta.total_seconds() < 0:
+                step_delta = timedelta(0)
+                
             step_str = humanize_timedelta(timedelta=step_delta) or "0s"
             
             date_str = current_dt.strftime("%Y-%m-%d")
@@ -249,13 +266,13 @@ class LevelUpTracker(commands.Cog):
         """
         See the average time it takes members to reach specific levels.
         """
-        # Dictionary to hold list of timedeltas for each level
-        # { level_int: [seconds_float, seconds_float] }
-        level_times = {}
+        level_times = {} # { level_int: [seconds_float, ... ] }
         
-        members_data = await self.config.guild(ctx.guild).members()
+        # We need to iterate over all members in config
+        # This can be heavy on very large servers, but fine for typical use
+        all_members = await self.config.all_members(ctx.guild)
         
-        for user_id, data in members_data.items():
+        for user_id, data in all_members.items():
             join_ts = data.get("join_timestamp")
             levels = data.get("levels", {})
             
@@ -266,7 +283,7 @@ class LevelUpTracker(commands.Cog):
                 lvl = int(lvl_str)
                 time_to_reach = reached_ts - join_ts
                 
-                # Only count valid positive times
+                # Only count valid positive times (filter out glitched/legacy syncs)
                 if time_to_reach > 0:
                     if lvl not in level_times:
                         level_times[lvl] = []
@@ -282,8 +299,6 @@ class LevelUpTracker(commands.Cog):
             times = level_times[lvl]
             avg_seconds = sum(times) / len(times)
             
-            # Create a timedelta for formatting
-            from datetime import timedelta
             avg_delta = timedelta(seconds=avg_seconds)
             time_str = humanize_timedelta(timedelta=avg_delta) or "0s"
             
