@@ -199,7 +199,7 @@ class Timezone(commands.Cog):
             # Using <t:ID> defaults to Short Date Time "25 April 2025 5:00 PM"
             
             await interaction.response.send_message(
-                f"Your local time: <t:{timestamp_int}>\n"
+                f"<t:{timestamp_int}> (This is your local time)\n"
                 f"-# {interaction.user.mention}'s timezone is {user_tz_str}."
             )
 
