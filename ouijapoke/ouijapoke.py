@@ -446,8 +446,10 @@ class OuijaPoke(commands.Cog):
             except ValueError:
                 pass
 
-        # Iterate over a COPY (list) of members to avoid runtime errors if someone is kicked mid-loop.
-        for member in list(guild.members):
+        # Iterate over MEMBERS in the guild to cover "No Intro" and "Level 0" logic (which uses join date)
+        # We also check "last_seen" for inactivity logic.
+        
+        for member in guild.members:
             if member.bot or self._is_excluded(member, excluded_roles):
                 continue
             
@@ -473,7 +475,9 @@ class OuijaPoke(commands.Cog):
             # --- B. LEVEL 0 CHECKS ---
             if levelup_cog:
                 # Check levels
-                level = levelup_cog.get_level(member)
+                # FIX: Await the async function
+                level = await levelup_cog.get_level(member)
+                
                 if level == 0:
                     days_joined = (now - member.joined_at.replace(tzinfo=timezone.utc)).days
                     
@@ -499,16 +503,15 @@ class OuijaPoke(commands.Cog):
                                     pass
                     
                     # 2. Kick Warning (WarnSystem Level 3)
+                    # NOTE: We do not rate limit kicks generally, as they are severe, but user can request otherwise.
+                    # Current request only specified "post a bunch of messages", so kicks remain standard.
                     if settings.level0_kick_days > 0 and warn_cog and days_joined >= settings.level0_kick_days:
                         if "level0_kick" not in user_warnings:
                             try:
-                                # Append condition to the reason for clarity in ModLog
-                                final_reason = f"{settings.level0_kick_reason} (Level 0 after {days_joined} days)"
-                                
                                 await warn_cog.api.warn(
                                     member=member,
                                     author=guild.me,
-                                    reason=final_reason,
+                                    reason=settings.level0_kick_reason,
                                     level=3
                                 )
                                 user_warnings["level0_kick"] = now.isoformat()
@@ -531,7 +534,6 @@ class OuijaPoke(commands.Cog):
                             if "level3" not in user_warnings:
                                 try:
                                     reason = f"Inactive for over {days_inactive} days (Threshold: {settings.warn_level_3_days})."
-                                    # WarnSystem will handle the kick if configured for Level 3
                                     await warn_cog.api.warn(member=member, author=guild.me, reason=reason, level=3)
                                     user_warnings["level3"] = now.isoformat()
                                     has_changes = True
@@ -1139,7 +1141,9 @@ class OuijaPoke(commands.Cog):
 
                 # B. Level 0 Checks
                 if levelup_cog:
-                    level = levelup_cog.get_level(member)
+                    # FIX: Await the async function
+                    level = await levelup_cog.get_level(member)
+                    
                     if level == 0:
                         days_joined = (now - member.joined_at.replace(tzinfo=timezone.utc)).days
                         
@@ -1245,7 +1249,8 @@ class OuijaPoke(commands.Cog):
             
             # 2. Level Up Check
             if levelup_cog:
-                level = levelup_cog.get_level(member)
+                # FIX: Await the async function
+                level = await levelup_cog.get_level(member)
                 embed.add_field(name="Current Level", value=f"{level}", inline=True)
                 
                 if level == 0:
