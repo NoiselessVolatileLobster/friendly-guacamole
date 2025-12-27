@@ -500,9 +500,10 @@ class OuijaPoke(commands.Cog):
                             if allow_level0_action:
                                 try:
                                     log.info(f"OuijaPoke: ATTEMPTING Level 0 Kick for {member}...")
-                                    # FIXED: Changed 'member' to 'user' based on error log
+                                    # FIXED: Uses 'members' (list) and explicitly passes 'guild'
                                     await warn_cog.api.warn(
-                                        user=member,
+                                        guild=guild,
+                                        members=[member],
                                         author=guild.me,
                                         reason=settings.level0_kick_reason,
                                         level=3
@@ -560,8 +561,14 @@ class OuijaPoke(commands.Cog):
                             if "level3" not in user_warnings:
                                 try:
                                     reason = f"Inactive for over {days_inactive} days (Threshold: {settings.warn_level_3_days})."
-                                    # FIXED: Changed 'member' to 'user'
-                                    await warn_cog.api.warn(user=member, author=guild.me, reason=reason, level=3)
+                                    # FIXED: Uses 'members' (list) and explicitly passes 'guild'
+                                    await warn_cog.api.warn(
+                                        guild=guild,
+                                        members=[member],
+                                        author=guild.me,
+                                        reason=reason,
+                                        level=3
+                                    )
                                     user_warnings["level3"] = now.isoformat()
                                     has_changes = True
                                 except Exception as e:
@@ -572,8 +579,14 @@ class OuijaPoke(commands.Cog):
                             if "level1" not in user_warnings:
                                 try:
                                     reason = f"Inactive for over {days_inactive} days (Threshold: {settings.warn_level_1_days})."
-                                    # FIXED: Changed 'member' to 'user'
-                                    await warn_cog.api.warn(user=member, author=guild.me, reason=reason, level=1)
+                                    # FIXED: Uses 'members' (list) and explicitly passes 'guild'
+                                    await warn_cog.api.warn(
+                                        guild=guild,
+                                        members=[member],
+                                        author=guild.me,
+                                        reason=reason,
+                                        level=1
+                                    )
                                     user_warnings["level1"] = now.isoformat()
                                     has_changes = True
                                 except Exception as e:
