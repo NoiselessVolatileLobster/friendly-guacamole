@@ -426,8 +426,13 @@ class OuijaPoke(commands.Cog):
         if not settings.policing_enabled:
             return
 
+        log.info(f"OuijaPoke: Starting automated checks for {guild.name} (Ignore Cooldown: {ignore_cooldown})")
+
         warn_cog = self.bot.get_cog("WarnSystem")
         levelup_cog = self.bot.get_cog("LevelUp")
+        
+        if not levelup_cog:
+            log.warning("OuijaPoke: LevelUp cog not loaded. Level 0 checks will be skipped.")
         
         data = await self.config.guild(guild).all()
         last_seen_data = data["last_seen"]
@@ -451,6 +456,7 @@ class OuijaPoke(commands.Cog):
                 last_l0_dt = datetime.fromisoformat(last_level0_action_str).replace(tzinfo=timezone.utc)
                 if (now - last_l0_dt) < timedelta(hours=12):
                     allow_level0_action = False
+                    log.info("OuijaPoke: Level 0 checks active, but action prevented by 12h rate limit.")
             except ValueError:
                 pass
 
@@ -475,49 +481,70 @@ class OuijaPoke(commands.Cog):
                                 user_warnings["nointro"] = now.isoformat()
                                 has_changes = True
                             except discord.Forbidden:
-                                pass
+                                log.warning(f"OuijaPoke: Forbidden to send No Intro message in {nointro_channel.name}")
 
             # --- B. LEVEL 0 CHECKS ---
-            if levelup_cog and allow_level0_action:
+            if levelup_cog:
                 level = await levelup_cog.get_level(member)
                 
+                # Only log debug if user is Level 0, to avoid spamming the console for normal users
                 if level == 0:
                     days_joined = (now - member.joined_at.replace(tzinfo=timezone.utc)).days
                     
+                    # Log details for troubleshooting
+                    log.info(f"OuijaPoke: [Level 0 Debug] Checking {member.display_name} ({member.id}). Joined: {days_joined}d ago. WarnThreshold: {settings.level0_warn_days}. KickThreshold: {settings.level0_kick_days}. ActionAllowed: {allow_level0_action}")
+
                     # 1. Kick Warning (WarnSystem Level 3)
                     if settings.level0_kick_days > 0 and warn_cog and days_joined >= settings.level0_kick_days:
                         if "level0_kick" not in user_warnings:
-                            try:
-                                await warn_cog.api.warn(
-                                    member=member,
-                                    author=guild.me,
-                                    reason=settings.level0_kick_reason,
-                                    level=3
-                                )
-                                user_warnings["level0_kick"] = now.isoformat()
-                                has_changes = True
-                                log.info(f"OuijaPoke: Level 0 Kick warning for {member} in {guild.name}")
-                                
-                                # Consumed our one action for the 12h window
-                                await self.config.guild(guild).last_level0_warn_time.set(now.isoformat())
-                                allow_level0_action = False 
-                            except Exception as e:
-                                log.error(f"Failed Level 0 kick for {member}: {e}")
+                            if allow_level0_action:
+                                try:
+                                    log.info(f"OuijaPoke: ATTEMPTING Level 0 Kick for {member}...")
+                                    await warn_cog.api.warn(
+                                        member=member,
+                                        author=guild.me,
+                                        reason=settings.level0_kick_reason,
+                                        level=3
+                                    )
+                                    user_warnings["level0_kick"] = now.isoformat()
+                                    has_changes = True
+                                    log.info(f"OuijaPoke: SUCCESS Level 0 Kick warning for {member}")
+                                    
+                                    # Consumed our one action for the 12h window
+                                    await self.config.guild(guild).last_level0_warn_time.set(now.isoformat())
+                                    allow_level0_action = False 
+                                except Exception as e:
+                                    log.error(f"Failed Level 0 kick for {member}: {e}")
+                            else:
+                                log.info(f"OuijaPoke: [Level 0 Debug] Kick eligible for {member} but rate limit prevented action.")
+                        else:
+                             # log.debug(f"OuijaPoke: [Level 0 Debug] {member} already kicked/warned level 3.")
+                             pass
 
                     # 2. Message Warning (Rate Limited to 1 per 12h, shared with Kicks)
                     elif settings.level0_warn_days > 0 and level0_channel and days_joined >= settings.level0_warn_days:
-                        if "level0_warn" not in user_warnings and allow_level0_action:
-                            try:
-                                msg = settings.level0_message.replace("{mention}", member.mention)
-                                await level0_channel.send(msg)
-                                
-                                user_warnings["level0_warn"] = now.isoformat()
-                                has_changes = True
-                                
-                                await self.config.guild(guild).last_level0_warn_time.set(now.isoformat())
-                                allow_level0_action = False 
-                            except discord.Forbidden:
-                                pass
+                        if "level0_warn" not in user_warnings:
+                            if allow_level0_action:
+                                try:
+                                    log.info(f"OuijaPoke: Sending Level 0 Warning for {member}...")
+                                    msg = settings.level0_message.replace("{mention}", member.mention)
+                                    await level0_channel.send(msg)
+                                    
+                                    user_warnings["level0_warn"] = now.isoformat()
+                                    has_changes = True
+                                    
+                                    await self.config.guild(guild).last_level0_warn_time.set(now.isoformat())
+                                    allow_level0_action = False 
+                                except discord.Forbidden:
+                                    log.warning(f"OuijaPoke: Forbidden to send Level 0 warning in {level0_channel.name}")
+                            else:
+                                log.info(f"OuijaPoke: [Level 0 Debug] Warn eligible for {member} but rate limit prevented action.")
+                        else:
+                             # log.debug(f"OuijaPoke: [Level 0 Debug] {member} already warned level 0.")
+                             pass
+                    else:
+                        # User is level 0 but hasn't met day thresholds yet
+                        pass
 
             # --- C. INACTIVITY CHECKS ---
             if settings.warn_level_1_days > 0 or settings.warn_level_3_days > 0:
