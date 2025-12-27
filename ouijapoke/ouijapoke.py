@@ -412,8 +412,15 @@ class OuijaPoke(commands.Cog):
             except Exception as e:
                 log.error(f"Error in auto_poke_loop for guild {guild.id}: {e}", exc_info=True)
 
-    async def _process_automated_checks(self, guild: discord.Guild, settings: OuijaSettings):
-        """Checks for inactive users, No Intro violations, and Level 0 lurkers."""
+    async def _process_automated_checks(self, guild: discord.Guild, settings: OuijaSettings, ignore_cooldown: bool = False):
+        """
+        Checks for inactive users, No Intro violations, and Level 0 lurkers.
+        
+        Args:
+            guild: The guild object.
+            settings: The parsed OuijaSettings.
+            ignore_cooldown: If True, ignores the 12h rate limit for Level 0 actions.
+        """
         
         # If policing is disabled, we do absolutely nothing in this loop.
         if not settings.policing_enabled:
@@ -435,11 +442,11 @@ class OuijaPoke(commands.Cog):
         level0_channel = guild.get_channel(settings.level0_channel_id) if settings.level0_channel_id else None
 
         # Check global cooldown for Level 0 Actions (Warns OR Kicks)
-        # We only want to act on ONE person per 12 hours.
+        # We only want to act on ONE person per 12 hours unless forcing.
         last_level0_action_str = await self.config.guild(guild).last_level0_warn_time()
         allow_level0_action = True
         
-        if last_level0_action_str:
+        if last_level0_action_str and not ignore_cooldown:
             try:
                 last_l0_dt = datetime.fromisoformat(last_level0_action_str).replace(tzinfo=timezone.utc)
                 if (now - last_l0_dt) < timedelta(hours=12):
@@ -447,9 +454,7 @@ class OuijaPoke(commands.Cog):
             except ValueError:
                 pass
 
-        # Iterate over MEMBERS in the guild to cover "No Intro" and "Level 0" logic (which uses join date)
-        # We also check "last_seen" for inactivity logic.
-        
+        # Iterate over MEMBERS in the guild to cover "No Intro" and "Level 0" logic
         for member in guild.members:
             if member.bot or self._is_excluded(member, excluded_roles):
                 continue
@@ -464,7 +469,6 @@ class OuijaPoke(commands.Cog):
                     days_joined = (now - member.joined_at.replace(tzinfo=timezone.utc)).days
                     if days_joined >= settings.nointro_days:
                         if "nointro" not in user_warnings:
-                            # Trigger No Intro Message
                             try:
                                 msg = settings.nointro_message.replace("{mention}", member.mention)
                                 await nointro_channel.send(msg)
@@ -474,17 +478,11 @@ class OuijaPoke(commands.Cog):
                                 pass
 
             # --- B. LEVEL 0 CHECKS ---
-            # Rate limit applies to this entire block: Only one user per 12h will trigger a warn OR a kick.
             if levelup_cog and allow_level0_action:
-                # Check levels
-                # FIX: Await the async function
                 level = await levelup_cog.get_level(member)
                 
                 if level == 0:
                     days_joined = (now - member.joined_at.replace(tzinfo=timezone.utc)).days
-                    
-                    # We check for Kicks first (more severe), then Warns.
-                    # Since we only allow one action per 12h, checking order matters.
                     
                     # 1. Kick Warning (WarnSystem Level 3)
                     if settings.level0_kick_days > 0 and warn_cog and days_joined >= settings.level0_kick_days:
@@ -507,26 +505,21 @@ class OuijaPoke(commands.Cog):
                                 log.error(f"Failed Level 0 kick for {member}: {e}")
 
                     # 2. Message Warning (Rate Limited to 1 per 12h, shared with Kicks)
-                    # Only check if we are still allowed to act (didn't just kick them)
                     elif settings.level0_warn_days > 0 and level0_channel and days_joined >= settings.level0_warn_days:
                         if "level0_warn" not in user_warnings and allow_level0_action:
                             try:
                                 msg = settings.level0_message.replace("{mention}", member.mention)
                                 await level0_channel.send(msg)
                                 
-                                # Mark user as warned
                                 user_warnings["level0_warn"] = now.isoformat()
                                 has_changes = True
                                 
-                                # Consumed our one action for the 12h window
                                 await self.config.guild(guild).last_level0_warn_time.set(now.isoformat())
                                 allow_level0_action = False 
-                                
                             except discord.Forbidden:
                                 pass
 
-            # --- C. INACTIVITY CHECKS (Uses Last Seen) ---
-            # Only run if inactivity warnings are enabled
+            # --- C. INACTIVITY CHECKS ---
             if settings.warn_level_1_days > 0 or settings.warn_level_3_days > 0:
                 last_seen_dt_str = last_seen_data.get(user_id_str)
                 if last_seen_dt_str:
@@ -562,7 +555,6 @@ class OuijaPoke(commands.Cog):
             if has_changes:
                 warned_users[user_id_str] = user_warnings
         
-        # Bulk save warned_users once per guild loop to reduce IO
         await self.config.guild(guild).warned_users.set(warned_users)
 
     async def _run_daily_lottery(self, guild: discord.Guild, channel: discord.TextChannel, settings: OuijaSettings) -> str:
@@ -1318,19 +1310,17 @@ class OuijaPoke(commands.Cog):
         
         This executes:
         1. Automated Policing (Level 0 checks, No Intro checks, Inactivity Warnings)
+           * Ignores the 12h rate limit for Level 0 actions!
         2. Daily Lottery (Auto Pokes or Summons)
         
-        Note: This ignores the schedule but still respects the configured odds, spam filters, 
-        and rate limits (e.g., Level 0 checks only fire once every 12h).
-        It will reschedule the next run after completion.
+        It will reschedule the next automatic run after completion.
         """
         settings = await self._get_settings(ctx.guild)
         
-        # 1. Run Policing Checks
-        # This function logs to console and sends messages to configured channels if criteria are met.
+        # 1. Run Policing Checks (IGNORING COOLDOWN)
         if settings.policing_enabled:
-            await self._process_automated_checks(ctx.guild, settings)
-            await ctx.send("✅ Automated policing checks (Level 0, Warnings, No Intro) executed.")
+            await self._process_automated_checks(ctx.guild, settings, ignore_cooldown=True)
+            await ctx.send("✅ Automated policing checks executed (Level 0 rate limit bypassed).")
         else:
             await ctx.send("ℹ️ Policing checks skipped (Policing is disabled in settings).")
 
@@ -1347,7 +1337,6 @@ class OuijaPoke(commands.Cog):
         
         # 3. Reschedule
         next_run = await self._schedule_next_auto_event(ctx.guild)
-        # Calculate pretty time string
         dt_str = f"<t:{int(next_run.timestamp())}:R>"
         await ctx.send(f"📅 Next auto run scheduled for: {dt_str}")
 
