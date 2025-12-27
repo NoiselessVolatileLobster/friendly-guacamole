@@ -1110,6 +1110,9 @@ class OuijaPoke(commands.Cog):
             
             if not warn_cog:
                 return await ctx.send("⚠️ WarnSystem is not loaded. Kick/Warn actions cannot be previewed correctly.")
+                
+            if not levelup_cog:
+                await ctx.send("⚠️ **LevelUp** cog is not loaded. 'Still Level 0' checks will be skipped.")
 
             now = datetime.now(timezone.utc)
             
@@ -1206,6 +1209,79 @@ class OuijaPoke(commands.Cog):
             
             if not settings.policing_enabled:
                 await ctx.send("ℹ️ **Note:** The system is currently **DISABLED**. Use `[p]ouijaset policing true` to activate.")
+
+    @ouijaset.command(name="debug")
+    async def ouijaset_debug(self, ctx: commands.Context, member: discord.Member):
+        """
+        [Debug] Inspects a specific user to see why they are/aren't being warned or kicked.
+        """
+        async with ctx.typing():
+            guild = ctx.guild
+            settings = await self._get_settings(guild)
+            data = await self.config.guild(guild).all()
+            
+            warned_users = data["warned_users"]
+            last_seen_data = data["last_seen"]
+            excluded_roles = data["excluded_roles"]
+            
+            levelup_cog = self.bot.get_cog("LevelUp")
+            warn_cog = self.bot.get_cog("WarnSystem")
+
+            embed = discord.Embed(title=f"Debug: {member.display_name}", color=discord.Color.blue())
+            
+            # 1. Exclusion Check
+            is_excluded = self._is_excluded(member, excluded_roles)
+            embed.add_field(name="Excluded?", value=f"**{is_excluded}** (Hibernating Role or Bot)", inline=False)
+            if is_excluded:
+                 embed.description = "User is excluded. No actions will be taken."
+                 await ctx.send(embed=embed)
+                 return
+
+            now = datetime.now(timezone.utc)
+            days_joined = (now - member.joined_at.replace(tzinfo=timezone.utc)).days
+            embed.add_field(name="Days Joined", value=f"{days_joined} days", inline=True)
+
+            user_warnings = warned_users.get(str(member.id), {})
+            
+            # 2. Level Up Check
+            if levelup_cog:
+                level = levelup_cog.get_level(member)
+                embed.add_field(name="Current Level", value=f"{level}", inline=True)
+                
+                if level == 0:
+                    # Check Warn Status
+                    warn_status = "Skipped"
+                    if "level0_warn" in user_warnings:
+                        warn_status = "✅ Already Warned"
+                    elif settings.level0_warn_days > 0 and days_joined >= settings.level0_warn_days:
+                        warn_status = "⚠️ **Eligible for Warn**"
+                    else:
+                        warn_status = f"Not eligible (Needs {settings.level0_warn_days}d)"
+                    
+                    embed.add_field(name="Level 0 Warn Status", value=warn_status, inline=False)
+
+                    # Check Kick Status
+                    kick_status = "Skipped"
+                    if "level0_kick" in user_warnings:
+                        kick_status = "✅ Already Kicked (Logged)"
+                    elif settings.level0_kick_days > 0 and days_joined >= settings.level0_kick_days:
+                        kick_status = "🔴 **Eligible for KICK**"
+                    else:
+                        kick_status = f"Not eligible (Needs {settings.level0_kick_days}d)"
+                    
+                    embed.add_field(name="Level 0 Kick Status", value=kick_status, inline=False)
+                else:
+                    embed.add_field(name="Level 0 Check", value="Skipped (Level > 0)", inline=False)
+            else:
+                embed.add_field(name="LevelUp Cog", value="⚠️ Not Loaded", inline=False)
+            
+            # 3. Warnings Data Dump
+            if user_warnings:
+                embed.add_field(name="Stored Warnings (Raw)", value=str(user_warnings), inline=False)
+            else:
+                embed.add_field(name="Stored Warnings", value="None", inline=False)
+
+            await ctx.send(embed=embed)
 
     # --- Configuration Commands ---
 
