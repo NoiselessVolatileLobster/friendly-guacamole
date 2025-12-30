@@ -23,11 +23,11 @@ except ImportError:
     def Field(default, **kwargs):
         return default
 
-log = logging.getLogger("red.ouijapoke")
+log = logging.getLogger("red.activitytracker")
 
 # --- Configuration Schema (Settings) ---
 
-class OuijaSettings(BaseModel):
+class ActivitySettings(BaseModel):
     """Schema for guild configuration settings."""
     # Safety Switch
     policing_enabled: bool = Field(default=False, description="Master switch. If False, no automated warnings/kicks will occur.")
@@ -69,12 +69,12 @@ class OuijaSettings(BaseModel):
     voice_req_users: int = Field(default=2, ge=1, description="Minimum users in voice channel to count activity.")
     
     poke_message: str = Field(
-        default="Hey {user_mention}, the Ouija Board feels your presence. Come say hello!",
+        default="Hey {user_mention}, we haven't seen you in a while. Come say hello!",
         description="The message used when poking. Use {user_mention} for the user."
     )
     
     summon_message: str = Field(
-        default="**{user_mention}**! The spirits demand your return! Do not resist the summoning ritual!",
+        default="**{user_mention}**! You are being summoned back to the server!",
         description="The message used when summoning. Use {user_mention} for the user."
     )
     
@@ -86,8 +86,8 @@ class OuijaSettings(BaseModel):
 
 # --- View Class for Pagination ---
 
-class OuijaEligibleView(discord.ui.View):
-    def __init__(self, ctx, active_pages: List[str], hibernating_pages: List[str], settings: OuijaSettings):
+class ActivityEligibleView(discord.ui.View):
+    def __init__(self, ctx, active_pages: List[str], hibernating_pages: List[str], settings: ActivitySettings):
         super().__init__(timeout=120)
         self.ctx = ctx
         self.active_pages = active_pages
@@ -178,8 +178,8 @@ class OuijaEligibleView(discord.ui.View):
 
 # --- Cog Class ---
 
-class OuijaPoke(commands.Cog):
-    """Tracks user activity and allows 'poking' or 'summoning' inactive members with a spooky twist."""
+class ActivityTracker(commands.Cog):
+    """Tracks user activity and allows 'poking' or 'summoning' inactive members."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -193,7 +193,7 @@ class OuijaPoke(commands.Cog):
             last_level0_warn_time=None, # ISO_DATETIME_STRING - Tracks the last time a Level 0 warning OR KICK was sent
             excluded_roles=[], # [role_id, ...] -> "Hibernating Roles"
             excluded_channels=[], # [channel_id, ...]
-            ouija_settings=OuijaSettings().model_dump(),
+            activity_settings=ActivitySettings().model_dump(),
             next_auto_event=None, # ISO_DATETIME_STRING for the next scheduled auto run
         )
         # In-memory tracker for voice channel connections
@@ -210,15 +210,15 @@ class OuijaPoke(commands.Cog):
 
     # --- Utility Methods ---
 
-    async def _get_settings(self, guild: discord.Guild) -> OuijaSettings:
+    async def _get_settings(self, guild: discord.Guild) -> ActivitySettings:
         """Retrieves and parses the guild settings."""
-        settings_data = await self.config.guild(guild).ouija_settings()
+        settings_data = await self.config.guild(guild).activity_settings()
         # Handle backward compatibility/missing fields by letting pydantic fill defaults
-        return OuijaSettings(**settings_data)
+        return ActivitySettings(**settings_data)
 
-    async def _set_settings(self, guild: discord.Guild, settings: OuijaSettings):
+    async def _set_settings(self, guild: discord.Guild, settings: ActivitySettings):
         """Saves the updated guild settings."""
-        await self.config.guild(guild).ouija_settings.set(settings.model_dump())
+        await self.config.guild(guild).activity_settings.set(settings.model_dump())
     
     async def _update_last_seen(self, guild: discord.Guild, user_id: int):
         """Updates the last_seen time and clears Inactivity warning flags for a user."""
@@ -308,7 +308,7 @@ class OuijaPoke(commands.Cog):
         
         return priority_1, priority_2_members
     
-    async def _get_level0_candidates(self, guild: discord.Guild, settings: OuijaSettings, check_type: str) -> List[discord.Member]:
+    async def _get_level0_candidates(self, guild: discord.Guild, settings: ActivitySettings, check_type: str) -> List[discord.Member]:
         """
         Retrieves a list of members who are eligible for Level 0 Warning or Kick.
         check_type: "warn" or "kick"
@@ -424,10 +424,10 @@ class OuijaPoke(commands.Cog):
         for guild in self.bot.guilds:
             try:
                 # 1. Check if configured
-                settings_data = await self.config.guild(guild).ouija_settings()
-                settings = OuijaSettings(**settings_data)
+                settings_data = await self.config.guild(guild).activity_settings()
+                settings = ActivitySettings(**settings_data)
                 
-                # --- NEW: Periodic Voice Activity Check ---
+                # --- Periodic Voice Activity Check ---
                 # This ensures users currently in long voice sessions are marked active
                 # without needing to disconnect first.
                 if settings.voice_req_minutes > 0:
@@ -445,7 +445,6 @@ class OuijaPoke(commands.Cog):
                                     if duration >= timedelta(minutes=settings.voice_req_minutes):
                                         # They have been in the channel long enough.
                                         await self._update_last_seen(guild, member.id)
-                # ------------------------------------------
 
                 # Run Automated Checks (Warnings, No Intro, Level 0)
                 await self._process_automated_checks(guild, settings)
@@ -481,13 +480,13 @@ class OuijaPoke(commands.Cog):
             except Exception as e:
                 log.error(f"Error in auto_poke_loop for guild {guild.id}: {e}", exc_info=True)
 
-    async def _process_automated_checks(self, guild: discord.Guild, settings: OuijaSettings, ignore_cooldown: bool = False):
+    async def _process_automated_checks(self, guild: discord.Guild, settings: ActivitySettings, ignore_cooldown: bool = False):
         """
         Checks for inactive users, No Intro violations, and Level 0 lurkers.
         
         Args:
             guild: The guild object.
-            settings: The parsed OuijaSettings.
+            settings: The parsed ActivitySettings.
             ignore_cooldown: If True, ignores the 12h rate limit for Level 0 actions.
         """
         
@@ -495,13 +494,13 @@ class OuijaPoke(commands.Cog):
         if not settings.policing_enabled:
             return
 
-        log.info(f"OuijaPoke: Starting automated checks for {guild.name} (Ignore Cooldown: {ignore_cooldown})")
+        log.info(f"ActivityTracker: Starting automated checks for {guild.name} (Ignore Cooldown: {ignore_cooldown})")
 
         warn_cog = self.bot.get_cog("WarnSystem")
         levelup_cog = self.bot.get_cog("LevelUp")
         
         if not levelup_cog:
-            log.warning("OuijaPoke: LevelUp cog not loaded. Level 0 checks will be skipped.")
+            log.warning("ActivityTracker: LevelUp cog not loaded. Level 0 checks will be skipped.")
         
         data = await self.config.guild(guild).all()
         last_seen_data = data["last_seen"]
@@ -525,7 +524,7 @@ class OuijaPoke(commands.Cog):
                 last_l0_dt = datetime.fromisoformat(last_level0_action_str).replace(tzinfo=timezone.utc)
                 if (now - last_l0_dt) < timedelta(hours=12):
                     allow_level0_action = False
-                    log.info("OuijaPoke: Level 0 checks active, but action prevented by 12h rate limit.")
+                    log.info("ActivityTracker: Level 0 checks active, but action prevented by 12h rate limit.")
             except ValueError:
                 pass
 
@@ -550,7 +549,7 @@ class OuijaPoke(commands.Cog):
                                 user_warnings["nointro"] = now.isoformat()
                                 has_changes = True
                             except discord.Forbidden:
-                                log.warning(f"OuijaPoke: Forbidden to send No Intro message in {nointro_channel.name}")
+                                log.warning(f"ActivityTracker: Forbidden to send No Intro message in {nointro_channel.name}")
 
             # --- B. LEVEL 0 CHECKS ---
             if levelup_cog:
@@ -561,14 +560,14 @@ class OuijaPoke(commands.Cog):
                     days_joined = (now - member.joined_at.replace(tzinfo=timezone.utc)).days
                     
                     # Log details for troubleshooting
-                    log.info(f"OuijaPoke: [Level 0 Debug] Checking {member.display_name} ({member.id}). Joined: {days_joined}d ago. WarnThreshold: {settings.level0_warn_days}. KickThreshold: {settings.level0_kick_days}. ActionAllowed: {allow_level0_action}")
+                    log.info(f"ActivityTracker: [Level 0 Debug] Checking {member.display_name} ({member.id}). Joined: {days_joined}d ago. WarnThreshold: {settings.level0_warn_days}. KickThreshold: {settings.level0_kick_days}. ActionAllowed: {allow_level0_action}")
 
                     # 1. Kick Warning (WarnSystem Level 3)
                     if settings.level0_kick_days > 0 and warn_cog and days_joined >= settings.level0_kick_days:
                         if "level0_kick" not in user_warnings:
                             if allow_level0_action:
                                 try:
-                                    log.info(f"OuijaPoke: ATTEMPTING Level 0 Kick for {member}...")
+                                    log.info(f"ActivityTracker: ATTEMPTING Level 0 Kick for {member}...")
                                     # FIXED: Uses 'members' (list) and explicitly passes 'guild'
                                     await warn_cog.api.warn(
                                         guild=guild,
@@ -579,7 +578,7 @@ class OuijaPoke(commands.Cog):
                                     )
                                     user_warnings["level0_kick"] = now.isoformat()
                                     has_changes = True
-                                    log.info(f"OuijaPoke: SUCCESS Level 0 Kick warning for {member}")
+                                    log.info(f"ActivityTracker: SUCCESS Level 0 Kick warning for {member}")
                                     
                                     # Consumed our one action for the 12h window
                                     await self.config.guild(guild).last_level0_warn_time.set(now.isoformat())
@@ -587,9 +586,9 @@ class OuijaPoke(commands.Cog):
                                 except Exception as e:
                                     log.error(f"Failed Level 0 kick for {member}: {e}")
                             else:
-                                log.info(f"OuijaPoke: [Level 0 Debug] Kick eligible for {member} but rate limit prevented action.")
+                                log.info(f"ActivityTracker: [Level 0 Debug] Kick eligible for {member} but rate limit prevented action.")
                         else:
-                             # log.debug(f"OuijaPoke: [Level 0 Debug] {member} already kicked/warned level 3.")
+                             # log.debug(f"ActivityTracker: [Level 0 Debug] {member} already kicked/warned level 3.")
                              pass
 
                     # 2. Message Warning (Rate Limited to 1 per 12h, shared with Kicks)
@@ -597,7 +596,7 @@ class OuijaPoke(commands.Cog):
                         if "level0_warn" not in user_warnings:
                             if allow_level0_action:
                                 try:
-                                    log.info(f"OuijaPoke: Sending Level 0 Warning for {member}...")
+                                    log.info(f"ActivityTracker: Sending Level 0 Warning for {member}...")
                                     msg = settings.level0_message.replace("{mention}", member.mention)
                                     await level0_channel.send(msg)
                                     
@@ -607,11 +606,11 @@ class OuijaPoke(commands.Cog):
                                     await self.config.guild(guild).last_level0_warn_time.set(now.isoformat())
                                     allow_level0_action = False 
                                 except discord.Forbidden:
-                                    log.warning(f"OuijaPoke: Forbidden to send Level 0 warning in {level0_channel.name}")
+                                    log.warning(f"ActivityTracker: Forbidden to send Level 0 warning in {level0_channel.name}")
                             else:
-                                log.info(f"OuijaPoke: [Level 0 Debug] Warn eligible for {member} but rate limit prevented action.")
+                                log.info(f"ActivityTracker: [Level 0 Debug] Warn eligible for {member} but rate limit prevented action.")
                         else:
-                             # log.debug(f"OuijaPoke: [Level 0 Debug] {member} already warned level 0.")
+                             # log.debug(f"ActivityTracker: [Level 0 Debug] {member} already warned level 0.")
                              pass
                     else:
                         # User is level 0 but hasn't met day thresholds yet
@@ -669,7 +668,7 @@ class OuijaPoke(commands.Cog):
         
         await self.config.guild(guild).warned_users.set(warned_users)
 
-    async def _run_daily_lottery(self, guild: discord.Guild, channel: discord.TextChannel, settings: OuijaSettings) -> str:
+    async def _run_daily_lottery(self, guild: discord.Guild, channel: discord.TextChannel, settings: ActivitySettings) -> str:
         """Runs the configurable probability logic. Returns a status string."""
         roll = random.random() # 0.0 to 1.0
         
@@ -703,7 +702,7 @@ class OuijaPoke(commands.Cog):
                 target = random.choice(candidates)
                 await self._set_last_action_time(guild, target.id, "last_summoned")
                 await self._send_activity_message_channel(channel, target, settings.summon_message, settings.summon_gifs)
-                log.info(f"OuijaPoke: Automatically summoned {target} in {guild.name}")
+                log.info(f"ActivityTracker: Automatically summoned {target} in {guild.name}")
                 return f"🎲 Roll: {roll:.3f} (< {summon_threshold:.2f}) -> **SUMMONED** {target.display_name} in {channel.mention}."
             else:
                 return f"🎲 Roll: {roll:.3f} (< {summon_threshold:.2f}) -> Summon triggered, but **NO ELIGIBLE CANDIDATES** found."
@@ -718,7 +717,7 @@ class OuijaPoke(commands.Cog):
                 target = random.choice(candidates)
                 await self._set_last_action_time(guild, target.id, "last_poked")
                 await self._send_activity_message_channel(channel, target, settings.poke_message, settings.poke_gifs)
-                log.info(f"OuijaPoke: Automatically poked {target} in {guild.name}")
+                log.info(f"ActivityTracker: Automatically poked {target} in {guild.name}")
                 return f"🎲 Roll: {roll:.3f} (< {poke_threshold:.2f}) -> **POKED** {target.display_name} in {channel.mention}."
             else:
                 return f"🎲 Roll: {roll:.3f} (< {poke_threshold:.2f}) -> Poke triggered, but **NO ELIGIBLE CANDIDATES** found."
@@ -747,7 +746,7 @@ class OuijaPoke(commands.Cog):
                         
                         return f"🎲 Roll: {roll:.3f} (< {l0_warn_threshold:.2f}) -> **LEVEL 0 WARN** on {target.display_name} in {l0_chan.mention}."
                     except Exception as e:
-                        log.error(f"OuijaPoke Lottery Error (L0 Warn): {e}")
+                        log.error(f"ActivityTracker Lottery Error (L0 Warn): {e}")
                         return f"🎲 Roll: {roll:.3f} -> Level 0 Warn triggered, but failed to send message."
                 else:
                     return f"🎲 Roll: {roll:.3f} -> Level 0 Warn triggered, but **NO CHANNEL CONFIGURED**."
@@ -779,7 +778,7 @@ class OuijaPoke(commands.Cog):
                     
                     return f"🎲 Roll: {roll:.3f} (< {l0_kick_threshold:.2f}) -> **LEVEL 0 KICK** on {target.display_name}."
                 except Exception as e:
-                    log.error(f"OuijaPoke Lottery Error (L0 Kick): {e}")
+                    log.error(f"ActivityTracker Lottery Error (L0 Kick): {e}")
                     return f"🎲 Roll: {roll:.3f} -> Level 0 Kick triggered, but failed to execute WarnSystem API."
             else:
                 reason = "NO ELIGIBLE CANDIDATES" if not candidates else "WarnSystem NOT LOADED"
@@ -787,7 +786,7 @@ class OuijaPoke(commands.Cog):
 
         # 5. Nothing
         else:
-            return f"🎲 Roll: {roll:.3f} (>= {l0_kick_threshold:.2f}) -> **The spirits are quiet.** (No action taken)."
+            return f"🎲 Roll: {roll:.3f} (>= {l0_kick_threshold:.2f}) -> **Nothing happened.** (No action taken)."
 
     async def _send_activity_message_channel(self, channel: discord.TextChannel, member: discord.Member, message_text: str, gif_list: list[str]):
         """Sends the message text and the GIF URL as two separate messages to a specific channel."""
@@ -798,7 +797,7 @@ class OuijaPoke(commands.Cog):
                 gif_url = random.choice(gif_list)
                 await channel.send(content=gif_url)
         except discord.Forbidden:
-            log.warning(f"OuijaPoke: Missing permissions to send message in {channel.name}")
+            log.warning(f"ActivityTracker: Missing permissions to send message in {channel.name}")
 
     @auto_poke_loop.before_loop
     async def before_auto_poke_loop(self):
@@ -814,7 +813,7 @@ class OuijaPoke(commands.Cog):
             return {"status": "unknown", "is_hibernating": True, "days_inactive": None, "last_seen": None}
 
         data = await self.config.guild(member.guild).all()
-        settings = OuijaSettings(**data["ouija_settings"])
+        settings = ActivitySettings(**data["activity_settings"])
         
         # 1. Check Hibernation (Exclusion)
         is_hibernating = self._is_excluded(member, data["excluded_roles"])
@@ -859,7 +858,7 @@ class OuijaPoke(commands.Cog):
         guild = ctx.guild
         data = await self.config.guild(guild).all()
         
-        settings = OuijaSettings(**data["ouija_settings"])
+        settings = ActivitySettings(**data["activity_settings"])
         last_seen_data = data["last_seen"]
         last_poked_data = data["last_poked"]
         last_summoned_data = data["last_summoned"]
@@ -906,7 +905,7 @@ class OuijaPoke(commands.Cog):
         """Retrieves data for ALL members who are excluded by role (Hibernating), regardless of activity."""
         guild = ctx.guild
         data = await self.config.guild(guild).all()
-        settings = OuijaSettings(**data["ouija_settings"])
+        settings = ActivitySettings(**data["activity_settings"])
         last_seen_data = data["last_seen"]
         excluded_roles = data["excluded_roles"]
         
@@ -982,8 +981,8 @@ class OuijaPoke(commands.Cog):
             return
 
         # 2. Fetch Settings
-        settings_data = await self.config.guild(guild).ouija_settings()
-        settings = OuijaSettings(**settings_data)
+        settings_data = await self.config.guild(guild).activity_settings()
+        settings = ActivitySettings(**settings_data)
 
         # 3. Check Message Length
         if settings.min_message_length > 0 and len(message.content) < settings.min_message_length:
@@ -1092,7 +1091,7 @@ class OuijaPoke(commands.Cog):
             # A hibernating role was removed.
             # We reset their timer to ensure they start at 0.
             await self._update_last_seen(after.guild, after.id)
-            log.info(f"OuijaPoke: Reset inactivity for {after} (Hibernating role removed).")
+            log.info(f"ActivityTracker: Reset inactivity for {after} (Hibernating role removed).")
 
     # --- User Commands ---
 
@@ -1152,19 +1151,19 @@ class OuijaPoke(commands.Cog):
 
     @commands.group(invoke_without_command=True)
     @checks.admin_or_permissions(manage_guild=True)
-    async def ouijaset(self, ctx: commands.Context):
-        """Manages the OuijaPoke settings."""
+    async def activityset(self, ctx: commands.Context):
+        """Manages the ActivityTracker settings."""
         await ctx.send_help(ctx.command)
 
-    @ouijaset.command(name="view")
-    async def ouijaset_view(self, ctx: commands.Context):
+    @activityset.command(name="view")
+    async def activityset_view(self, ctx: commands.Context):
         """Displays the full settings page for the guild."""
         settings = await self._get_settings(ctx.guild)
         data = await self.config.guild(ctx.guild).all()
         next_auto = await self.config.guild(ctx.guild).next_auto_event()
         
         embed = discord.Embed(
-            title="🔮 OuijaPoke Configuration",
+            title="📊 Activity Tracker Configuration",
             description="Current settings for this guild.",
             color=discord.Color.purple()
         )
@@ -1289,12 +1288,12 @@ class OuijaPoke(commands.Cog):
 
     # --- Safety / Enable / Disable / Preview ---
 
-    @ouijaset.command(name="policing")
-    async def ouijaset_policing(self, ctx: commands.Context, enable: bool):
+    @activityset.command(name="policing")
+    async def activityset_policing(self, ctx: commands.Context, enable: bool):
         """
         Enables or disables the automated policing system (Warnings and Kicks).
         
-        Usage: `[p]ouijaset policing true` (Enable) or `[p]ouijaset policing false` (Disable).
+        Usage: `[p]activityset policing true` (Enable) or `[p]activityset policing false` (Disable).
         """
         settings = await self._get_settings(ctx.guild)
         settings.policing_enabled = enable
@@ -1307,8 +1306,8 @@ class OuijaPoke(commands.Cog):
         embed.description = f"Automated warnings and kicks are now **{state.upper()}**."
         await ctx.send(embed=embed)
 
-    @ouijaset.command(name="preview")
-    async def ouijaset_preview(self, ctx: commands.Context):
+    @activityset.command(name="preview")
+    async def activityset_preview(self, ctx: commands.Context):
         """
         [Dry Run] Lists all users who WOULD be warned or kicked if the policing system were enabled.
         
@@ -1428,10 +1427,10 @@ class OuijaPoke(commands.Cog):
                 await ctx.send(embed=embed)
             
             if not settings.policing_enabled:
-                await ctx.send("ℹ️ **Note:** The system is currently **DISABLED**. Use `[p]ouijaset policing true` to activate.")
+                await ctx.send("ℹ️ **Note:** The system is currently **DISABLED**. Use `[p]activityset policing true` to activate.")
 
-    @ouijaset.command(name="debug")
-    async def ouijaset_debug(self, ctx: commands.Context, member: discord.Member):
+    @activityset.command(name="debug")
+    async def activityset_debug(self, ctx: commands.Context, member: discord.Member):
         """
         [Debug] Inspects a specific user to see why they are/aren't being warned or kicked.
         """
@@ -1506,8 +1505,8 @@ class OuijaPoke(commands.Cog):
 
     # --- Configuration Commands ---
 
-    @ouijaset.command(name="autochannel")
-    async def ouijaset_autochannel(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
+    @activityset.command(name="autochannel")
+    async def activityset_autochannel(self, ctx: commands.Context, channel: Optional[discord.TextChannel] = None):
         """
         Sets the channel for automatic daily pokes and summons.
         Leave blank to disable automatic actions.
@@ -1522,8 +1521,8 @@ class OuijaPoke(commands.Cog):
         
         await self._set_settings(ctx.guild, settings)
 
-    @ouijaset.command(name="forcerun")
-    async def ouijaset_forcerun(self, ctx: commands.Context):
+    @activityset.command(name="forcerun")
+    async def activityset_forcerun(self, ctx: commands.Context):
         """
         [Debug] Forces the automatic daily routine to run immediately.
         
@@ -1545,7 +1544,7 @@ class OuijaPoke(commands.Cog):
 
         # 2. Run Daily Lottery
         if not settings.auto_channel_id:
-            return await ctx.send("⚠️ No auto channel set. Skipping lottery (Pokes/Summons). Run `[p]ouijaset autochannel` to enable.")
+            return await ctx.send("⚠️ No auto channel set. Skipping lottery (Pokes/Summons). Run `[p]activityset autochannel` to enable.")
         
         channel = ctx.guild.get_channel(settings.auto_channel_id)
         if not channel:
@@ -1559,8 +1558,8 @@ class OuijaPoke(commands.Cog):
         dt_str = f"<t:{int(next_run.timestamp())}:R>"
         await ctx.send(f"📅 Next auto run scheduled for: {dt_str}")
 
-    @ouijaset.command(name="pokedays")
-    async def ouijaset_pokedays(self, ctx: commands.Context, days: int):
+    @activityset.command(name="pokedays")
+    async def activityset_pokedays(self, ctx: commands.Context, days: int):
         """Sets days inactive for a 'poke'."""
         if days < 1: return await ctx.send("Days must be >= 1.")
         settings = await self._get_settings(ctx.guild)
@@ -1568,8 +1567,8 @@ class OuijaPoke(commands.Cog):
         await self._set_settings(ctx.guild, settings)
         await ctx.send(f"Poke eligibility set to **{days}** days.")
 
-    @ouijaset.command(name="summondays")
-    async def ouijaset_summondays(self, ctx: commands.Context, days: int):
+    @activityset.command(name="summondays")
+    async def activityset_summondays(self, ctx: commands.Context, days: int):
         """Sets days inactive for a 'summon'."""
         if days < 1: return await ctx.send("Days must be >= 1.")
         settings = await self._get_settings(ctx.guild)
@@ -1579,8 +1578,8 @@ class OuijaPoke(commands.Cog):
 
     # --- New Odds Configuration ---
     
-    @ouijaset.group(name="odds", invoke_without_command=True)
-    async def ouijaset_odds(self, ctx: commands.Context):
+    @activityset.group(name="odds", invoke_without_command=True)
+    async def activityset_odds(self, ctx: commands.Context):
         """Manages the probabilities for automatic events (Poke, Summon, L0 Warn, L0 Kick)."""
         settings = await self._get_settings(ctx.guild)
         total = settings.poke_odds + settings.summon_odds + settings.level0_warn_odds + settings.level0_kick_odds
@@ -1595,11 +1594,11 @@ class OuijaPoke(commands.Cog):
         embed.add_field(name="🟠 Level 0 Warn", value=f"{settings.level0_warn_odds}%")
         embed.add_field(name="🔴 Level 0 Kick", value=f"{settings.level0_kick_odds}%")
         
-        embed.set_footer(text="Use [p]ouijaset odds <type> <percent> to change.")
+        embed.set_footer(text="Use [p]activityset odds <type> <percent> to change.")
         
         await ctx.send(embed=embed)
 
-    @ouijaset_odds.command(name="poke")
+    @activityset_odds.command(name="poke")
     async def odds_poke(self, ctx: commands.Context, percent: int):
         """Sets the percentage chance (0-100) for a poke event."""
         if percent < 0 or percent > 100:
@@ -1616,7 +1615,7 @@ class OuijaPoke(commands.Cog):
         await self._set_settings(ctx.guild, settings)
         await ctx.send(f"Poke odds set to **{percent}%**.")
 
-    @ouijaset_odds.command(name="summon")
+    @activityset_odds.command(name="summon")
     async def odds_summon(self, ctx: commands.Context, percent: int):
         """Sets the percentage chance (0-100) for a summon event."""
         if percent < 0 or percent > 100:
@@ -1632,7 +1631,7 @@ class OuijaPoke(commands.Cog):
         await self._set_settings(ctx.guild, settings)
         await ctx.send(f"Summon odds set to **{percent}%**.")
 
-    @ouijaset_odds.command(name="level0warn")
+    @activityset_odds.command(name="level0warn")
     async def odds_level0warn(self, ctx: commands.Context, percent: int):
         """Sets the percentage chance (0-100) to warn a random 'Still Level 0' member."""
         if percent < 0 or percent > 100:
@@ -1648,7 +1647,7 @@ class OuijaPoke(commands.Cog):
         await self._set_settings(ctx.guild, settings)
         await ctx.send(f"Level 0 Warn odds set to **{percent}%**.")
 
-    @ouijaset_odds.command(name="level0kick")
+    @activityset_odds.command(name="level0kick")
     async def odds_level0kick(self, ctx: commands.Context, percent: int):
         """Sets the percentage chance (0-100) to KICK a random 'Still Level 0' member."""
         if percent < 0 or percent > 100:
@@ -1666,12 +1665,12 @@ class OuijaPoke(commands.Cog):
 
     # --- End Odds Configuration ---
 
-    @ouijaset.command(name="activitythreshold")
-    async def ouijaset_activitythreshold(self, ctx: commands.Context, messages: int, hours: float):
+    @activityset.command(name="activitythreshold")
+    async def activityset_activitythreshold(self, ctx: commands.Context, messages: int, hours: float):
         """
         Sets the threshold for a user to be considered "active".
         
-        Example: `[p]ouijaset activitythreshold 5 1`
+        Example: `[p]activityset activitythreshold 5 1`
         (User must send 5 messages within 1 hour to update their last seen time).
         
         Set messages to 1 to disable the burst requirement (default).
@@ -1686,8 +1685,8 @@ class OuijaPoke(commands.Cog):
         
         await ctx.send(f"Activity threshold updated: Users must send **{messages} messages** within **{hours} hours** to be seen.")
 
-    @ouijaset.command(name="voicethreshold")
-    async def ouijaset_voicethreshold(self, ctx: commands.Context, minutes: int, min_users: int):
+    @activityset.command(name="voicethreshold")
+    async def activityset_voicethreshold(self, ctx: commands.Context, minutes: int, min_users: int):
         """
         Sets the requirement for voice activity.
         
@@ -1705,8 +1704,8 @@ class OuijaPoke(commands.Cog):
         
         await ctx.send(f"Voice threshold updated: Users must spend **{minutes} minutes** in a channel with **{min_users}+ total users** to be seen.")
 
-    @ouijaset.command(name="minlength")
-    async def ouijaset_minlength(self, ctx: commands.Context, length: int):
+    @activityset.command(name="minlength")
+    async def activityset_minlength(self, ctx: commands.Context, length: int):
         """Sets the minimum character length for a message to count towards activity."""
         if length < 0: return await ctx.send("Length must be >= 0.")
         settings = await self._get_settings(ctx.guild)
@@ -1716,13 +1715,13 @@ class OuijaPoke(commands.Cog):
 
     # --- WarnSystem Integration Settings (Inactivity) ---
 
-    @ouijaset.group(name="warnlevel", aliases=["warn"], invoke_without_command=True)
-    async def ouijaset_warnlevel(self, ctx: commands.Context):
+    @activityset.group(name="warnlevel", aliases=["warn"], invoke_without_command=True)
+    async def activityset_warnlevel(self, ctx: commands.Context):
         """Manages WarnSystem integration for inactive users."""
         await ctx.send_help(ctx.command)
 
-    @ouijaset_warnlevel.command(name="level1")
-    async def ouijaset_warnlevel_1(self, ctx: commands.Context, days: int):
+    @activityset_warnlevel.command(name="level1")
+    async def activityset_warnlevel_1(self, ctx: commands.Context, days: int):
         """
         Sets days inactive to trigger a Level 1 warning via WarnSystem.
         Set to 0 to disable.
@@ -1737,8 +1736,8 @@ class OuijaPoke(commands.Cog):
         else:
             await ctx.send(f"Users inactive for >**{days}** days will receive a Level 1 warning.")
 
-    @ouijaset_warnlevel.command(name="level3")
-    async def ouijaset_warnlevel_3(self, ctx: commands.Context, days: int):
+    @activityset_warnlevel.command(name="level3")
+    async def activityset_warnlevel_3(self, ctx: commands.Context, days: int):
         """
         Sets days inactive to trigger a Level 3 warning (Kick) via WarnSystem.
         Set to 0 to disable.
@@ -1755,12 +1754,12 @@ class OuijaPoke(commands.Cog):
 
     # --- No Intro Settings ---
     
-    @ouijaset.group(name="nointro", invoke_without_command=True)
-    async def ouijaset_nointro(self, ctx: commands.Context):
+    @activityset.group(name="nointro", invoke_without_command=True)
+    async def activityset_nointro(self, ctx: commands.Context):
         """Manages the 'No Intro' policing."""
         await ctx.send_help(ctx.command)
         
-    @ouijaset_nointro.command(name="setup")
+    @activityset_nointro.command(name="setup")
     async def nointro_setup(self, ctx: commands.Context, role: discord.Role, days: int, channel: discord.TextChannel, *, message: str):
         """
         Fully configures the No Intro check.
@@ -1783,7 +1782,7 @@ class OuijaPoke(commands.Cog):
         await self._set_settings(ctx.guild, settings)
         await ctx.send(f"✅ No Intro Check configured! Users with **@{role.name}** for >**{days}** days will be pinged in {channel.mention}.")
 
-    @ouijaset_nointro.command(name="disable")
+    @activityset_nointro.command(name="disable")
     async def nointro_disable(self, ctx: commands.Context):
         """Disables the No Intro check."""
         settings = await self._get_settings(ctx.guild)
@@ -1793,12 +1792,12 @@ class OuijaPoke(commands.Cog):
 
     # --- Level 0 Settings ---
     
-    @ouijaset.group(name="levelzero", aliases=["stillzero"], invoke_without_command=True)
-    async def ouijaset_levelzero(self, ctx: commands.Context):
+    @activityset.group(name="levelzero", aliases=["stillzero"], invoke_without_command=True)
+    async def activityset_levelzero(self, ctx: commands.Context):
         """Manages 'Still at Level 0' policing."""
         await ctx.send_help(ctx.command)
 
-    @ouijaset_levelzero.command(name="warn")
+    @activityset_levelzero.command(name="warn")
     async def levelzero_warn(self, ctx: commands.Context, days: int, channel: discord.TextChannel, *, message: str):
         """
         Configures the warning message for users still at Level 0.
@@ -1819,7 +1818,7 @@ class OuijaPoke(commands.Cog):
         await self._set_settings(ctx.guild, settings)
         await ctx.send(f"✅ Users still at Level 0 after **{days}** days will be pinged in {channel.mention}.")
 
-    @ouijaset_levelzero.command(name="kick")
+    @activityset_levelzero.command(name="kick")
     async def levelzero_kick(self, ctx: commands.Context, days: int, *, reason: str = "Remained at Level 0 for too long."):
         """
         Configures the Auto-Kick (WarnSystem Level 3) for users still at Level 0.
@@ -1840,8 +1839,8 @@ class OuijaPoke(commands.Cog):
 
     # --- Excluded Channels ---
 
-    @ouijaset.group(name="excludechannel", aliases=["exclchannel"], invoke_without_command=True)
-    async def ouijaset_excludechannel(self, ctx: commands.Context):
+    @activityset.group(name="excludechannel", aliases=["exclchannel"], invoke_without_command=True)
+    async def activityset_excludechannel(self, ctx: commands.Context):
         """Manages channels where messages are ignored."""
         channels = await self.config.guild(ctx.guild).excluded_channels()
         if not channels:
@@ -1850,7 +1849,7 @@ class OuijaPoke(commands.Cog):
         channel_mentions = [f"<#{c}>" for c in channels]
         await ctx.send(f"**Excluded Channels:**\n{humanize_list(channel_mentions)}")
 
-    @ouijaset_excludechannel.command(name="add")
+    @activityset_excludechannel.command(name="add")
     async def excludechannel_add(self, ctx: commands.Context, channel: discord.TextChannel):
         """Adds a channel to the exclusion list."""
         async with self.config.guild(ctx.guild).excluded_channels() as channels:
@@ -1859,7 +1858,7 @@ class OuijaPoke(commands.Cog):
             channels.append(channel.id)
         await ctx.send(f"Channel {channel.mention} added to exclusions.")
 
-    @ouijaset_excludechannel.command(name="remove")
+    @activityset_excludechannel.command(name="remove")
     async def excludechannel_remove(self, ctx: commands.Context, channel: discord.TextChannel):
         """Removes a channel from the exclusion list."""
         async with self.config.guild(ctx.guild).excluded_channels() as channels:
@@ -1870,8 +1869,8 @@ class OuijaPoke(commands.Cog):
 
     # --- Hibernating (Excluded) Roles Management ---
 
-    @ouijaset.group(name="hibernatingroles", aliases=["hibernate", "hibernating", "excludedroles", "exclrole"], invoke_without_command=True)
-    async def ouijaset_hibernatingroles(self, ctx: commands.Context):
+    @activityset.group(name="hibernatingroles", aliases=["hibernate", "hibernating", "excludedroles", "exclrole"], invoke_without_command=True)
+    async def activityset_hibernatingroles(self, ctx: commands.Context):
         """
         Manages roles whose members are permanently in hibernation (excluded from being poked/summoned).
         """
@@ -1891,7 +1890,7 @@ class OuijaPoke(commands.Cog):
             f"{humanize_list(role_names)}"
         )
 
-    @ouijaset_hibernatingroles.command(name="add")
+    @activityset_hibernatingroles.command(name="add")
     async def hibernatingroles_add(self, ctx: commands.Context, role: discord.Role):
         """Adds a role to the Hibernating list."""
         async with self.config.guild(ctx.guild).excluded_roles() as excluded_roles:
@@ -1901,7 +1900,7 @@ class OuijaPoke(commands.Cog):
         
         await ctx.send(f"Added role **{role.name}** to the Hibernating list. Members with this role will no longer be poked or summoned.")
 
-    @ouijaset_hibernatingroles.command(name="remove")
+    @activityset_hibernatingroles.command(name="remove")
     async def hibernatingroles_remove(self, ctx: commands.Context, role: discord.Role):
         """Removes a role from the Hibernating list."""
         async with self.config.guild(ctx.guild).excluded_roles() as excluded_roles:
@@ -1913,8 +1912,8 @@ class OuijaPoke(commands.Cog):
 
     # --- Eligible Members Display ---
 
-    @ouijaset.command(name="eligible")
-    async def ouijaset_eligible(self, ctx: commands.Context):
+    @activityset.command(name="eligible")
+    async def activityset_eligible(self, ctx: commands.Context):
         """Displays a list of all members currently eligible for being poked/summoned OR excluded (hibernating)."""
         settings = await self._get_settings(ctx.guild)
 
@@ -1978,14 +1977,14 @@ class OuijaPoke(commands.Cog):
                 hibernating_pages.append(current_page)
 
         # 3. Launch View
-        view = OuijaEligibleView(ctx, active_pages, hibernating_pages, settings)
+        view = ActivityEligibleView(ctx, active_pages, hibernating_pages, settings)
         embed = await view.get_embed()
         view.message = await ctx.send(embed=embed, view=view)
 
     # --- Status Listing (New Feature) ---
 
-    @ouijaset.command(name="status")
-    async def ouijaset_status(self, ctx: commands.Context):
+    @activityset.command(name="status")
+    async def activityset_status(self, ctx: commands.Context):
         """
         Lists all members with their current activity status.
         ✅ = Active
@@ -2091,8 +2090,8 @@ class OuijaPoke(commands.Cog):
 
     # --- Message Settings ---
     
-    @ouijaset.command(name="pokemessage")
-    async def ouijaset_pokemessage(self, ctx: commands.Context, *, message: str):
+    @activityset.command(name="pokemessage")
+    async def activityset_pokemessage(self, ctx: commands.Context, *, message: str):
         """Sets the message used when a user is poked."""
         if "{user_mention}" not in message:
             return await ctx.send("Message must contain `{user_mention}`.")
@@ -2101,8 +2100,8 @@ class OuijaPoke(commands.Cog):
         await self._set_settings(ctx.guild, settings)
         await ctx.send(f"Poke message updated.")
         
-    @ouijaset.command(name="summonmessage")
-    async def ouijaset_summonmessage(self, ctx: commands.Context, *, message: str):
+    @activityset.command(name="summonmessage")
+    async def activityset_summonmessage(self, ctx: commands.Context, *, message: str):
         """Sets the message used when a user is summoned."""
         if "{user_mention}" not in message:
             return await ctx.send("Message must contain `{user_mention}`.")
@@ -2112,13 +2111,13 @@ class OuijaPoke(commands.Cog):
         await ctx.send(f"Summon message updated.")
 
     # --- GIF Management (Shortened for brevity, logic unchanged) ---
-    @ouijaset.group(name="pokegifs", invoke_without_command=True)
-    async def ouijaset_pokegifs(self, ctx: commands.Context):
+    @activityset.group(name="pokegifs", invoke_without_command=True)
+    async def activityset_pokegifs(self, ctx: commands.Context):
         """Manages poke GIFs."""
         settings = await self._get_settings(ctx.guild)
         await ctx.send(f"**Poke GIFs:** {len(settings.poke_gifs)} stored." if settings.poke_gifs else "No Poke GIFs.")
 
-    @ouijaset_pokegifs.command(name="add")
+    @activityset_pokegifs.command(name="add")
     async def pokegifs_add(self, ctx: commands.Context, url: str):
         if not self._is_valid_gif_url(url): return await ctx.send("Invalid URL.")
         settings = await self._get_settings(ctx.guild)
@@ -2127,7 +2126,7 @@ class OuijaPoke(commands.Cog):
         await self._set_settings(ctx.guild, settings)
         await ctx.send("Added.")
 
-    @ouijaset_pokegifs.command(name="remove")
+    @activityset_pokegifs.command(name="remove")
     async def pokegifs_remove(self, ctx: commands.Context, url: str):
         settings = await self._get_settings(ctx.guild)
         try: settings.poke_gifs.remove(url)
@@ -2135,13 +2134,13 @@ class OuijaPoke(commands.Cog):
         await self._set_settings(ctx.guild, settings)
         await ctx.send("Removed.")
 
-    @ouijaset.group(name="summongifs", invoke_without_command=True)
-    async def ouijaset_summongifs(self, ctx: commands.Context):
+    @activityset.group(name="summongifs", invoke_without_command=True)
+    async def activityset_summongifs(self, ctx: commands.Context):
         """Manages summon GIFs."""
         settings = await self._get_settings(ctx.guild)
         await ctx.send(f"**Summon GIFs:** {len(settings.summon_gifs)} stored." if settings.summon_gifs else "No Summon GIFs.")
 
-    @ouijaset_summongifs.command(name="add")
+    @activityset_summongifs.command(name="add")
     async def summongifs_add(self, ctx: commands.Context, url: str):
         if not self._is_valid_gif_url(url): return await ctx.send("Invalid URL.")
         settings = await self._get_settings(ctx.guild)
@@ -2150,7 +2149,7 @@ class OuijaPoke(commands.Cog):
         await self._set_settings(ctx.guild, settings)
         await ctx.send("Added.")
 
-    @ouijaset_summongifs.command(name="remove")
+    @activityset_summongifs.command(name="remove")
     async def summongifs_remove(self, ctx: commands.Context, url: str):
         settings = await self._get_settings(ctx.guild)
         try: settings.summon_gifs.remove(url)
@@ -2160,8 +2159,8 @@ class OuijaPoke(commands.Cog):
 
     # --- Override/Reset ---
 
-    @ouijaset.command(name="backfill")
-    async def ouijaset_backfill(self, ctx: commands.Context, days_ago: int):
+    @activityset.command(name="backfill")
+    async def activityset_backfill(self, ctx: commands.Context, days_ago: int):
         """
         Assigns a 'last active' date to all members who currently have NO data.
         
@@ -2186,8 +2185,8 @@ class OuijaPoke(commands.Cog):
                         
         await ctx.send(f"✅ Initialized data for **{count}** members. They are now marked as active **{days_ago} days ago**.")
 
-    @ouijaset.command(name="override")
-    async def ouijaset_override(self, ctx: commands.Context, role: discord.Role, days_ago: int):
+    @activityset.command(name="override")
+    async def activityset_override(self, ctx: commands.Context, role: discord.Role, days_ago: int):
         """Overrides the last active date for all members of a given role."""
         if days_ago < 0: return await ctx.send("Days must be >= 0.")
         async with ctx.typing():
@@ -2199,8 +2198,8 @@ class OuijaPoke(commands.Cog):
         await ctx.send(f"Set **{len(role.members)}** members to **{days_ago} days ago**.")
         # Trigger warn check next loop
 
-    @ouijaset.command(name="markactive")
-    async def ouijaset_markactive(self, ctx: commands.Context, member: discord.Member):
+    @activityset.command(name="markactive")
+    async def activityset_markactive(self, ctx: commands.Context, member: discord.Member):
         """
         Manually marks a user as active right now.
         
@@ -2209,9 +2208,9 @@ class OuijaPoke(commands.Cog):
         await self._update_last_seen(ctx.guild, member.id)
         await ctx.send(f"✅ **{member.display_name}** has been marked as active. Their timer and warnings are reset.")
 
-    @ouijaset.command(name="resetactivity")
+    @activityset.command(name="resetactivity")
     @checks.is_owner()
-    async def ouijaset_resetactivity(self, ctx: commands.Context):
+    async def activityset_resetactivity(self, ctx: commands.Context):
         """[OWNER] Wipes all activity data."""
         await ctx.send("Are you sure? Type `yes`.")
         try:
