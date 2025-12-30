@@ -86,7 +86,7 @@ class ActivitySettings(BaseModel):
     # Auto Poke Settings
     auto_channel_id: Optional[int] = Field(default=None, description="Channel ID for automatic pokes/summons.")
 
-# --- View Class for Pagination ---
+# --- View Classes for Pagination ---
 
 class ActivityEligibleView(discord.ui.View):
     def __init__(self, ctx, active_pages: List[str], hibernating_pages: List[str], settings: ActivitySettings):
@@ -166,6 +166,55 @@ class ActivityEligibleView(discord.ui.View):
         # Switch mode
         self.mode = "hibernating" if self.mode == "active" else "active"
         self.page_index = 0 # Reset to first page
+        self._update_buttons()
+        await interaction.response.edit_message(embed=await self.get_embed(), view=self)
+
+    async def on_timeout(self):
+        if self.message:
+            try:
+                for item in self.children:
+                    item.disabled = True
+                await self.message.edit(view=self)
+            except:
+                pass
+
+class ActivityStatusView(discord.ui.View):
+    def __init__(self, ctx, pages: List[str]):
+        super().__init__(timeout=120)
+        self.ctx = ctx
+        self.pages = pages
+        self.page_index = 0
+        self.message: Optional[discord.Message] = None
+        self._update_buttons()
+
+    def _update_buttons(self):
+        total_pages = len(self.pages)
+        self.prev_button.disabled = self.page_index == 0
+        self.next_button.disabled = self.page_index >= total_pages - 1
+        self.counter_button.label = f"Page {self.page_index + 1}/{max(1, total_pages)}"
+
+    async def get_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"Member Activity Status (Sorted by Activity)",
+            description=self.pages[self.page_index],
+            color=discord.Color.gold()
+        )
+        embed.set_footer(text=f"✅ Active | 👉 Poke | 👻 Summon | 💤 Hibernating")
+        return embed
+
+    @discord.ui.button(label="◀️", style=discord.ButtonStyle.grey, row=0)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page_index = max(0, self.page_index - 1)
+        self._update_buttons()
+        await interaction.response.edit_message(embed=await self.get_embed(), view=self)
+
+    @discord.ui.button(label="Page 1/1", style=discord.ButtonStyle.grey, disabled=True, row=0)
+    async def counter_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
+
+    @discord.ui.button(label="▶️", style=discord.ButtonStyle.grey, row=0)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.page_index = min(len(self.pages) - 1, self.page_index + 1)
         self._update_buttons()
         await interaction.response.edit_message(embed=await self.get_embed(), view=self)
 
@@ -2080,15 +2129,14 @@ class ActivityTracker(commands.Cog):
             
             if current_page:
                 pages.append("\n".join(current_page))
-                
-            for i, page_content in enumerate(pages):
-                embed = discord.Embed(
-                    title=f"Member Activity Status (Sorted by Activity)",
-                    description=page_content,
-                    color=discord.Color.gold()
-                )
-                embed.set_footer(text=f"Page {i+1}/{len(pages)} | ✅ Active | 👉 Poke | 👻 Summon | 💤 Hibernating")
-                await ctx.send(embed=embed)
+            
+            if not pages:
+                return await ctx.send("No pages to display.")
+
+            # Launch View
+            view = ActivityStatusView(ctx, pages)
+            embed = await view.get_embed()
+            view.message = await ctx.send(embed=embed, view=view)
 
     # --- Message Settings ---
     
