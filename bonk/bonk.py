@@ -1,6 +1,6 @@
 import discord
 from redbot.core import commands, Config, app_commands
-from redbot.core.utils.chat_formatting import box, humanize_list
+from redbot.core.utils.chat_formatting import box, humanize_list, pagify
 from datetime import datetime, timedelta, timezone
 import asyncio
 
@@ -20,12 +20,14 @@ class Bonk(commands.Cog):
             "jail_role_id": None,
             "jail_time_hours": 1,
             "jail_warnings": {},  # Format: {"jail_count_str": {"level": int, "reason": str}}
+            "log_channel_id": None,
         }
 
         default_member = {
             "bonk_count": 0,
             "jail_count": 0,
             "jail_release_timestamp": 0,
+            "bonks_sent": 0,
         }
 
         self.config.register_guild(**default_guild)
@@ -96,9 +98,13 @@ class Bonk(commands.Cog):
 
         guild = interaction.guild
         member_conf = self.config.member(user)
+        bonker_conf = self.config.member(interaction.user)
         guild_conf = self.config.guild(guild)
 
-        # Increment Bonk
+        # Track sender stats
+        await bonker_conf.bonks_sent.set(await bonker_conf.bonks_sent() + 1)
+
+        # Increment Bonk on receiver
         current_bonks = await member_conf.bonk_count() + 1
         threshold = await guild_conf.bonk_threshold()
         
@@ -106,6 +112,21 @@ class Bonk(commands.Cog):
         
         message = f"You have bonked {user.mention}. They are at {current_bonks}/{threshold} bonks."
         
+        # Logging
+        log_channel_id = await guild_conf.log_channel_id()
+        if log_channel_id:
+            log_channel = guild.get_channel(log_channel_id)
+            if log_channel:
+                embed = discord.Embed(title="🔨 Bonk Log", color=discord.Color.orange())
+                embed.add_field(name="Bonker", value=interaction.user.mention, inline=True)
+                embed.add_field(name="Bonked", value=user.mention, inline=True)
+                embed.add_field(name="Count", value=f"{current_bonks}/{threshold}", inline=True)
+                embed.timestamp = datetime.now(timezone.utc)
+                try:
+                    await log_channel.send(embed=embed)
+                except discord.Forbidden:
+                    pass
+
         # Check Threshold
         if current_bonks >= threshold:
             # Send to Jail
@@ -132,8 +153,6 @@ class Bonk(commands.Cog):
 
             # WarnSystem Integration
             jail_warnings = await guild_conf.jail_warnings()
-            # Convert keys to strings for JSON compatibility in storage, convert back for logic if needed
-            # We look up by string key
             jail_key = str(current_jails)
             
             if jail_key in jail_warnings:
@@ -145,7 +164,6 @@ class Bonk(commands.Cog):
                 if warn_cog:
                     try:
                         # Warning comes from the bot
-                        # WarnSystem API: warn(member, author, reason, level)
                         await warn_cog.api.warn(user, self.bot.user, reason, level)
                         message += f"\nWarnSystem warning applied (Level {level})."
                     except Exception as e:
@@ -154,6 +172,43 @@ class Bonk(commands.Cog):
                     message += "\n(WarnSystem cog not found, skipping warning)"
 
         await interaction.response.send_message(message, ephemeral=True)
+
+    @commands.command(name="bonkstats")
+    async def bonkstats(self, ctx):
+        """Show the Bonk Dashboard: Top senders, receivers, and jailbirds."""
+        members = await self.config.all_members(ctx.guild)
+        
+        if not members:
+            return await ctx.send("No bonk stats available yet.")
+
+        # Sorting helper
+        def get_top(data_dict, key, limit=3):
+            # Sort by the specific key in reverse (descending)
+            sorted_data = sorted(data_dict.items(), key=lambda x: x[1].get(key, 0), reverse=True)
+            # Filter out zeros and take top N
+            return [(m_id, d.get(key, 0)) for m_id, d in sorted_data if d.get(key, 0) > 0][:limit]
+
+        most_bonked = get_top(members, "bonk_count")
+        most_sent = get_top(members, "bonks_sent")
+        most_jailed = get_top(members, "jail_count")
+
+        embed = discord.Embed(title="📊 Bonk Dashboard", color=discord.Color.gold())
+
+        def format_list(stats_list):
+            if not stats_list:
+                return "None yet!"
+            lines = []
+            for i, (m_id, count) in enumerate(stats_list, 1):
+                user = ctx.guild.get_member(m_id)
+                name = user.display_name if user else f"User {m_id}"
+                lines.append(f"{i}. **{name}**: {count}")
+            return "\n".join(lines)
+
+        embed.add_field(name="🤕 Most Bonked (Current)", value=format_list(most_bonked), inline=False)
+        embed.add_field(name="🔨 Top Bonkers", value=format_list(most_sent), inline=False)
+        embed.add_field(name="🚔 Most Jailed (All time)", value=format_list(most_jailed), inline=False)
+
+        await ctx.send(embed=embed)
 
     @commands.group(name="bonkset")
     @commands.admin_or_permissions(administrator=True)
@@ -182,6 +237,49 @@ class Bonk(commands.Cog):
             return await ctx.send("Time must be at least 1 hour.")
         await self.config.guild(ctx.guild).jail_time_hours.set(hours)
         await ctx.send(f"Jail time set to {hours} hours.")
+
+    @bonkset.command(name="logchannel")
+    async def bonkset_logchannel(self, ctx, channel: discord.TextChannel = None):
+        """Set the logging channel for bonks. Leave empty to disable."""
+        if channel:
+            await self.config.guild(ctx.guild).log_channel_id.set(channel.id)
+            await ctx.send(f"Bonk logging channel set to {channel.mention}.")
+        else:
+            await self.config.guild(ctx.guild).log_channel_id.set(None)
+            await ctx.send("Bonk logging disabled.")
+
+    @bonkset.command(name="list")
+    async def bonkset_list(self, ctx):
+        """List all users with bonk stats."""
+        members = await self.config.all_members(ctx.guild)
+        
+        if not members:
+            return await ctx.send("No stats recorded.")
+            
+        lines = []
+        lines.append(f"{'User':<30} | {'Bonked':<8} | {'Jailed':<8} | {'Sent':<8}")
+        lines.append("-" * 65)
+        
+        for m_id, data in members.items():
+            # Only show if they have at least one stat
+            b_count = data.get("bonk_count", 0)
+            j_count = data.get("jail_count", 0)
+            s_count = data.get("bonks_sent", 0)
+            
+            if b_count == 0 and j_count == 0 and s_count == 0:
+                continue
+                
+            user = ctx.guild.get_member(m_id)
+            name = str(user) if user else f"ID: {m_id}"
+            
+            lines.append(f"{name:<30} | {b_count:<8} | {j_count:<8} | {s_count:<8}")
+
+        if len(lines) == 2: # Only header exists
+            return await ctx.send("No active stats found.")
+
+        msg = "\n".join(lines)
+        for page in pagify(msg):
+            await ctx.send(box(page, lang="text"))
 
     @bonkset.group(name="warning")
     async def bonkset_warning(self, ctx):
@@ -225,10 +323,16 @@ class Bonk(commands.Cog):
             role = ctx.guild.get_role(conf['jail_role_id'])
             role_msg = role.mention if role else "Role Deleted/Invalid"
 
+        log_msg = "Not Set"
+        if conf['log_channel_id']:
+            chan = ctx.guild.get_channel(conf['log_channel_id'])
+            log_msg = chan.mention if chan else "Channel Deleted/Invalid"
+
         embed = discord.Embed(title="Bonk Settings", color=discord.Color.red())
         embed.add_field(name="Bonk Threshold", value=str(conf['bonk_threshold']), inline=True)
         embed.add_field(name="Jail Time", value=f"{conf['jail_time_hours']} Hours", inline=True)
         embed.add_field(name="Jail Role", value=role_msg, inline=False)
+        embed.add_field(name="Log Channel", value=log_msg, inline=False)
         
         warn_text = ""
         if conf['jail_warnings']:
