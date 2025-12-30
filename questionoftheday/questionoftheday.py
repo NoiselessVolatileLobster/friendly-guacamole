@@ -972,7 +972,7 @@ class QuestionOfTheDay(commands.Cog):
         async with self.config.schedules() as schedules:
             schedules[schedule_id] = serialized_schedule
         time_str = f"at **{post_time} UTC**" if post_time else ""
-        await ctx.send(f"Added new schedule (ID: `{schedule_id}`). Next run: {discord.utils.format_dt(next_run_time, 'R')}.")
+        await ctx.send(f"Added new schedule (ID: `{schedule_id}`). Next run: {discord.utils.format_dt(next_run, 'R')}.")
         
     @qotd_schedule_management.command(name="remove")
     async def qotd_schedule_remove(self, ctx: commands.Context, schedule_id: str):
