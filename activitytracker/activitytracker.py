@@ -579,6 +579,19 @@ class ActivityTracker(commands.Cog):
             except ValueError:
                 pass
 
+        # Helper to check for recent messages (No Intro or Level 0 Warn) within 7 days
+        def has_recent_warning(warnings):
+            check_keys = ["nointro", "level0_warn"]
+            for k in check_keys:
+                if k in warnings:
+                    try:
+                        last_ts = datetime.fromisoformat(warnings[k]).replace(tzinfo=timezone.utc)
+                        if (now - last_ts) < timedelta(days=7):
+                            return True
+                    except ValueError:
+                        continue
+            return False
+
         # Iterate over MEMBERS in the guild to cover "No Intro" and "Level 0" logic
         for member in guild.members:
             if member.bot or self._is_excluded(member, excluded_roles):
@@ -594,13 +607,15 @@ class ActivityTracker(commands.Cog):
                     days_joined = (now - member.joined_at.replace(tzinfo=timezone.utc)).days
                     if days_joined >= settings.nointro_days:
                         if "nointro" not in user_warnings:
-                            try:
-                                msg = settings.nointro_message.replace("{mention}", member.mention)
-                                await nointro_channel.send(msg)
-                                user_warnings["nointro"] = now.isoformat()
-                                has_changes = True
-                            except discord.Forbidden:
-                                log.warning(f"ActivityTracker: Forbidden to send No Intro message in {nointro_channel.name}")
+                            # Check if we messaged them recently for Level 0
+                            if not has_recent_warning(user_warnings):
+                                try:
+                                    msg = settings.nointro_message.replace("{mention}", member.mention)
+                                    await nointro_channel.send(msg)
+                                    user_warnings["nointro"] = now.isoformat()
+                                    has_changes = True
+                                except discord.Forbidden:
+                                    log.warning(f"ActivityTracker: Forbidden to send No Intro message in {nointro_channel.name}")
 
             # --- B. LEVEL 0 CHECKS ---
             if levelup_cog:
@@ -645,7 +660,8 @@ class ActivityTracker(commands.Cog):
                     # 2. Message Warning (Rate Limited to 1 per 12h, shared with Kicks)
                     elif settings.level0_warn_days > 0 and level0_channel and days_joined >= settings.level0_warn_days:
                         if "level0_warn" not in user_warnings:
-                            if allow_level0_action:
+                            # Check global limit AND user specific recent warning (No Intro)
+                            if allow_level0_action and not has_recent_warning(user_warnings):
                                 try:
                                     log.info(f"ActivityTracker: Sending Level 0 Warning for {member}...")
                                     msg = settings.level0_message.replace("{mention}", member.mention)
@@ -659,7 +675,7 @@ class ActivityTracker(commands.Cog):
                                 except discord.Forbidden:
                                     log.warning(f"ActivityTracker: Forbidden to send Level 0 warning in {level0_channel.name}")
                             else:
-                                log.info(f"ActivityTracker: [Level 0 Debug] Warn eligible for {member} but rate limit prevented action.")
+                                log.info(f"ActivityTracker: [Level 0 Debug] Warn eligible for {member} but rate limit (Global or User 7-day) prevented action.")
                         else:
                              # log.debug(f"ActivityTracker: [Level 0 Debug] {member} already warned level 0.")
                              pass
