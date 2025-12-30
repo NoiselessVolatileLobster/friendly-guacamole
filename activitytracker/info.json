@@ -1,0 +1,8 @@
+{
+    "author": ["NoiselessVolatileLobster"],
+    "version": "1.0.0",
+    "min_bot_version": "3.5.0",
+    "description": "Summon and poke members who have not been around for a while. Integrates with WarnSystem for inactivity warnings.",
+    "short": "Revive old relationships and warn inactive users",
+    "tags": ["utility", "userinfo", "warnsystem"]
+}
