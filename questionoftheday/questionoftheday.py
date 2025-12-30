@@ -731,7 +731,7 @@ class QuestionOfTheDay(commands.Cog):
     async def qotd_list_add(self, ctx: commands.Context, list_name: str, list_id: Optional[str] = None):
         """Adds a new question list."""
         lists_data = await self.config.lists()
-        if any(l.get('name', '').lower() == list_name.lower() for l in lists.values()):
+        if any(l.get('name', '').lower() == list_name.lower() for l in lists_data.values()):
              return await ctx.send(warning(f"A list named **{list_name}** already exists."))
 
         if list_id is None:
