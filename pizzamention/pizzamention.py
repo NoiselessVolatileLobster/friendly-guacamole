@@ -156,7 +156,7 @@ class PizzaMention(commands.Cog):
 
         ansi_msg = (
             f"```ansi\n"
-            f"This server made it  [2;31m[{time_display}] [0m without talking about {keyword}\n"
+            f"This server made it  \u001b[2;31m[{time_display}]\u001b[0m without talking about {keyword}\n"
             f"```"
         )
         
@@ -244,7 +244,7 @@ class PizzaMention(commands.Cog):
                 # ANSI Formatting
                 ansi_msg = (
                     f"```ansi\n"
-                    f"This server made it  [2;31m[{time_display}] [0m without talking about {keyword}\n"
+                    f"This server made it  \u001b[2;31m[{time_display}]\u001b[0m without talking about {keyword}\n"
                     f"```"
                 )
                 
