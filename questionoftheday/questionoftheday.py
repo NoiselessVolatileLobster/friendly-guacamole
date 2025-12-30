@@ -113,6 +113,72 @@ class SuggestionButton(discord.ui.View):
         await interaction.response.send_modal(SuggestionModal(self.cog, current_list_names))
 
 
+class QuestionMoveView(discord.ui.View):
+    def __init__(self, cog: "QuestionOfTheDay", question_id: str, current_list_id: str, lists_data: dict, ctx: commands.Context):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.question_id = question_id
+        self.ctx = ctx
+        
+        # Build options
+        options = []
+        # Sort lists by name
+        sorted_lists = sorted(lists_data.items(), key=lambda x: x[1].get('name', ''))
+        
+        # Select limits to 25 items
+        for l_id, l_data in sorted_lists[:25]:
+            is_default = (l_id == current_list_id)
+            options.append(discord.SelectOption(
+                label=l_data['name'][:100], 
+                value=l_id, 
+                description=f"ID: {l_id}"[:100],
+                default=is_default
+            ))
+            
+        self.select = discord.ui.Select(
+            placeholder="Move question to another list...",
+            min_values=1,
+            max_values=1,
+            options=options,
+            custom_id=f"qotd_move_{question_id}"
+        )
+        self.select.callback = self.select_callback
+        self.add_item(self.select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # Only allow the command author or admins to use the dropdown
+        if interaction.user.id == self.ctx.author.id or interaction.user.guild_permissions.manage_guild:
+            return True
+        await interaction.response.send_message("You don't have permission to modify this.", ephemeral=True)
+        return False
+
+    async def select_callback(self, interaction: discord.Interaction):
+        new_list_id = self.select.values[0]
+        
+        async with self.cog.config.questions() as questions:
+            if self.question_id not in questions:
+                return await interaction.response.send_message("This question no longer exists.", ephemeral=True)
+            
+            questions[self.question_id]['list_id'] = new_list_id
+            
+        lists_data = await self.cog.config.lists()
+        new_list_name = lists_data.get(new_list_id, {}).get('name', 'Unknown')
+
+        # Update the embed to reflect changes
+        embed = interaction.message.embeds[0]
+        for i, field in enumerate(embed.fields):
+            if field.name == "List":
+                embed.set_field_at(i, name="List", value=f"{new_list_name} (`{new_list_id}`)", inline=True)
+                break
+        
+        # Update dropdown default value
+        for opt in self.select.options:
+            opt.default = (opt.value == new_list_id)
+        
+        await interaction.response.edit_message(embed=embed, view=self)
+        await interaction.followup.send(f"Moved question to list **{new_list_name}**.", ephemeral=True)
+
+
 class ApprovalView(discord.ui.View):
     def __init__(self, cog: "QuestionOfTheDay", question_data: QuestionData, question_id: str, lists: Dict[str, QuestionList]):
         super().__init__(timeout=None) 
@@ -607,7 +673,9 @@ class QuestionOfTheDay(commands.Cog):
         added_ts = discord.utils.format_dt(question.added_on, 'f')
         embed.add_field(name="Created On", value=added_ts, inline=False)
         
-        await ctx.send(embed=embed)
+        # Add the View with dropdown
+        view = QuestionMoveView(self, matched_qid, question.list_id, lists_data, ctx)
+        await ctx.send(embed=embed, view=view)
 
     @qotd_question.command(name="remove")
     async def qotd_question_remove(self, ctx: commands.Context, question_id: str):
