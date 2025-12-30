@@ -3,11 +3,9 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 
-from redbot.core import commands, Config, checks
+from redbot.core import commands, Config
 from redbot.core.utils.chat_formatting import box
-from redbot.core.utils.predicates import MessagePredicate
-
-# Tabulate is available in the Red environment
+# tabulate is included in Red's environment
 from tabulate import tabulate
 
 class Hibernate(commands.Cog):
@@ -93,6 +91,7 @@ class Hibernate(commands.Cog):
             except Exception as e:
                 print(f"Error in Hibernate loop: {e}")
 
+    # Using hybrid_command ensures this works as both [p]hibernate AND /hibernate
     @commands.hybrid_command(name="hibernate", description="Self-assign the hibernation role for a set period.")
     @commands.guild_only()
     async def hibernate(self, ctx: commands.Context):
@@ -249,7 +248,6 @@ class Hibernate(commands.Cog):
             return await ctx.send("No users are currently recorded as hibernating.")
 
         headers = ["ID", "User", "End Date", "Time Left"]
-        # Using tabulate within a code block for the table preference
         output = tabulate(table_data, headers=headers, tablefmt="presto")
         
         await ctx.send(box(output, lang="text"))
@@ -361,7 +359,7 @@ class Hibernate(commands.Cog):
         if not target_role:
             return await ctx.send("The configured hibernation role no longer exists.")
 
-        # 2. Check if already hibernating (Optional: You could allow overwriting)
+        # 2. Check if already hibernating
         if target_role in member.roles:
             return await ctx.send(f"{member.display_name} is already hibernating.")
 
