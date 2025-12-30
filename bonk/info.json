@@ -1,0 +1,8 @@
+{
+    "author": ["NoiselessVolatileLobster"],
+    "name": "Bonk",
+    "short": "Send users to Horny Jail",
+    "description": "Anonymously bonk users. Accumulate bonks to send them to horny jail and trigger automatic warnings.",
+    "tags": ["fun", "moderation"],
+    "requirements": ["redbot>=3.5.22"]
+}
