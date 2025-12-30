@@ -939,7 +939,7 @@ class OuijaPoke(commands.Cog):
 
     # --- User Commands ---
 
-    @commands.command(name="poke")
+    @commands.hybrid_command(name="poke", description="Pokes a random eligible member.")
     async def poke(self, ctx: commands.Context):
         """Pokes a random eligible member."""
         async with ctx.typing():
@@ -955,11 +955,17 @@ class OuijaPoke(commands.Cog):
                 await self._send_activity_message(ctx, member_to_poke, settings.poke_message, settings.poke_gifs)
             finally:
                 if ctx.channel.permissions_for(ctx.me).manage_messages:
-                    await ctx.message.delete()
+                    if ctx.interaction:
+                         # Hybrid commands in interaction mode don't have a message to delete in the same way, 
+                         # but we usually don't need to delete the command invocation for slash commands.
+                         pass
+                    else:
+                        await ctx.message.delete()
                 else:
-                    await ctx.send("I need the `Manage Messages` permission to delete your command message.", delete_after=10)
+                     if not ctx.interaction:
+                        await ctx.send("I need the `Manage Messages` permission to delete your command message.", delete_after=10)
 
-    @commands.command(name="summon")
+    @commands.hybrid_command(name="summon", description="Summons a random eligible member.")
     async def summon(self, ctx: commands.Context):
         """Summons a random eligible member."""
         async with ctx.typing():
@@ -975,9 +981,13 @@ class OuijaPoke(commands.Cog):
                 await self._send_activity_message(ctx, member_to_summon, settings.summon_message, settings.summon_gifs)
             finally:
                 if ctx.channel.permissions_for(ctx.me).manage_messages:
-                    await ctx.message.delete()
+                    if ctx.interaction:
+                        pass
+                    else:
+                        await ctx.message.delete()
                 else:
-                    await ctx.send("I need the `Manage Messages` permission to delete your command message.", delete_after=10)
+                    if not ctx.interaction:
+                        await ctx.send("I need the `Manage Messages` permission to delete your command message.", delete_after=10)
 
     # --- Admin Commands (Settings) ---
 
