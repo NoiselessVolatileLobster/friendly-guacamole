@@ -106,7 +106,7 @@ class SuggestionButton(discord.ui.View):
         self.cog = cog
         self._list_names = list_names 
 
-    @discord.ui.button(label="Suggest a Question", style=discord.ButtonStyle.primary, custom_id="qotd_suggest_button")
+    @discord.ui.button(label="📬 Suggest Question", style=discord.ButtonStyle.primary, custom_id="qotd_suggest_button")
     async def suggest_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         lists_data = await self.cog.config.lists()
         current_list_names = [v['name'] for v in lists_data.values() if v['id'] not in ["suggestions", "unassigned"]]
@@ -388,7 +388,8 @@ class QuestionOfTheDay(commands.Cog):
         # --------------------
 
         try:
-            await channel.send(embed=embed)
+            view = SuggestionButton(self, []) # Create view for persistent interaction
+            await channel.send(embed=embed, view=view)
             selected_q.status = "asked"
             selected_q.last_asked = now_utc
             await self.update_question_data(selected_qid, selected_q)
