@@ -38,6 +38,8 @@ class OuijaSettings(BaseModel):
     # Event Odds (Percentages 0-100)
     poke_odds: int = Field(default=10, ge=0, le=100, description="Percentage chance to poke.")
     summon_odds: int = Field(default=10, ge=0, le=100, description="Percentage chance to summon.")
+    level0_warn_odds: int = Field(default=0, ge=0, le=100, description="Percentage chance to warn a Level 0 member.")
+    level0_kick_odds: int = Field(default=0, ge=0, le=100, description="Percentage chance to kick a Level 0 member.")
     
     # WarnSystem Integration (Inactivity)
     warn_level_1_days: int = Field(default=0, ge=0, description="Days inactive to trigger Level 1 warning (0 to disable).")
@@ -302,6 +304,49 @@ class OuijaPoke(commands.Cog):
         
         return priority_1, priority_2_members
     
+    async def _get_level0_candidates(self, guild: discord.Guild, settings: OuijaSettings, check_type: str) -> List[discord.Member]:
+        """
+        Retrieves a list of members who are eligible for Level 0 Warning or Kick.
+        check_type: "warn" or "kick"
+        """
+        levelup_cog = self.bot.get_cog("LevelUp")
+        if not levelup_cog:
+            return []
+
+        warned_users = await self.config.guild(guild).warned_users()
+        excluded_roles = await self.config.guild(guild).excluded_roles()
+        now = datetime.now(timezone.utc)
+        candidates = []
+
+        # Determine threshold days
+        threshold_days = settings.level0_warn_days if check_type == "warn" else settings.level0_kick_days
+        if threshold_days <= 0:
+            return []
+            
+        # Optimization: We have to iterate members, which can be slow on huge servers.
+        # But this is inside a background task, so acceptable.
+        for member in guild.members:
+            if member.bot or self._is_excluded(member, excluded_roles):
+                continue
+
+            days_joined = (now - member.joined_at.replace(tzinfo=timezone.utc)).days
+            
+            if days_joined >= threshold_days:
+                user_id_str = str(member.id)
+                user_warnings = warned_users.get(user_id_str, {})
+                
+                # Filter out those already processed for this specific action type
+                flag_key = "level0_warn" if check_type == "warn" else "level0_kick"
+                if flag_key in user_warnings:
+                    continue
+
+                # Async check level
+                level = await levelup_cog.get_level(member)
+                if level == 0:
+                    candidates.append(member)
+                    
+        return candidates
+
     async def _filter_spam_protected(self, guild: discord.Guild, members: List[discord.Member]) -> List[discord.Member]:
         """
         Filters out members who have been poked OR summoned in the last 14 days.
@@ -607,14 +652,22 @@ class OuijaPoke(commands.Cog):
         # Convert percentages to 0.0-1.0 range
         summon_prob = settings.summon_odds / 100.0
         poke_prob = settings.poke_odds / 100.0
+        l0_warn_prob = settings.level0_warn_odds / 100.0
+        l0_kick_prob = settings.level0_kick_odds / 100.0
         
         # Cumulative thresholds
-        # Range 0 to summon_prob -> Summon
-        # Range summon_prob to (summon_prob + poke_prob) -> Poke
-        # Remainder -> Nothing
+        # 0 -> summon_threshold: SUMMON
+        # summon_threshold -> poke_threshold: POKE
+        # poke_threshold -> l0_warn_threshold: LEVEL 0 WARN
+        # l0_warn_threshold -> l0_kick_threshold: LEVEL 0 KICK
+        # Remainder: IDLE
         
         summon_threshold = summon_prob
-        poke_threshold = summon_prob + poke_prob
+        poke_threshold = summon_threshold + poke_prob
+        l0_warn_threshold = poke_threshold + l0_warn_prob
+        l0_kick_threshold = l0_warn_threshold + l0_kick_prob
+        
+        warn_cog = self.bot.get_cog("WarnSystem")
         
         # 1. Summon Chance
         if roll < summon_threshold:
@@ -646,9 +699,71 @@ class OuijaPoke(commands.Cog):
             else:
                 return f"🎲 Roll: {roll:.3f} (< {poke_threshold:.2f}) -> Poke triggered, but **NO ELIGIBLE CANDIDATES** found."
 
-        # 3. Nothing
+        # 3. Level 0 Warn Chance
+        elif roll < l0_warn_threshold:
+            candidates = await self._get_level0_candidates(guild, settings, "warn")
+            
+            if candidates:
+                target = random.choice(candidates)
+                # Apply Warning Logic
+                warned_users = await self.config.guild(guild).warned_users()
+                user_warnings = warned_users.get(str(target.id), {})
+                
+                # Retrieve channel from settings
+                l0_chan = guild.get_channel(settings.level0_channel_id) if settings.level0_channel_id else None
+                
+                if l0_chan and l0_chan.permissions_for(guild.me).send_messages:
+                    try:
+                        msg = settings.level0_message.replace("{mention}", target.mention)
+                        await l0_chan.send(msg)
+                        
+                        user_warnings["level0_warn"] = datetime.now(timezone.utc).isoformat()
+                        warned_users[str(target.id)] = user_warnings
+                        await self.config.guild(guild).warned_users.set(warned_users)
+                        
+                        return f"🎲 Roll: {roll:.3f} (< {l0_warn_threshold:.2f}) -> **LEVEL 0 WARN** on {target.display_name} in {l0_chan.mention}."
+                    except Exception as e:
+                        log.error(f"OuijaPoke Lottery Error (L0 Warn): {e}")
+                        return f"🎲 Roll: {roll:.3f} -> Level 0 Warn triggered, but failed to send message."
+                else:
+                    return f"🎲 Roll: {roll:.3f} -> Level 0 Warn triggered, but **NO CHANNEL CONFIGURED**."
+            else:
+                return f"🎲 Roll: {roll:.3f} (< {l0_warn_threshold:.2f}) -> Level 0 Warn triggered, but **NO ELIGIBLE CANDIDATES** found."
+
+        # 4. Level 0 Kick Chance
+        elif roll < l0_kick_threshold:
+            candidates = await self._get_level0_candidates(guild, settings, "kick")
+            
+            if candidates and warn_cog:
+                target = random.choice(candidates)
+                try:
+                    # Apply Kick Logic (Warn Level 3)
+                    await warn_cog.api.warn(
+                        guild=guild,
+                        members=[target],
+                        author=guild.me,
+                        reason=settings.level0_kick_reason,
+                        level=3
+                    )
+                    
+                    # Update DB
+                    warned_users = await self.config.guild(guild).warned_users()
+                    user_warnings = warned_users.get(str(target.id), {})
+                    user_warnings["level0_kick"] = datetime.now(timezone.utc).isoformat()
+                    warned_users[str(target.id)] = user_warnings
+                    await self.config.guild(guild).warned_users.set(warned_users)
+                    
+                    return f"🎲 Roll: {roll:.3f} (< {l0_kick_threshold:.2f}) -> **LEVEL 0 KICK** on {target.display_name}."
+                except Exception as e:
+                    log.error(f"OuijaPoke Lottery Error (L0 Kick): {e}")
+                    return f"🎲 Roll: {roll:.3f} -> Level 0 Kick triggered, but failed to execute WarnSystem API."
+            else:
+                reason = "NO ELIGIBLE CANDIDATES" if not candidates else "WarnSystem NOT LOADED"
+                return f"🎲 Roll: {roll:.3f} (< {l0_kick_threshold:.2f}) -> Level 0 Kick triggered, but **{reason}**."
+
+        # 5. Nothing
         else:
-            return f"🎲 Roll: {roll:.3f} (>= {poke_threshold:.2f}) -> **The spirits are quiet.** (No action taken)."
+            return f"🎲 Roll: {roll:.3f} (>= {l0_kick_threshold:.2f}) -> **The spirits are quiet.** (No action taken)."
 
     async def _send_activity_message_channel(self, channel: discord.TextChannel, member: discord.Member, message_text: str, gif_list: list[str]):
         """Sends the message text and the GIF URL as two separate messages to a specific channel."""
@@ -940,6 +1055,7 @@ class OuijaPoke(commands.Cog):
     # --- User Commands ---
 
     @commands.hybrid_command(name="poke", description="Pokes a random eligible member.")
+    @commands.guild_only()
     async def poke(self, ctx: commands.Context):
         """Pokes a random eligible member."""
         async with ctx.typing():
@@ -954,18 +1070,18 @@ class OuijaPoke(commands.Cog):
                 await self._set_last_action_time(ctx.guild, member_to_poke.id, "last_poked")
                 await self._send_activity_message(ctx, member_to_poke, settings.poke_message, settings.poke_gifs)
             finally:
-                if ctx.channel.permissions_for(ctx.me).manage_messages:
-                    if ctx.interaction:
-                         # Hybrid commands in interaction mode don't have a message to delete in the same way, 
-                         # but we usually don't need to delete the command invocation for slash commands.
-                         pass
+                # Only try to delete if it was a text command, not a slash interaction
+                if ctx.interaction is None:
+                    if ctx.channel.permissions_for(ctx.me).manage_messages:
+                        try:
+                            await ctx.message.delete()
+                        except:
+                            pass
                     else:
-                        await ctx.message.delete()
-                else:
-                     if not ctx.interaction:
                         await ctx.send("I need the `Manage Messages` permission to delete your command message.", delete_after=10)
 
     @commands.hybrid_command(name="summon", description="Summons a random eligible member.")
+    @commands.guild_only()
     async def summon(self, ctx: commands.Context):
         """Summons a random eligible member."""
         async with ctx.typing():
@@ -980,13 +1096,14 @@ class OuijaPoke(commands.Cog):
                 await self._set_last_action_time(ctx.guild, member_to_summon.id, "last_summoned")
                 await self._send_activity_message(ctx, member_to_summon, settings.summon_message, settings.summon_gifs)
             finally:
-                if ctx.channel.permissions_for(ctx.me).manage_messages:
-                    if ctx.interaction:
-                        pass
+                # Only try to delete if it was a text command, not a slash interaction
+                if ctx.interaction is None:
+                    if ctx.channel.permissions_for(ctx.me).manage_messages:
+                        try:
+                            await ctx.message.delete()
+                        except:
+                            pass
                     else:
-                        await ctx.message.delete()
-                else:
-                    if not ctx.interaction:
                         await ctx.send("I need the `Manage Messages` permission to delete your command message.", delete_after=10)
 
     # --- Admin Commands (Settings) ---
@@ -1088,13 +1205,19 @@ class OuijaPoke(commands.Cog):
             next_run_str = "Not Scheduled (Needs Init)"
 
         auto_chan_mention = f"<#{settings.auto_channel_id}>" if settings.auto_channel_id else "Not Set"
+        
+        # Calculate Idle %
+        total_odds = settings.poke_odds + settings.summon_odds + settings.level0_warn_odds + settings.level0_kick_odds
+        idle_odds = max(0, 100 - total_odds)
 
         embed.add_field(
             name="🤖 Automatic Actions (Daily)",
             value=(
                 f"**Auto Channel:** {auto_chan_mention}\n"
                 f"**Next Run:** {next_run_str}\n"
-                f"**Odds:** {settings.poke_odds}% Poke / {settings.summon_odds}% Summon / {100 - settings.poke_odds - settings.summon_odds}% Idle"
+                f"**Odds:** Poke: {settings.poke_odds}% | Summon: {settings.summon_odds}%\n"
+                f"**L0 Actions:** Warn: {settings.level0_warn_odds}% | Kick: {settings.level0_kick_odds}%\n"
+                f"**Idle (Nothing):** {idle_odds}%"
             ),
             inline=False
         )
@@ -1415,18 +1538,21 @@ class OuijaPoke(commands.Cog):
     
     @ouijaset.group(name="odds", invoke_without_command=True)
     async def ouijaset_odds(self, ctx: commands.Context):
-        """Manages the probabilities for automatic pokes and summons."""
+        """Manages the probabilities for automatic events (Poke, Summon, L0 Warn, L0 Kick)."""
         settings = await self._get_settings(ctx.guild)
-        total = settings.poke_odds + settings.summon_odds
+        total = settings.poke_odds + settings.summon_odds + settings.level0_warn_odds + settings.level0_kick_odds
         
         embed = discord.Embed(
             title="🎲 Event Odds",
             description=f"Total Event Chance: **{total}%**\nIdle Chance: **{max(0, 100 - total)}%**",
             color=discord.Color.blue()
         )
-        embed.add_field(name="Poke Odds", value=f"{settings.poke_odds}%")
-        embed.add_field(name="Summon Odds", value=f"{settings.summon_odds}%")
-        embed.set_footer(text="Use [p]ouijaset odds poke/summon <percent> to change.")
+        embed.add_field(name="👉 Poke", value=f"{settings.poke_odds}%")
+        embed.add_field(name="👻 Summon", value=f"{settings.summon_odds}%")
+        embed.add_field(name="🟠 Level 0 Warn", value=f"{settings.level0_warn_odds}%")
+        embed.add_field(name="🔴 Level 0 Kick", value=f"{settings.level0_kick_odds}%")
+        
+        embed.set_footer(text="Use [p]ouijaset odds <type> <percent> to change.")
         
         await ctx.send(embed=embed)
 
@@ -1438,8 +1564,10 @@ class OuijaPoke(commands.Cog):
             
         settings = await self._get_settings(ctx.guild)
         
-        if percent + settings.summon_odds > 100:
-            return await ctx.send(f"Cannot set poke to {percent}% because summon is {settings.summon_odds}%. Total cannot exceed 100%.")
+        # Calculate other odds
+        other_odds = settings.summon_odds + settings.level0_warn_odds + settings.level0_kick_odds
+        if percent + other_odds > 100:
+            return await ctx.send(f"Cannot set poke to {percent}% because other odds sum to {other_odds}%. Total cannot exceed 100%.")
             
         settings.poke_odds = percent
         await self._set_settings(ctx.guild, settings)
@@ -1453,12 +1581,45 @@ class OuijaPoke(commands.Cog):
             
         settings = await self._get_settings(ctx.guild)
         
-        if percent + settings.poke_odds > 100:
-            return await ctx.send(f"Cannot set summon to {percent}% because poke is {settings.poke_odds}%. Total cannot exceed 100%.")
+        other_odds = settings.poke_odds + settings.level0_warn_odds + settings.level0_kick_odds
+        if percent + other_odds > 100:
+            return await ctx.send(f"Cannot set summon to {percent}% because other odds sum to {other_odds}%. Total cannot exceed 100%.")
             
         settings.summon_odds = percent
         await self._set_settings(ctx.guild, settings)
         await ctx.send(f"Summon odds set to **{percent}%**.")
+
+    @ouijaset_odds.command(name="level0warn")
+    async def odds_level0warn(self, ctx: commands.Context, percent: int):
+        """Sets the percentage chance (0-100) to warn a random 'Still Level 0' member."""
+        if percent < 0 or percent > 100:
+            return await ctx.send("Percentage must be between 0 and 100.")
+            
+        settings = await self._get_settings(ctx.guild)
+        
+        other_odds = settings.poke_odds + settings.summon_odds + settings.level0_kick_odds
+        if percent + other_odds > 100:
+            return await ctx.send(f"Cannot set L0 Warn to {percent}% because other odds sum to {other_odds}%. Total cannot exceed 100%.")
+            
+        settings.level0_warn_odds = percent
+        await self._set_settings(ctx.guild, settings)
+        await ctx.send(f"Level 0 Warn odds set to **{percent}%**.")
+
+    @ouijaset_odds.command(name="level0kick")
+    async def odds_level0kick(self, ctx: commands.Context, percent: int):
+        """Sets the percentage chance (0-100) to KICK a random 'Still Level 0' member."""
+        if percent < 0 or percent > 100:
+            return await ctx.send("Percentage must be between 0 and 100.")
+            
+        settings = await self._get_settings(ctx.guild)
+        
+        other_odds = settings.poke_odds + settings.summon_odds + settings.level0_warn_odds
+        if percent + other_odds > 100:
+            return await ctx.send(f"Cannot set L0 Kick to {percent}% because other odds sum to {other_odds}%. Total cannot exceed 100%.")
+            
+        settings.level0_kick_odds = percent
+        await self._set_settings(ctx.guild, settings)
+        await ctx.send(f"Level 0 Kick odds set to **{percent}%**.")
 
     # --- End Odds Configuration ---
 
