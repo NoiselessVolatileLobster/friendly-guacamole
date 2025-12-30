@@ -106,77 +106,11 @@ class SuggestionButton(discord.ui.View):
         self.cog = cog
         self._list_names = list_names 
 
-    @discord.ui.button(label="📬 Suggest Question", style=discord.ButtonStyle.primary, custom_id="qotd_suggest_button")
+    @discord.ui.button(label="Suggest a Question", style=discord.ButtonStyle.primary, custom_id="qotd_suggest_button")
     async def suggest_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         lists_data = await self.cog.config.lists()
         current_list_names = [v['name'] for v in lists_data.values() if v['id'] not in ["suggestions", "unassigned"]]
         await interaction.response.send_modal(SuggestionModal(self.cog, current_list_names))
-
-
-class QuestionMoveView(discord.ui.View):
-    def __init__(self, cog: "QuestionOfTheDay", question_id: str, current_list_id: str, lists_data: dict, ctx: commands.Context):
-        super().__init__(timeout=300)
-        self.cog = cog
-        self.question_id = question_id
-        self.ctx = ctx
-        
-        # Build options
-        options = []
-        # Sort lists by name
-        sorted_lists = sorted(lists_data.items(), key=lambda x: x[1].get('name', ''))
-        
-        # Select limits to 25 items
-        for l_id, l_data in sorted_lists[:25]:
-            is_default = (l_id == current_list_id)
-            options.append(discord.SelectOption(
-                label=l_data['name'][:100], 
-                value=l_id, 
-                description=f"ID: {l_id}"[:100],
-                default=is_default
-            ))
-            
-        self.select = discord.ui.Select(
-            placeholder="Move question to another list...",
-            min_values=1,
-            max_values=1,
-            options=options,
-            custom_id=f"qotd_move_{question_id}"
-        )
-        self.select.callback = self.select_callback
-        self.add_item(self.select)
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # Only allow the command author or admins to use the dropdown
-        if interaction.user.id == self.ctx.author.id or interaction.user.guild_permissions.manage_guild:
-            return True
-        await interaction.response.send_message("You don't have permission to modify this.", ephemeral=True)
-        return False
-
-    async def select_callback(self, interaction: discord.Interaction):
-        new_list_id = self.select.values[0]
-        
-        async with self.cog.config.questions() as questions:
-            if self.question_id not in questions:
-                return await interaction.response.send_message("This question no longer exists.", ephemeral=True)
-            
-            questions[self.question_id]['list_id'] = new_list_id
-            
-        lists_data = await self.cog.config.lists()
-        new_list_name = lists_data.get(new_list_id, {}).get('name', 'Unknown')
-
-        # Update the embed to reflect changes
-        embed = interaction.message.embeds[0]
-        for i, field in enumerate(embed.fields):
-            if field.name == "List":
-                embed.set_field_at(i, name="List", value=f"{new_list_name} (`{new_list_id}`)", inline=True)
-                break
-        
-        # Update dropdown default value
-        for opt in self.select.options:
-            opt.default = (opt.value == new_list_id)
-        
-        await interaction.response.edit_message(embed=embed, view=self)
-        await interaction.followup.send(f"Moved question to list **{new_list_name}**.", ephemeral=True)
 
 
 class ApprovalView(discord.ui.View):
@@ -673,9 +607,7 @@ class QuestionOfTheDay(commands.Cog):
         added_ts = discord.utils.format_dt(question.added_on, 'f')
         embed.add_field(name="Created On", value=added_ts, inline=False)
         
-        # Add the View with dropdown
-        view = QuestionMoveView(self, matched_qid, question.list_id, lists_data, ctx)
-        await ctx.send(embed=embed, view=view)
+        await ctx.send(embed=embed)
 
     @qotd_question.command(name="remove")
     async def qotd_question_remove(self, ctx: commands.Context, question_id: str):
@@ -1015,6 +947,102 @@ class QuestionOfTheDay(commands.Cog):
             time_info = f" at **{schedule.post_time} UTC**" if schedule.post_time else ""
             field_value = f"**List:** `{list_name}`\n**Channel:** {channel_mention}\n**Frequency:** `{schedule.frequency}`{time_info}\n**Next Run:** {next_run_str}"
             embed.add_field(name=f"Schedule ID: `{schedule_id}`", value=field_value, inline=False)
+        await ctx.send(embed=embed)
+
+    @qotd_schedule_management.command(name="upcoming")
+    async def qotd_schedule_upcoming(self, ctx: commands.Context):
+        """Shows the projected schedule for the next 7 days."""
+        schedules_data = await self.config.schedules()
+        lists_data = await self.config.lists()
+        
+        if not schedules_data:
+            return await ctx.send("No schedules configured.")
+
+        events = []
+        now_utc = datetime.now(timezone.utc)
+        end_time = now_utc + timedelta(days=7)
+        
+        # Load lists for name lookup
+        lists = {k: v.get('name', 'Unknown') for k, v in lists_data.items()}
+        # Need exclusion data too
+        list_objects = {}
+        for k, v in lists_data.items():
+            try:
+                list_objects[k] = QuestionList.model_validate(v)
+            except ValidationError:
+                continue
+
+        for schedule_id, schedule_dict in schedules_data.items():
+            try:
+                # Fix datetime string if needed
+                if isinstance(schedule_dict.get('next_run_time'), str):
+                    schedule_dict['next_run_time'] = datetime.fromisoformat(schedule_dict['next_run_time'])
+                
+                # Ensure tzinfo
+                if schedule_dict['next_run_time'].tzinfo is None:
+                    schedule_dict['next_run_time'] = schedule_dict['next_run_time'].replace(tzinfo=timezone.utc)
+
+                schedule = Schedule.model_validate(schedule_dict)
+            except (ValidationError, ValueError):
+                continue
+
+            # Simulate
+            sim_time = schedule.next_run_time
+            # Safety break to prevent infinite loops in bad freq configurations
+            safety_count = 0 
+            
+            while sim_time <= end_time and safety_count < 1000:
+                safety_count += 1
+                
+                # Only include if in the future
+                if sim_time > now_utc:
+                    active_list_id = await self._get_active_list_id(schedule, sim_time)
+                    
+                    if active_list_id:
+                        # Check list exclusions
+                        is_excluded = False
+                        if active_list_id in list_objects:
+                             current_md = sim_time.strftime("%m-%d")
+                             if current_md in list_objects[active_list_id].exclusion_dates:
+                                 is_excluded = True
+                        
+                        if not is_excluded:
+                            list_name = lists.get(active_list_id, "Unknown List")
+                            channel = self.bot.get_channel(schedule.channel_id)
+                            channel_name = channel.mention if channel else f"<#{schedule.channel_id}>"
+                            
+                            events.append({
+                                "time": sim_time,
+                                "list": list_name,
+                                "channel": channel_name,
+                                "schedule_id": schedule_id
+                            })
+                
+                # Calculate next
+                next_sim = self._calculate_next_run_time(schedule, sim_time)
+                if next_sim <= sim_time:
+                    break # Stop if time doesn't advance
+                sim_time = next_sim
+
+        if not events:
+            return await ctx.send("No posts scheduled for the next 7 days.")
+
+        events.sort(key=lambda x: x['time'])
+        
+        embed = discord.Embed(title="📅 Upcoming QOTD Posts (Next 7 Days)", color=discord.Color.blue())
+        
+        description = ""
+        for event in events:
+            ts = discord.utils.format_dt(event['time'], "f")
+            rel = discord.utils.format_dt(event['time'], "R")
+            line = f"• {ts} ({rel})\n  **{event['list']}** in {event['channel']}\n"
+            
+            if len(description) + len(line) > 4000:
+                description += "\n...and more."
+                break
+            description += line
+            
+        embed.description = description
         await ctx.send(embed=embed)
 
     @qotd_schedule_management.group(name="rule")
