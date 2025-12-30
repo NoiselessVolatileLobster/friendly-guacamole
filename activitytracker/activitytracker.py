@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 import random
 import re
 import logging
+import json
+import io
 from typing import Union, List, Tuple, Dict, Optional
 
 # Pydantic is used for structured configuration in modern Red cogs
@@ -2222,3 +2224,57 @@ class ActivityTracker(commands.Cog):
                 await ctx.send("Data reset.")
         except TimeoutError:
             await ctx.send("Cancelled.")
+
+    # --- Export / Import ---
+
+    @activityset.command(name="export")
+    async def activityset_export(self, ctx: commands.Context):
+        """Exports all settings and user activity data to a JSON file."""
+        data = await self.config.guild(ctx.guild).all()
+        
+        # Convert to JSON
+        file_content = json.dumps(data, indent=4)
+        f = io.BytesIO(file_content.encode('utf-8'))
+        
+        await ctx.send(
+            content="Here is your ActivityTracker configuration export.",
+            file=discord.File(f, filename=f"activity_export_{ctx.guild.id}.json")
+        )
+
+    @activityset.command(name="import")
+    async def activityset_import(self, ctx: commands.Context):
+        """Imports settings and data from a JSON file attached to the message."""
+        if not ctx.message.attachments:
+            return await ctx.send("Please attach a valid JSON export file to this command.")
+        
+        attachment = ctx.message.attachments[0]
+        if not attachment.filename.endswith(".json"):
+            return await ctx.send("File must be a .json file.")
+            
+        try:
+            content = await attachment.read()
+            data = json.loads(content)
+            
+            # Basic Validation: Check if specific expected keys exist
+            if "activity_settings" not in data and "last_seen" not in data:
+                 return await ctx.send("Invalid format: Missing core keys (activity_settings or last_seen).")
+
+            # Confirmation
+            await ctx.send("⚠️ **Warning:** This will overwrite **ALL** current settings and user history for this guild.\nType `yes` to confirm.")
+            
+            def check(m):
+                return m.author == ctx.author and m.channel == ctx.channel and m.content.lower() == "yes"
+            
+            try:
+                await self.bot.wait_for("message", check=check, timeout=30)
+            except TimeoutError:
+                return await ctx.send("Import cancelled.")
+            
+            await self.config.guild(ctx.guild).set(data)
+            await ctx.send("✅ Data imported successfully.")
+            
+        except json.JSONDecodeError:
+            await ctx.send("❌ Failed to parse JSON. File is corrupted or invalid.")
+        except Exception as e:
+            log.error(f"Import failed: {e}", exc_info=True)
+            await ctx.send(f"❌ An error occurred during import: {e}")
