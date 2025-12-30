@@ -2210,6 +2210,20 @@ class ActivityTracker(commands.Cog):
         await self._update_last_seen(ctx.guild, member.id)
         await ctx.send(f"✅ **{member.display_name}** has been marked as active. Their timer and warnings are reset.")
 
+    @activityset.command(name="markinactive")
+    async def activityset_markinactive(self, ctx: commands.Context, member: discord.Member):
+        """
+        Manually marks a user as inactive (sets last seen to 1 year ago).
+        
+        This effectively makes them eligible for pokes, summons, or kicks immediately on the next loop.
+        """
+        one_year_ago = datetime.now(timezone.utc) - timedelta(days=365)
+        
+        async with self.config.guild(ctx.guild).last_seen() as data:
+            data[str(member.id)] = one_year_ago.isoformat()
+            
+        await ctx.send(f"💤 **{member.display_name}** has been marked as inactive (Last seen set to 1 year ago).")
+
     @activityset.command(name="resetactivity")
     @checks.is_owner()
     async def activityset_resetactivity(self, ctx: commands.Context):
