@@ -63,6 +63,10 @@ class OuijaSettings(BaseModel):
     required_messages: int = Field(default=1, ge=1, description="Number of messages required to count as active.")
     required_window_hours: float = Field(default=0, ge=0, description="Time window (in hours) for the message count.")
     min_message_length: int = Field(default=0, ge=0, description="Minimum characters in a message to count.")
+
+    # Voice Activity Settings
+    voice_req_minutes: int = Field(default=10, ge=1, description="Minutes in voice required to count as active.")
+    voice_req_users: int = Field(default=2, ge=1, description="Minimum users in voice channel to count activity.")
     
     poke_message: str = Field(
         default="Hey {user_mention}, the Ouija Board feels your presence. Come say hello!",
@@ -423,6 +427,26 @@ class OuijaPoke(commands.Cog):
                 settings_data = await self.config.guild(guild).ouija_settings()
                 settings = OuijaSettings(**settings_data)
                 
+                # --- NEW: Periodic Voice Activity Check ---
+                # This ensures users currently in long voice sessions are marked active
+                # without needing to disconnect first.
+                if settings.voice_req_minutes > 0:
+                    for vc in guild.voice_channels:
+                        # "with at least one more user" => Total >= voice_req_users
+                        if len(vc.members) >= settings.voice_req_users:
+                            now = datetime.now(timezone.utc)
+                            for member in vc.members:
+                                if member.bot: continue
+                                
+                                # We use the tracking dict to see how long they've been here
+                                start_time = self.voice_connect_times.get(member.id)
+                                if start_time:
+                                    duration = now - start_time
+                                    if duration >= timedelta(minutes=settings.voice_req_minutes):
+                                        # They have been in the channel long enough.
+                                        await self._update_last_seen(guild, member.id)
+                # ------------------------------------------
+
                 # Run Automated Checks (Warnings, No Intro, Level 0)
                 await self._process_automated_checks(guild, settings)
 
@@ -1002,27 +1026,45 @@ class OuijaPoke(commands.Cog):
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        """Tracks voice channel connection duration."""
+        """Tracks voice channel connection duration and participation."""
         if member.bot:
             return
         
-        excluded_channels = await self.config.guild(member.guild).excluded_channels()
+        guild = member.guild
+        excluded_channels = await self.config.guild(guild).excluded_channels()
+        settings = await self._get_settings(guild)
         member_id = member.id
-        
-        if after.channel is not None and before.channel != after.channel:
-            if after.channel.id in excluded_channels:
-                return
-            
-            if not after.self_mute and not after.self_deaf and not after.mute and not after.deaf:
-                self.voice_connect_times[member_id] = datetime.now(timezone.utc)
-        
-        if before.channel is not None and after.channel is None:
+        now = datetime.now(timezone.utc)
+
+        # --- A. HANDLE LEAVING/SWITCHING (Session End) ---
+        # If user was in a channel before (before.channel is not None), they are leaving it (or switching)
+        if before.channel is not None:
+            # We only credit if they had an open session tracker
             if member_id in self.voice_connect_times:
-                join_time = self.voice_connect_times.pop(member_id)
-                duration = datetime.now(timezone.utc) - join_time
+                start_time = self.voice_connect_times.pop(member_id)
+                duration = now - start_time
                 
-                if duration >= timedelta(minutes=5):
-                    await self._update_last_seen(member.guild, member.id)
+                # Condition 1: Duration check
+                if duration >= timedelta(minutes=settings.voice_req_minutes):
+                    # Condition 2: Population check (User + at least one more = Total >= voice_req_users)
+                    # We check the channel they just LEFT.
+                    # Note: When this event fires, the user has already left/switched in terms of Discord state?
+                    # Actually, for 'before', it represents the state immediately prior.
+                    # So 'len(before.channel.members)' includes the user.
+                    if len(before.channel.members) >= settings.voice_req_users:
+                        await self._update_last_seen(guild, member_id)
+
+        # --- B. HANDLE JOINING/SWITCHING (Session Start) ---
+        # If user is now in a channel
+        if after.channel is not None:
+            # Exclusion Check
+            if after.channel.id in excluded_channels:
+                return # Do not track excluded channels
+            
+            # (Optional) We can filter deafened users if desired, but user didn't explicitly ask for it.
+            # Sticking to previous pattern of ignoring deafened users to prevent AFK farming.
+            if not after.self_mute and not after.self_deaf and not after.mute and not after.deaf:
+                self.voice_connect_times[member_id] = now
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
@@ -1186,7 +1228,8 @@ class OuijaPoke(commands.Cog):
             name="🏃 Activity Logic",
             value=(
                 f"**Definition:** {burst_desc}\n"
-                f"**Min Char Length:** {settings.min_message_length} chars"
+                f"**Min Char Length:** {settings.min_message_length} chars\n"
+                f"**Voice:** {settings.voice_req_minutes} mins (with {settings.voice_req_users}+ users)"
             ),
             inline=False
         )
@@ -1642,6 +1685,25 @@ class OuijaPoke(commands.Cog):
         await self._set_settings(ctx.guild, settings)
         
         await ctx.send(f"Activity threshold updated: Users must send **{messages} messages** within **{hours} hours** to be seen.")
+
+    @ouijaset.command(name="voicethreshold")
+    async def ouijaset_voicethreshold(self, ctx: commands.Context, minutes: int, min_users: int):
+        """
+        Sets the requirement for voice activity.
+        
+        Args:
+            minutes: Minimum minutes in a channel to count as active.
+            min_users: Minimum total users in the channel (including self).
+        """
+        if minutes < 1 or min_users < 1:
+            return await ctx.send("Minutes and users must be >= 1.")
+        
+        settings = await self._get_settings(ctx.guild)
+        settings.voice_req_minutes = minutes
+        settings.voice_req_users = min_users
+        await self._set_settings(ctx.guild, settings)
+        
+        await ctx.send(f"Voice threshold updated: Users must spend **{minutes} minutes** in a channel with **{min_users}+ total users** to be seen.")
 
     @ouijaset.command(name="minlength")
     async def ouijaset_minlength(self, ctx: commands.Context, length: int):
