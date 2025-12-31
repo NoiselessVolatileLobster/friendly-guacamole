@@ -313,11 +313,6 @@ class QuestionOfTheDay(commands.Cog):
             0: Explicitly excluded.
             999: No specific rule found (Low priority/Ignore).
         """
-        # Sort rules to find specific matches? Or just take the first match?
-        # Let's say we look for ANY match. If multiple match, we take the one with the 'best' (lowest) priority number that isn't 0?
-        # Or simpler: First rule that covers the date wins.
-        
-        # We need a defined order. Let's assume the user manages the order or we just pick the "best" priority assigned to this day.
         best_priority = 999 
         
         has_match = False
@@ -351,11 +346,6 @@ class QuestionOfTheDay(commands.Cog):
                 
                 prio = await self._resolve_list_priority(l_obj, now_utc)
                 
-                # Filter: Priority 0 is Exclude. Priority 999 is "Not Configured".
-                # If you want lists to be postable by default, change 999 logic.
-                # Assuming "Explicit Configuration Required" or "Default Low Priority" based on user prompt.
-                # User example showed explicit general config. 
-                # We will treat 999 as "Do not use" to prevent random lists from posting off-season.
                 if prio > 0 and prio < 999:
                     candidates.append((prio, l_obj))
                     
@@ -579,6 +569,8 @@ class QuestionOfTheDay(commands.Cog):
     async def qotd_set_view(self, ctx: commands.Context):
         """View all configurations, lists, and schedules."""
         
+        embed = discord.Embed(title="Question of the Day Configuration", color=await ctx.embed_color())
+
         # 1. Global Config
         suggestion_reward = await self.config.suggestion_reward()
         approval_reward = await self.config.approval_reward()
@@ -586,58 +578,70 @@ class QuestionOfTheDay(commands.Cog):
         approval_channel = self.bot.get_channel(approval_channel_id).mention if approval_channel_id else "Not Set"
         currency = await bank.get_currency_name(ctx.guild)
 
-        msg = f"**Global Settings**\n"
-        msg += f"Suggestion Reward: {suggestion_reward} {currency}\n"
-        msg += f"Approval Reward: {approval_reward} {currency}\n"
-        msg += f"Approval Channel: {approval_channel}\n"
+        global_settings = (
+            f"**Suggestion Reward:** {suggestion_reward} {currency}\n"
+            f"**Approval Reward:** {approval_reward} {currency}\n"
+            f"**Approval Channel:** {approval_channel}"
+        )
+        embed.add_field(name="Global Settings", value=global_settings, inline=False)
 
         # 2. Lists
         lists_data = await self.config.lists()
         all_questions = await self.config.questions()
-        msg += f"\n**Question Lists & Priorities**\n"
+        
+        list_text = ""
         if not lists_data:
-            msg += "No lists defined.\n"
+            list_text = "No lists defined."
         else:
             for lid, ldata in lists_data.items():
-                ldata = self._migrate_list_dict(ldata) # Temp migrate for view
+                ldata = self._migrate_list_dict(ldata) 
+                
                 count = sum(1 for q in all_questions.values() if q.get('list_id') == lid)
-                msg += f"\n`{lid}`: **{ldata['name']}** ({count} questions)\n"
+                list_text += f"**{ldata['name']}** (`{lid}`): {count} questions\n"
                 
                 if 'priority_rules' in ldata and ldata['priority_rules']:
-                    # Sort rules by start date for cleaner viewing
                     sorted_rules = sorted(ldata['priority_rules'], key=lambda x: x['start_md'])
                     for r in sorted_rules:
-                        p_str = f"Priority {r['priority']}" if r['priority'] > 0 else "Exclusion (0)"
-                        msg += f"- {r['start_md']} to {r['end_md']}: {p_str}\n"
-                else:
-                    msg += "- (No priority set - will not post)\n"
+                        p_str = f"Priority {r['priority']}" if r['priority'] > 0 else "Excluded"
+                        list_text += f"└ {r['start_md']} to {r['end_md']}: {p_str}\n"
+
+        if len(list_text) > 1024:
+            list_text = list_text[:1021] + "..."
+        
+        if not list_text: list_text = "No lists configured."
+
+        embed.add_field(name="Question Lists & Priorities", value=list_text, inline=False)
 
         # 3. Schedules
         schedules_data = await self.config.schedules()
-        msg += f"\n**Schedules**\n"
+        schedule_text = ""
+        
         if not schedules_data:
-            msg += "No schedules defined.\n"
+            schedule_text = "No schedules defined."
         else:
             for sid, sdata in schedules_data.items():
                 chan_id = sdata.get('channel_id')
                 chan = ctx.guild.get_channel(chan_id)
                 chan_name = chan.mention if chan else f"Invalid Channel {chan_id}"
                 
-                # Fix run time
                 run_time_str = sdata.get('next_run_time')
+                next_run_str = "Unknown"
                 if isinstance(run_time_str, str):
                     try:
                         rt = datetime.fromisoformat(run_time_str)
                         if rt.tzinfo is None: rt = rt.replace(tzinfo=timezone.utc)
                         next_run_str = discord.utils.format_dt(rt, "R")
                     except: next_run_str = "Invalid Date"
-                else: next_run_str = "Unknown"
 
-                msg += f"\nID `{sid}`: Posting to {chan_name} (Freq: {sdata.get('frequency')})\n"
-                msg += f"- Next Run: {next_run_str}\n"
+                schedule_text += f"**{sid}** in {chan_name}\n"
+                schedule_text += f"└ Freq: `{sdata.get('frequency')}` | Next: {next_run_str}\n"
 
-        for page in box(msg, lang="md").split('\n\n'):
-             if page.strip(): await ctx.send(page)
+        if len(schedule_text) > 1024:
+            schedule_text = schedule_text[:1021] + "..."
+            
+        embed.add_field(name="Schedules", value=schedule_text, inline=False)
+
+        await ctx.send(embed=embed)
 
 
     @qotd_set.command(name="suggestionreward")
