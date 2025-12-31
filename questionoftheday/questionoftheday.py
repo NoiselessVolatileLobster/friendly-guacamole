@@ -1249,6 +1249,11 @@ class QuestionOfTheDay(commands.Cog):
         embed.description = description
         await ctx.send(embed=embed)
 
+    @qotd_schedule_management.group(name="rule")
+    async def qotd_schedule_rule(self, ctx: commands.Context):
+        """Manage date-based rules."""
+        pass
+
     @qotd_schedule_rule.command(name="addpriority")
     async def qotd_schedule_rule_add_priority(self, ctx: commands.Context, schedule_id: str, start_date: str, end_date: str, *list_ids: str):
         """
