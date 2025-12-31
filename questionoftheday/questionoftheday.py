@@ -589,26 +589,28 @@ class QuestionOfTheDay(commands.Cog):
         msg = f"**Global Settings**\n"
         msg += f"Suggestion Reward: {suggestion_reward} {currency}\n"
         msg += f"Approval Reward: {approval_reward} {currency}\n"
-        msg += f"Approval Channel: {approval_channel}\n\n"
+        msg += f"Approval Channel: {approval_channel}\n"
 
         # 2. Lists
         lists_data = await self.config.lists()
         all_questions = await self.config.questions()
-        msg += f"**Question Lists & Priorities**\n"
+        msg += f"\n**Question Lists & Priorities**\n"
         if not lists_data:
             msg += "No lists defined.\n"
         else:
             for lid, ldata in lists_data.items():
                 ldata = self._migrate_list_dict(ldata) # Temp migrate for view
                 count = sum(1 for q in all_questions.values() if q.get('list_id') == lid)
-                msg += f"`{lid}`: **{ldata['name']}** ({count} questions)\n"
+                msg += f"\n`{lid}`: **{ldata['name']}** ({count} questions)\n"
                 
                 if 'priority_rules' in ldata and ldata['priority_rules']:
-                    for r in ldata['priority_rules']:
+                    # Sort rules by start date for cleaner viewing
+                    sorted_rules = sorted(ldata['priority_rules'], key=lambda x: x['start_md'])
+                    for r in sorted_rules:
                         p_str = f"Priority {r['priority']}" if r['priority'] > 0 else "Exclusion (0)"
-                        msg += f"   - {r['start_md']} to {r['end_md']}: {p_str}\n"
+                        msg += f"- {r['start_md']} to {r['end_md']}: {p_str}\n"
                 else:
-                    msg += "   - (No priority set - will not post)\n"
+                    msg += "- (No priority set - will not post)\n"
 
         # 3. Schedules
         schedules_data = await self.config.schedules()
@@ -631,8 +633,8 @@ class QuestionOfTheDay(commands.Cog):
                     except: next_run_str = "Invalid Date"
                 else: next_run_str = "Unknown"
 
-                msg += f"ID `{sid}`: Posting to {chan_name} (Freq: {sdata.get('frequency')})\n"
-                msg += f"   - Next Run: {next_run_str}\n"
+                msg += f"\nID `{sid}`: Posting to {chan_name} (Freq: {sdata.get('frequency')})\n"
+                msg += f"- Next Run: {next_run_str}\n"
 
         for page in box(msg, lang="md").split('\n\n'):
              if page.strip(): await ctx.send(page)
