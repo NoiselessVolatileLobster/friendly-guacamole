@@ -18,31 +18,26 @@ from pydantic import BaseModel, Field, ValidationError
 
 # --- Pydantic Models ---
 
-class ScheduleRule(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()).split('-')[0])
-    start_month_day: str
-    end_month_day: str
-    # Permissive Action: Accepts old "use_list" to prevent crashes during migration
-    action: Literal["skip_run", "use_priorities", "use_list"] 
-    priority_overrides: List[str] = Field(default_factory=list)
-    # Permissive Field: Accepts old field to prevent crashes
-    list_id_override: Optional[str] = None 
+class ListPriorityRule(BaseModel):
+    priority: int
+    start_md: str
+    end_md: str
 
 class QuestionList(BaseModel):
     id: str
     name: str
-    exclusion_dates: List[str] = Field(default_factory=list)
+    # Replaces old exclusion_dates. 
+    # Contains rules like: "Priority 1 from 12-01 to 12-25"
+    priority_rules: List[ListPriorityRule] = Field(default_factory=list)
 
 class Schedule(BaseModel):
     id: str
-    # 'list_id' is deprecated but kept for backwards compatibility during migration
-    list_id: Optional[str] = None 
-    priorities: List[str] = Field(default_factory=list)
     channel_id: int
     frequency: str
     post_time: Optional[str] = None 
     next_run_time: datetime
-    rules: List[ScheduleRule] = Field(default_factory=list)
+    # Note: Schedules no longer hold list references or rules. 
+    # They are purely "When" and "Where". "What" is determined by List configs.
 
 class QuestionData(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -252,22 +247,17 @@ class QuestionOfTheDay(commands.Cog):
             log.error(f"Failed to deposit {amount} credits to {member.id}: {e}")
             return False
             
-    def _migrate_schedule_dict(self, s_dict: dict) -> dict:
-        """Helper to safely migrate old schedule dicts to new schema in-memory."""
-        # 1. Migrate single list_id to priorities
-        if s_dict.get('list_id') and not s_dict.get('priorities'):
-            s_dict['priorities'] = [s_dict['list_id']]
-            
-        # 2. Migrate Rules
-        if 'rules' in s_dict:
-            for rule in s_dict['rules']:
-                # Convert old "use_list" action to "use_priorities"
-                if rule.get('action') == 'use_list':
-                    rule['action'] = 'use_priorities'
-                    # Convert single list_id_override to list
-                    if rule.get('list_id_override') and not rule.get('priority_overrides'):
-                        rule['priority_overrides'] = [rule['list_id_override']]
-        return s_dict
+    def _migrate_list_dict(self, l_dict: dict) -> dict:
+        """Migrate old list structure to new priority rules."""
+        # Convert old exclusion_dates to Priority 0 rules if they exist
+        if 'exclusion_dates' in l_dict:
+            exclusions = l_dict.pop('exclusion_dates', [])
+            if exclusions and not l_dict.get('priority_rules'):
+                new_rules = []
+                for date_str in exclusions:
+                    new_rules.append({'priority': 0, 'start_md': date_str, 'end_md': date_str})
+                l_dict['priority_rules'] = new_rules
+        return l_dict
 
     @tasks.loop(minutes=1)
     async def qotd_poster(self):
@@ -285,8 +275,10 @@ class QuestionOfTheDay(commands.Cog):
                         dt_obj = dt_obj.replace(tzinfo=timezone.utc)
                     schedule_dict['next_run_time'] = dt_obj
                 
-                # 2. Migration
-                schedule_dict = self._migrate_schedule_dict(schedule_dict)
+                # 2. Cleanup old fields for Pydantic
+                schedule_dict.pop('list_id', None)
+                schedule_dict.pop('priorities', None)
+                schedule_dict.pop('rules', None)
                 
                 # 3. Validation
                 schedule = Schedule.model_validate(schedule_dict)
@@ -302,87 +294,99 @@ class QuestionOfTheDay(commands.Cog):
                     log.exception(f"Critical error during _post_scheduled_question for {schedule_id}: {e}")
                     await self._update_schedule_next_run(schedule_id, schedule, now_utc)
 
-    def _is_date_active(self, start_md: str, end_md: str, check_date: datetime) -> bool:
+    def _is_date_in_range(self, check_date: datetime, start_md: str, end_md: str) -> bool:
+        """Checks if a date falls within MM-DD range, handling year wrap."""
         try:
             current_md = check_date.strftime("%m-%d")
             if start_md <= end_md:
                 return start_md <= current_md <= end_md
-            # Handles wrap around years (e.g. Dec 25 to Jan 5)
+            # Handles wrap around (e.g. 12-25 to 01-05)
             return current_md >= start_md or current_md <= end_md
         except ValueError:
             return False
 
-    async def _resolve_active_lists(self, schedule: Schedule, now_utc: datetime) -> List[str]:
+    async def _resolve_list_priority(self, list_obj: QuestionList, now_utc: datetime) -> int:
         """
-        Determines the priority queue of lists to check for this run.
-        Returns a list of list_ids.
+        Determines the priority of a list for the given date.
+        Returns:
+            int: The priority number (1 is highest).
+            0: Explicitly excluded.
+            999: No specific rule found (Low priority/Ignore).
         """
-        # 1. Check Rules (Overrides)
-        for rule in schedule.rules:
-            try:
-                if self._is_date_active(rule.start_month_day, rule.end_month_day, now_utc):
-                    if rule.action == "skip_run":
-                        return [] # Return empty list -> acts as skip
-                    # Handle both old and new action names just in case
-                    if rule.action in ["use_priorities", "use_list"]:
-                        if rule.priority_overrides:
-                            return rule.priority_overrides 
-                        elif rule.list_id_override:
-                            return [rule.list_id_override]
-            except Exception:
-                continue
+        # Sort rules to find specific matches? Or just take the first match?
+        # Let's say we look for ANY match. If multiple match, we take the one with the 'best' (lowest) priority number that isn't 0?
+        # Or simpler: First rule that covers the date wins.
         
-        # 2. Return standard priority list
-        if not schedule.priorities:
-            if schedule.list_id: return [schedule.list_id]
-            return ["general"]
+        # We need a defined order. Let's assume the user manages the order or we just pick the "best" priority assigned to this day.
+        best_priority = 999 
+        
+        has_match = False
+        for rule in list_obj.priority_rules:
+            if self._is_date_in_range(now_utc, rule.start_md, rule.end_md):
+                has_match = True
+                if rule.priority == 0:
+                    return 0 # Explicit exclusion overrides everything
+                if rule.priority < best_priority:
+                    best_priority = rule.priority
+        
+        if not has_match:
+            return 999 # Not configured for this day
             
-        return schedule.priorities
+        return best_priority
 
     async def _post_scheduled_question(self, schedule_id: str, schedule: Schedule):
         now_utc = datetime.now(timezone.utc)
         
-        # Get the priority queue of lists to check
-        target_list_ids = await self._resolve_active_lists(schedule, now_utc)
-        
-        if not target_list_ids:
-            log.info(f"Schedule {schedule_id} skipped due to active skip rule.")
-            await self._update_schedule_next_run(schedule_id, schedule, now_utc)
-            return
-
         lists_data = await self.config.lists()
         questions_data = await self.config.questions()
+
+        # 1. Calculate Priority for ALL lists
+        candidates = []
+        for l_id, l_data in lists_data.items():
+            if l_id in ["suggestions", "unassigned"]: continue
+            
+            try:
+                l_data = self._migrate_list_dict(l_data)
+                l_obj = QuestionList.model_validate(l_data)
+                
+                prio = await self._resolve_list_priority(l_obj, now_utc)
+                
+                # Filter: Priority 0 is Exclude. Priority 999 is "Not Configured".
+                # If you want lists to be postable by default, change 999 logic.
+                # Assuming "Explicit Configuration Required" or "Default Low Priority" based on user prompt.
+                # User example showed explicit general config. 
+                # We will treat 999 as "Do not use" to prevent random lists from posting off-season.
+                if prio > 0 and prio < 999:
+                    candidates.append((prio, l_obj))
+                    
+            except ValidationError:
+                continue
+
+        # 2. Sort by Priority (Ascending: 1, 2, 3...)
+        candidates.sort(key=lambda x: x[0])
+        
+        if not candidates:
+            log.info(f"Schedule {schedule_id}: No active lists found for today ({now_utc.strftime('%m-%d')}).")
+            await self._update_schedule_next_run(schedule_id, schedule, now_utc)
+            return
 
         selected_q = None
         selected_qid = None
         selected_list_name = ""
 
-        # Iterate through priorities. First list with a valid question wins.
-        for target_list_id in target_list_ids:
-            try:
-                target_list_dict = lists_data.get(target_list_id)
-                if not target_list_dict:
-                    continue
-                target_list = QuestionList.model_validate(target_list_dict)
-            except ValidationError:
-                continue
-            
-            # Check exclusions
-            current_md = now_utc.strftime("%m-%d")
-            if current_md in target_list.exclusion_dates:
-                continue
-
-            # Find eligible questions in this list
+        # 3. Iterate candidates to find a valid question
+        for prio, target_list in candidates:
+            # Find eligible questions
             eligible_q_data = {
                 qid: qdata
                 for qid, qdata in questions_data.items()
-                if qdata.get("list_id") == target_list_id and qdata.get("status") in ("not asked", "asked")
+                if qdata.get("list_id") == target_list.id and qdata.get("status") in ("not asked", "asked")
             }
             
             if not eligible_q_data:
-                continue # Try next list in priority
+                continue 
 
-            # Process questions objects
+            # Process objects
             eligible_q_objs = []
             for qid, qdata in eligible_q_data.items():
                 try:
@@ -403,7 +407,7 @@ class QuestionOfTheDay(commands.Cog):
                 selected_q = random.choice(not_asked)
                 selected_qid = selected_q.id
             else:
-                # If all asked, recycle oldest
+                # Recycle oldest
                 def sort_key(q):
                     if q.last_asked is None: 
                         return timedelta(days=3650).total_seconds() 
@@ -411,18 +415,17 @@ class QuestionOfTheDay(commands.Cog):
                         q.last_asked = q.last_asked.replace(tzinfo=timezone.utc)
                     return (now_utc - q.last_asked).total_seconds()
                 
-                eligible_q_objs.sort(key=sort_key, reverse=False) # Ascending time (oldest first)
-                # Pick from top 5 oldest to add slight randomness
+                eligible_q_objs.sort(key=sort_key, reverse=False)
                 top_candidates = eligible_q_objs[:min(5, len(eligible_q_objs))]
                 selected_q = random.choice(top_candidates)
                 selected_qid = selected_q.id
 
             if selected_q:
                 selected_list_name = target_list.name
-                break # Found a question! Stop checking other lists.
+                break # Found a question
 
         if not selected_q:
-             log.info(f"No eligible questions found in any priority lists for schedule {schedule_id}.")
+             log.info(f"Schedule {schedule_id}: Lists available {len(candidates)}, but no valid questions found.")
              await self._update_schedule_next_run(schedule_id, schedule, now_utc)
              return
 
@@ -497,12 +500,7 @@ class QuestionOfTheDay(commands.Cog):
     async def _update_schedule_next_run(self, schedule_id: str, schedule: Schedule, last_run: datetime):
         schedule.next_run_time = self._calculate_next_run_time(schedule, last_run)
         
-        # Ensure migration data is saved
-        if schedule.priorities and not schedule.list_id:
-             pass
-        elif schedule.list_id and not schedule.priorities:
-             schedule.priorities = [schedule.list_id]
-
+        # Serialize simply
         serialized_schedule = json.loads(schedule.model_dump_json())
         async with self.config.schedules() as schedules:
             schedules[schedule_id] = serialized_schedule
@@ -596,21 +594,21 @@ class QuestionOfTheDay(commands.Cog):
         # 2. Lists
         lists_data = await self.config.lists()
         all_questions = await self.config.questions()
-        msg += f"**Question Lists**\n"
+        msg += f"**Question Lists & Priorities**\n"
         if not lists_data:
             msg += "No lists defined.\n"
         else:
             for lid, ldata in lists_data.items():
+                ldata = self._migrate_list_dict(ldata) # Temp migrate for view
                 count = sum(1 for q in all_questions.values() if q.get('list_id') == lid)
                 msg += f"`{lid}`: **{ldata['name']}** ({count} questions)\n"
-                # Check for exclusions to display
-                if 'exclusion_dates' in ldata and ldata['exclusion_dates']:
-                     # Show first few exclusions if list is long
-                     excl_preview = humanize_list(ldata['exclusion_dates'][:5])
-                     if len(ldata['exclusion_dates']) > 5:
-                         excl_preview += f", and {len(ldata['exclusion_dates'])-5} more..."
-                     msg += f"   - Exclusions: {excl_preview}\n"
-
+                
+                if 'priority_rules' in ldata and ldata['priority_rules']:
+                    for r in ldata['priority_rules']:
+                        p_str = f"Priority {r['priority']}" if r['priority'] > 0 else "Exclusion (0)"
+                        msg += f"   - {r['start_md']} to {r['end_md']}: {p_str}\n"
+                else:
+                    msg += "   - (No priority set - will not post)\n"
 
         # 3. Schedules
         schedules_data = await self.config.schedules()
@@ -619,26 +617,22 @@ class QuestionOfTheDay(commands.Cog):
             msg += "No schedules defined.\n"
         else:
             for sid, sdata in schedules_data.items():
-                sdata = self._migrate_schedule_dict(sdata) # Display migration
-                
-                priorities = sdata.get('priorities', [])
-                if not priorities and sdata.get('list_id'):
-                    priorities = [sdata.get('list_id')]
-                
-                list_names = []
-                for pid in priorities:
-                    list_names.append(lists_data.get(pid, {}).get('name', pid))
-                
-                priority_str = " -> ".join(list_names)
                 chan_id = sdata.get('channel_id')
                 chan = ctx.guild.get_channel(chan_id)
                 chan_name = chan.mention if chan else f"Invalid Channel {chan_id}"
                 
-                msg += f"ID `{sid}`: {priority_str} in {chan_name} (Freq: {sdata.get('frequency')})\n"
-                
-                rules = sdata.get('rules', [])
-                if rules:
-                    msg += f"  - **Rules:** {len(rules)} active\n"
+                # Fix run time
+                run_time_str = sdata.get('next_run_time')
+                if isinstance(run_time_str, str):
+                    try:
+                        rt = datetime.fromisoformat(run_time_str)
+                        if rt.tzinfo is None: rt = rt.replace(tzinfo=timezone.utc)
+                        next_run_str = discord.utils.format_dt(rt, "R")
+                    except: next_run_str = "Invalid Date"
+                else: next_run_str = "Unknown"
+
+                msg += f"ID `{sid}`: Posting to {chan_name} (Freq: {sdata.get('frequency')})\n"
+                msg += f"   - Next Run: {next_run_str}\n"
 
         for page in box(msg, lang="md").split('\n\n'):
              if page.strip(): await ctx.send(page)
@@ -890,8 +884,8 @@ class QuestionOfTheDay(commands.Cog):
     async def qotd_list_remove(self, ctx: commands.Context, list_id: str):
         """Removes a list."""
         lists_data = await self.config.lists()
-        schedules_data = await self.config.schedules()
-
+        # No schedule check needed really as schedules don't hold lists anymore
+        
         if list_id not in lists_data:
             return await ctx.send(warning(f"List ID `{list_id}` not found."))
             
@@ -900,14 +894,6 @@ class QuestionOfTheDay(commands.Cog):
             return await ctx.send(warning(f"The system list `{list_id}` cannot be removed."))
             
         list_name = lists_data[list_id]['name']
-
-        used_schedules = []
-        for sid, sdict in schedules_data.items():
-            if list_id in sdict.get('priorities', []):
-                used_schedules.append(sid)
-
-        if used_schedules:
-            return await ctx.send(warning(f"List **{list_name}** is in use by schedules: {humanize_list(used_schedules)}."))
 
         confirm_msg = await ctx.send(warning(f"Are you sure you want to remove list **{list_name}**? Questions will be moved to 'Unassigned'. Type `yes`."))
 
@@ -936,25 +922,7 @@ class QuestionOfTheDay(commands.Cog):
     @qotd_list_management.command(name="view")
     async def qotd_list_view(self, ctx: commands.Context):
         """Displays all available question lists."""
-        lists_data = await self.config.lists()
-        all_questions = await self.config.questions()
-        if not lists_data: return await ctx.send("No question lists defined.")
-        embed = discord.Embed(title="📋 Configured Question Lists", color=discord.Color.gold())
-        for list_id, list_dict in lists_data.items():
-            try:
-                list_obj = QuestionList.model_validate(list_dict)
-            except ValidationError:
-                continue
-            count = sum(1 for q in all_questions.values() if q.get('list_id') == list_id)
-            icon = "🗃️"
-            if list_id == "suggestions": icon = "📩"
-            elif list_id == "unassigned": icon = "❓"
-            
-            list_info = f"**Questions:** {count}"
-            embed.add_field(name=f"{icon} {list_dict['name']} (`{list_id}`)", value=list_info, inline=False)
-            if list_obj.exclusion_dates:
-                 embed.add_field(name="Exclusions", value=humanize_list(list_obj.exclusion_dates), inline=False)
-        await ctx.send(embed=embed)
+        await self.qotd_set_view(ctx)
 
     @qotd_list_management.command(name="clear")
     async def qotd_list_clear(self, ctx: commands.Context, list_id: str):
@@ -979,18 +947,16 @@ class QuestionOfTheDay(commands.Cog):
                 questions_moved += 1
         await ctx.send(success(f"Moved **{questions_moved}** questions to Unassigned."))
 
-    @qotd_list_management.group(name="rule")
-    async def qotd_list_rule(self, ctx: commands.Context):
-        """Manage list-specific exclusion rules."""
-        pass
-        
-    @qotd_list_rule.command(name="addexclusion")
-    async def qotd_list_rule_add(self, ctx: commands.Context, list_id: str, start_date: str, end_date: Optional[str] = None):
+    @qotd_list_management.command(name="priority")
+    async def qotd_list_priority_set(self, ctx: commands.Context, list_id: str, priority: int, start_date: str, end_date: str):
         """
-        Adds exclusion dates to a list.
+        Sets a priority rule for a list.
         
-        You can add a single date: `[p]qotd list rule addexclusion listid 12-25`
-        Or a range of dates: `[p]qotd list rule addexclusion listid 12-25 01-05`
+        Usage: [p]qotd list priority <list_id> <priority_num> <start_MM-DD> <end_MM-DD>
+        
+        - Priority 1 is highest.
+        - Priority 0 means DO NOT POST (Exclusion).
+        - If no rule matches a date, the list will NOT be used.
         """
         lists_data = await self.config.lists()
         if list_id not in lists_data:
@@ -1000,79 +966,42 @@ class QuestionOfTheDay(commands.Cog):
         def validate_date(d_str):
             if len(d_str) != 5 or d_str[2] != '-': return False
             try:
-                datetime.strptime(f"2024-{d_str}", "%Y-%m-%d") # 2024 is a leap year
+                datetime.strptime(f"2024-{d_str}", "%Y-%m-%d") # Use leap year
                 return True
             except ValueError:
                 return False
 
-        if not validate_date(start_date):
-             return await ctx.send(warning(f"Invalid start date `{start_date}`. Use MM-DD."))
-        
-        if end_date and not validate_date(end_date):
-             return await ctx.send(warning(f"Invalid end date `{end_date}`. Use MM-DD."))
+        if not validate_date(start_date) or not validate_date(end_date):
+             return await ctx.send(warning(f"Invalid dates. Use `MM-DD` format (e.g. `12-25`)."))
 
-        dates_to_add = []
-        if not end_date:
-            dates_to_add.append(start_date)
-        else:
-            # Expand range
-            try:
-                # Use a leap year to support Feb 29
-                start = datetime.strptime(f"2024-{start_date}", "%Y-%m-%d")
-                end = datetime.strptime(f"2024-{end_date}", "%Y-%m-%d")
-                
-                # Handle year wrap-around (e.g. Dec 25 to Jan 5)
-                if start > end:
-                    end = datetime.strptime(f"2025-{end_date}", "%Y-%m-%d")
-                
-                curr = start
-                while curr <= end:
-                    dates_to_add.append(curr.strftime("%m-%d"))
-                    curr += timedelta(days=1)
-            except ValueError:
-                 return await ctx.send(warning("Error calculating date range."))
-
-        try:
-            list_obj = QuestionList.model_validate(lists_data[list_id])
-        except ValidationError:
-            return await ctx.send(warning(f"List data for `{list_id}` is invalid."))
+        l_dict = self._migrate_list_dict(lists_data[list_id])
+        l_obj = QuestionList.model_validate(l_dict)
         
-        added_count = 0
-        for d in dates_to_add:
-            if d not in list_obj.exclusion_dates:
-                list_obj.exclusion_dates.append(d)
-                added_count += 1
+        # Create new rule
+        new_rule = ListPriorityRule(priority=priority, start_md=start_date, end_md=end_date)
         
-        # Sort for neatness
-        list_obj.exclusion_dates.sort()
-
+        # Remove any EXACT duplicate ranges to avoid clutter, or maybe just append?
+        # Let's just append for now, simpler logic.
+        l_obj.priority_rules.append(new_rule)
+        
         async with self.config.lists() as lists:
-            lists[list_id] = list_obj.model_dump()
+            lists[list_id] = l_obj.model_dump()
             
-        if end_date:
-            await ctx.send(success(f"Added **{added_count}** new exclusion dates (Range: {start_date} to {end_date}) to list **{list_obj.name}**."))
-        else:
-            if added_count > 0:
-                await ctx.send(success(f"Added exclusion date **{start_date}** to list **{list_obj.name}**."))
-            else:
-                await ctx.send(warning(f"Date **{start_date}** was already excluded in list **{list_obj.name}**."))
+        p_text = f"Priority {priority}" if priority > 0 else "Exclusion (0)"
+        await ctx.send(success(f"Added rule for **{l_obj.name}**: {start_date} to {end_date} = **{p_text}**."))
 
-    @qotd_list_rule.command(name="removeexclusion")
-    async def qotd_list_rule_remove(self, ctx: commands.Context, list_id: str, month_day: str):
-        """Removes a single exclusion day."""
+    @qotd_list_management.command(name="resetpriorities")
+    async def qotd_list_priority_reset(self, ctx: commands.Context, list_id: str):
+        """Removes ALL priority/exclusion rules for a list."""
         lists_data = await self.config.lists()
-        if list_id not in lists_data:
-            return await ctx.send(warning(f"List ID `{list_id}` not found."))
-        try:
-            list_obj = QuestionList.model_validate(lists_data[list_id])
-        except ValidationError:
-            return await ctx.send(warning(f"List data for `{list_id}` is invalid."))
-        if month_day not in list_obj.exclusion_dates:
-            return await ctx.send(warning(f"Date **{month_day}** is not an exclusion."))
-        list_obj.exclusion_dates.remove(month_day)
+        if list_id not in lists_data: return await ctx.send(warning("List not found."))
+        
         async with self.config.lists() as lists:
-            lists[list_id] = list_obj.model_dump()
-        await ctx.send(f"Removed exclusion date **{month_day}** from list **{list_obj.name}**.")
+            l_dict = self._migrate_list_dict(lists[list_id])
+            l_dict['priority_rules'] = []
+            lists[list_id] = l_dict
+            
+        await ctx.send(success(f"Reset all priorities for list `{list_id}`. It will not be posted until new rules are added."))
 
     @qotd.group(name="schedule")
     async def qotd_schedule_management(self, ctx: commands.Context):
@@ -1094,7 +1023,7 @@ class QuestionOfTheDay(commands.Cog):
         if name in schedules_data:
             return await ctx.send(warning(f"A schedule named **{name}** already exists."))
 
-        schedule_id = name # User provided name is now the ID
+        schedule_id = name 
         now_utc = datetime.now(timezone.utc)
         try:
             time_unit = frequency.split()
@@ -1105,47 +1034,18 @@ class QuestionOfTheDay(commands.Cog):
         except (ValueError, IndexError):
             return await ctx.send(warning("Invalid frequency format. Must be like '1 day' or '3 hours'."))
         
-        temp_schedule = Schedule(id=schedule_id, list_id=None, priorities=[], channel_id=channel.id, frequency=frequency, post_time=post_time, next_run_time=now_utc)
+        # Temp schedule to calc run time
+        temp_schedule = Schedule(id=schedule_id, channel_id=channel.id, frequency=frequency, post_time=post_time, next_run_time=now_utc)
         next_run = self._calculate_next_run_time(temp_schedule, now_utc - timedelta(minutes=1)) 
-        new_schedule = Schedule(id=schedule_id, list_id=None, priorities=[], channel_id=channel.id, frequency=frequency, post_time=post_time, next_run_time=next_run)
+        
+        # Real schedule
+        new_schedule = Schedule(id=schedule_id, channel_id=channel.id, frequency=frequency, post_time=post_time, next_run_time=next_run)
         
         serialized_schedule = json.loads(new_schedule.model_dump_json())
         async with self.config.schedules() as schedules:
             schedules[schedule_id] = serialized_schedule
         
-        await ctx.send(f"Added new schedule **{name}**. Next run: {discord.utils.format_dt(next_run, 'R')}.\n⚠️ **Note:** This schedule has no lists yet! Use `[p]qotd schedule setpriorities {name} ...` to add them.")
-
-    @qotd_schedule_management.command(name="setpriorities")
-    async def qotd_schedule_setpriorities(self, ctx: commands.Context, schedule_id: str, *list_ids: str):
-        """
-        Sets the priority list order for a schedule.
-        
-        Usage: [p]qotd schedule setpriorities <schedule_id> <list1> <list2> ...
-        The bot will check list1. If empty, it checks list2, etc.
-        """
-        schedules_data = await self.config.schedules()
-        lists_data = await self.config.lists()
-        
-        if schedule_id not in schedules_data:
-            return await ctx.send(warning(f"Schedule ID `{schedule_id}` not found."))
-            
-        if not list_ids:
-             return await ctx.send(warning("You must provide at least one list ID."))
-
-        validated_ids = []
-        for lid in list_ids:
-            if lid not in lists_data:
-                return await ctx.send(warning(f"List ID `{lid}` not found."))
-            validated_ids.append(lid)
-            
-        async with self.config.schedules() as schedules:
-            sched_dict = schedules[schedule_id]
-            sched_dict['priorities'] = validated_ids
-            if isinstance(sched_dict.get('next_run_time'), datetime):
-                 sched_dict['next_run_time'] = sched_dict['next_run_time'].isoformat()
-            schedules[schedule_id] = sched_dict
-
-        await ctx.send(success(f"Priorities for schedule `{schedule_id}` updated: **{humanize_list(validated_ids)}**."))
+        await ctx.send(f"Added new schedule **{name}** in {channel.mention}. Next run: {discord.utils.format_dt(next_run, 'R')}.")
 
     @qotd_schedule_management.command(name="remove")
     async def qotd_schedule_remove(self, ctx: commands.Context, schedule_id: str):
@@ -1158,67 +1058,13 @@ class QuestionOfTheDay(commands.Cog):
 
     @qotd_schedule_management.command(name="list")
     async def qotd_schedule_list(self, ctx: commands.Context):
-        """Lists all active schedules in a summary format."""
+        """Lists all active schedules."""
         await self.qotd_schedule_view(ctx) 
 
     @qotd_schedule_management.command(name="view")
     async def qotd_schedule_view(self, ctx: commands.Context):
         """Displays all configured schedules."""
-        schedules_data = await self.config.schedules()
-        lists_data = await self.config.lists()
-        if not schedules_data: return await ctx.send("No schedules currently configured.")
-        embed = discord.Embed(title="🗓️ Configured QOTD Schedules", color=discord.Color.blue())
-        for schedule_id, schedule_dict in schedules_data.items():
-            try:
-                # 1. Date Fix
-                next_run_time_data = schedule_dict.get('next_run_time')
-                if isinstance(next_run_time_data, str):
-                    dt_obj = datetime.fromisoformat(next_run_time_data)
-                    if dt_obj.tzinfo is None: dt_obj = dt_obj.replace(tzinfo=timezone.utc)
-                    schedule_dict['next_run_time'] = dt_obj
-                
-                # 2. Migration
-                schedule_dict = self._migrate_schedule_dict(schedule_dict)
-
-                # 3. Validation
-                schedule = Schedule.model_validate(schedule_dict)
-
-            except (ValidationError, ValueError) as e:
-                embed.add_field(name=f"ID: `{schedule_id}`", value=f"Corrupt Data: {e}", inline=False)
-                continue
-            
-            priorities = schedule.priorities
-            if not priorities and schedule.list_id: priorities = [schedule.list_id]
-            
-            p_names = []
-            for pid in priorities:
-                p_names.append(lists_data.get(pid, {}).get('name', pid))
-            priority_display = " -> ".join(p_names) if p_names else "*(No lists configured)*"
-
-            channel = self.bot.get_channel(schedule.channel_id)
-            channel_mention = channel.mention if channel else f"ID: {schedule.channel_id} (Missing)"
-            run_time = schedule.next_run_time
-            if run_time.tzinfo is None: run_time = run_time.replace(tzinfo=timezone.utc)
-            next_run_str = discord.utils.format_dt(run_time, "R")
-            time_info = f" at **{schedule.post_time} UTC**" if schedule.post_time else ""
-            field_value = f"**Lists:** {priority_display}\n**Channel:** {channel_mention}\n**Frequency:** `{schedule.frequency}`{time_info}\n**Next Run:** {next_run_str}"
-            embed.add_field(name=f"Schedule ID: `{schedule_id}`", value=field_value, inline=False)
-            
-            if schedule.rules:
-                 rule_txt = ""
-                 for r in schedule.rules:
-                     if r.action in ["use_priorities", "use_list"]:
-                         # Combine both sources for display logic
-                         ovrs = r.priority_overrides
-                         if not ovrs and r.list_id_override: ovrs = [r.list_id_override]
-                         
-                         r_names = [lists_data.get(pid, {}).get('name', pid) for pid in ovrs]
-                         rule_txt += f"- **{r.start_month_day} to {r.end_month_day}**: Use {', '.join(r_names)}\n"
-                     elif r.action == "skip_run":
-                         rule_txt += f"- **{r.start_month_day} to {r.end_month_day}**: Skip\n"
-                 embed.add_field(name="Rules", value=rule_txt, inline=False)
-                 
-        await ctx.send(embed=embed)
+        await self.qotd_set_view(ctx)
 
     @qotd_schedule_management.command(name="upcoming")
     async def qotd_schedule_upcoming(self, ctx: commands.Context):
@@ -1233,14 +1079,6 @@ class QuestionOfTheDay(commands.Cog):
         now_utc = datetime.now(timezone.utc)
         end_time = now_utc + timedelta(days=7)
         
-        lists = {k: v.get('name', 'Unknown') for k, v in lists_data.items()}
-        list_objects = {}
-        for k, v in lists_data.items():
-            try:
-                list_objects[k] = QuestionList.model_validate(v)
-            except ValidationError:
-                continue
-
         for schedule_id, schedule_dict in schedules_data.items():
             try:
                 if isinstance(schedule_dict.get('next_run_time'), str):
@@ -1249,8 +1087,9 @@ class QuestionOfTheDay(commands.Cog):
                 if schedule_dict['next_run_time'].tzinfo is None:
                     schedule_dict['next_run_time'] = schedule_dict['next_run_time'].replace(tzinfo=timezone.utc)
 
-                # Migration
-                schedule_dict = self._migrate_schedule_dict(schedule_dict)
+                schedule_dict.pop('list_id', None)
+                schedule_dict.pop('priorities', None)
+                schedule_dict.pop('rules', None)
                 schedule = Schedule.model_validate(schedule_dict)
 
             except (ValidationError, ValueError):
@@ -1263,29 +1102,54 @@ class QuestionOfTheDay(commands.Cog):
                 safety_count += 1
                 
                 if sim_time > now_utc:
-                    active_lists = await self._resolve_active_lists(schedule, sim_time)
+                    # Logic to find which list would win
+                    best_list = "None"
+                    best_prio = 999
                     
-                    if active_lists:
-                        display_list_name = "None"
-                        valid_found = False
-                        for lid in active_lists:
-                             if lid in list_objects:
-                                 current_md = sim_time.strftime("%m-%d")
-                                 if current_md not in list_objects[lid].exclusion_dates:
-                                     display_list_name = lists.get(lid, lid)
-                                     valid_found = True
-                                     break
-                        
-                        if valid_found:
-                            channel = self.bot.get_channel(schedule.channel_id)
-                            channel_name = channel.mention if channel else f"<#{schedule.channel_id}>"
+                    for l_id, l_data in lists_data.items():
+                        if l_id in ["suggestions", "unassigned"]: continue
+                        try:
+                            l_data = self._migrate_list_dict(l_data)
+                            l_obj = QuestionList.model_validate(l_data)
                             
-                            events.append({
-                                "time": sim_time,
-                                "list": display_list_name,
-                                "channel": channel_name,
-                                "schedule_id": schedule_id
-                            })
+                            # Use helper directly since we are inside class context
+                            # But wait, helper is async? No, logic inside helper is simple CPU bound, 
+                            # but I made it async. In simulation we can just call it if we await.
+                            
+                            # Re-implement simplified logic here or refactor helper to sync?
+                            # Helper is effectively sync logic wrapped in async for future proofing.
+                            # Just copying logic for simulation speed.
+                            
+                            has_match = False
+                            prio = 999
+                            for rule in l_obj.priority_rules:
+                                current_md = sim_time.strftime("%m-%d")
+                                if rule.start_md <= rule.end_md:
+                                    if rule.start_md <= current_md <= rule.end_md: has_match = True
+                                else:
+                                    if current_md >= rule.start_md or current_md <= rule.end_md: has_match = True
+                                
+                                if has_match:
+                                    if rule.priority == 0: prio = 0
+                                    elif rule.priority < prio: prio = rule.priority
+                                    break # Take first match for sim simplicity
+                            
+                            if prio > 0 and prio < 999:
+                                if prio < best_prio:
+                                    best_prio = prio
+                                    best_list = l_obj.name
+                        except: continue
+
+                    if best_list != "None":
+                        channel = self.bot.get_channel(schedule.channel_id)
+                        channel_name = channel.mention if channel else f"<#{schedule.channel_id}>"
+                        
+                        events.append({
+                            "time": sim_time,
+                            "list": f"{best_list} (Prio {best_prio})",
+                            "channel": channel_name,
+                            "schedule_id": schedule_id
+                        })
                 
                 next_sim = self._calculate_next_run_time(schedule, sim_time)
                 if next_sim <= sim_time:
@@ -1312,72 +1176,6 @@ class QuestionOfTheDay(commands.Cog):
             
         embed.description = description
         await ctx.send(embed=embed)
-
-    @qotd_schedule_rule.command(name="addpriority")
-    async def qotd_schedule_rule_add_priority(self, ctx: commands.Context, schedule_id: str, start_date: str, end_date: str, *list_ids: str):
-        """
-        Adds a priority override for a date range.
-        
-        Usage: [p]qotd schedule rule addpriority <schedule_id> <start_MM-DD> <end_MM-DD> <list1> <list2>...
-        """
-        schedules_data = await self.config.schedules()
-        lists_data = await self.config.lists()
-        
-        if schedule_id not in schedules_data: return await ctx.send(warning("Schedule ID not found."))
-        if not list_ids: return await ctx.send(warning("You must provide at least one list ID."))
-        
-        for lid in list_ids:
-            if lid not in lists_data: return await ctx.send(warning(f"List ID `{lid}` not found."))
-
-        schedule_dict = schedules_data[schedule_id]
-        schedule_dict['next_run_time'] = datetime.fromisoformat(schedule_dict['next_run_time'])
-        schedule_dict = self._migrate_schedule_dict(schedule_dict) # Ensure safe load
-        schedule = Schedule.model_validate(schedule_dict)
-        
-        new_rule = ScheduleRule(start_month_day=start_date, end_month_day=end_date, action="use_priorities", priority_overrides=list(list_ids))
-        schedule.rules.append(new_rule)
-        
-        serialized_schedule = json.loads(schedule.model_dump_json())
-        async with self.config.schedules() as schedules:
-            schedules[schedule_id] = serialized_schedule
-        await ctx.send(f"Added priority rule for {start_date} to {end_date}.")
-
-    @qotd_schedule_rule.command(name="addskip")
-    async def qotd_schedule_rule_add_skip(self, ctx: commands.Context, schedule_id: str, start_date: str, end_date: str):
-        """Adds a skip rule."""
-        schedules_data = await self.config.schedules()
-        if schedule_id not in schedules_data: return await ctx.send(warning("Schedule ID not found."))
-        schedule_dict = schedules_data[schedule_id]
-        schedule_dict['next_run_time'] = datetime.fromisoformat(schedule_dict['next_run_time'])
-        schedule_dict = self._migrate_schedule_dict(schedule_dict) # Ensure safe load
-        schedule = Schedule.model_validate(schedule_dict)
-        new_rule = ScheduleRule(start_month_day=start_date, end_month_day=end_date, action="skip_run")
-        schedule.rules.append(new_rule)
-        serialized_schedule = json.loads(schedule.model_dump_json())
-        async with self.config.schedules() as schedules:
-            schedules[schedule_id] = serialized_schedule
-        await ctx.send(f"Added skip rule.")
-
-    @qotd_schedule_rule.command(name="removerule")
-    async def qotd_schedule_rule_remove(self, ctx: commands.Context, schedule_id: str, rule_id: str):
-        """Removes a rule (you can find IDs in [p]qotd schedule view)."""
-        schedules_data = await self.config.schedules()
-        if schedule_id not in schedules_data: return await ctx.send(warning("Schedule ID not found."))
-        schedule_dict = schedules_data[schedule_id]
-        schedule_dict['next_run_time'] = datetime.fromisoformat(schedule_dict['next_run_time'])
-        schedule_dict = self._migrate_schedule_dict(schedule_dict) # Ensure safe load
-        schedule = Schedule.model_validate(schedule_dict)
-        
-        original_count = len(schedule.rules)
-        schedule.rules = [rule for rule in schedule.rules if rule.id != rule_id and rule.id.split('-')[0] != rule_id]
-        
-        if len(schedule.rules) == original_count:
-             return await ctx.send(warning(f"Rule ID `{rule_id}` not found."))
-             
-        serialized_schedule = json.loads(schedule.model_dump_json())
-        async with self.config.schedules() as schedules:
-            schedules[schedule_id] = serialized_schedule
-        await ctx.send(f"Removed rule.")
 
     @qotd.command(name="import")
     async def qotd_import(self, ctx: commands.Context, list_id: str):
