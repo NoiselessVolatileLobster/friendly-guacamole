@@ -603,6 +603,14 @@ class QuestionOfTheDay(commands.Cog):
             for lid, ldata in lists_data.items():
                 count = sum(1 for q in all_questions.values() if q.get('list_id') == lid)
                 msg += f"`{lid}`: **{ldata['name']}** ({count} questions)\n"
+                # Check for exclusions to display
+                if 'exclusion_dates' in ldata and ldata['exclusion_dates']:
+                     # Show first few exclusions if list is long
+                     excl_preview = humanize_list(ldata['exclusion_dates'][:5])
+                     if len(ldata['exclusion_dates']) > 5:
+                         excl_preview += f", and {len(ldata['exclusion_dates'])-5} more..."
+                     msg += f"   - Exclusions: {excl_preview}\n"
+
 
         # 3. Schedules
         schedules_data = await self.config.schedules()
@@ -944,6 +952,8 @@ class QuestionOfTheDay(commands.Cog):
             
             list_info = f"**Questions:** {count}"
             embed.add_field(name=f"{icon} {list_dict['name']} (`{list_id}`)", value=list_info, inline=False)
+            if list_obj.exclusion_dates:
+                 embed.add_field(name="Exclusions", value=humanize_list(list_obj.exclusion_dates), inline=False)
         await ctx.send(embed=embed)
 
     @qotd_list_management.command(name="clear")
@@ -975,23 +985,77 @@ class QuestionOfTheDay(commands.Cog):
         pass
         
     @qotd_list_rule.command(name="addexclusion")
-    async def qotd_list_rule_add(self, ctx: commands.Context, list_id: str, month_day: str):
-        """Adds a single day (MM-DD) when this list should NOT be used."""
+    async def qotd_list_rule_add(self, ctx: commands.Context, list_id: str, start_date: str, end_date: Optional[str] = None):
+        """
+        Adds exclusion dates to a list.
+        
+        You can add a single date: `[p]qotd list rule addexclusion listid 12-25`
+        Or a range of dates: `[p]qotd list rule addexclusion listid 12-25 01-05`
+        """
         lists_data = await self.config.lists()
         if list_id not in lists_data:
             return await ctx.send(warning(f"List ID `{list_id}` not found."))
-        if not month_day.strip().replace('-', '').isdigit() or len(month_day) != 5 or month_day[2] != '-':
-            return await ctx.send(warning("Date format must be `MM-DD`."))
+        
+        # Helper to validate MM-DD
+        def validate_date(d_str):
+            if len(d_str) != 5 or d_str[2] != '-': return False
+            try:
+                datetime.strptime(f"2024-{d_str}", "%Y-%m-%d") # 2024 is a leap year
+                return True
+            except ValueError:
+                return False
+
+        if not validate_date(start_date):
+             return await ctx.send(warning(f"Invalid start date `{start_date}`. Use MM-DD."))
+        
+        if end_date and not validate_date(end_date):
+             return await ctx.send(warning(f"Invalid end date `{end_date}`. Use MM-DD."))
+
+        dates_to_add = []
+        if not end_date:
+            dates_to_add.append(start_date)
+        else:
+            # Expand range
+            try:
+                # Use a leap year to support Feb 29
+                start = datetime.strptime(f"2024-{start_date}", "%Y-%m-%d")
+                end = datetime.strptime(f"2024-{end_date}", "%Y-%m-%d")
+                
+                # Handle year wrap-around (e.g. Dec 25 to Jan 5)
+                if start > end:
+                    end = datetime.strptime(f"2025-{end_date}", "%Y-%m-%d")
+                
+                curr = start
+                while curr <= end:
+                    dates_to_add.append(curr.strftime("%m-%d"))
+                    curr += timedelta(days=1)
+            except ValueError:
+                 return await ctx.send(warning("Error calculating date range."))
+
         try:
             list_obj = QuestionList.model_validate(lists_data[list_id])
         except ValidationError:
             return await ctx.send(warning(f"List data for `{list_id}` is invalid."))
-        if month_day in list_obj.exclusion_dates:
-            return await ctx.send(warning(f"Date **{month_day}** is already an exclusion."))
-        list_obj.exclusion_dates.append(month_day)
+        
+        added_count = 0
+        for d in dates_to_add:
+            if d not in list_obj.exclusion_dates:
+                list_obj.exclusion_dates.append(d)
+                added_count += 1
+        
+        # Sort for neatness
+        list_obj.exclusion_dates.sort()
+
         async with self.config.lists() as lists:
             lists[list_id] = list_obj.model_dump()
-        await ctx.send(f"Added exclusion date **{month_day}** to list **{list_obj.name}**.")
+            
+        if end_date:
+            await ctx.send(success(f"Added **{added_count}** new exclusion dates (Range: {start_date} to {end_date}) to list **{list_obj.name}**."))
+        else:
+            if added_count > 0:
+                await ctx.send(success(f"Added exclusion date **{start_date}** to list **{list_obj.name}**."))
+            else:
+                await ctx.send(warning(f"Date **{start_date}** was already excluded in list **{list_obj.name}**."))
 
     @qotd_list_rule.command(name="removeexclusion")
     async def qotd_list_rule_remove(self, ctx: commands.Context, list_id: str, month_day: str):
@@ -1248,11 +1312,6 @@ class QuestionOfTheDay(commands.Cog):
             
         embed.description = description
         await ctx.send(embed=embed)
-
-    @qotd_schedule_management.group(name="rule")
-    async def qotd_schedule_rule(self, ctx: commands.Context):
-        """Manage date-based rules."""
-        pass
 
     @qotd_schedule_rule.command(name="addpriority")
     async def qotd_schedule_rule_add_priority(self, ctx: commands.Context, schedule_id: str, start_date: str, end_date: str, *list_ids: str):
