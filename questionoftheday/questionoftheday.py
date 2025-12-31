@@ -1016,19 +1016,21 @@ class QuestionOfTheDay(commands.Cog):
         pass
 
     @qotd_schedule_management.command(name="add")
-    async def qotd_schedule_add(self, ctx: commands.Context, channel: discord.TextChannel, frequency: str, list_id: str, post_time: Optional[str] = None):
+    async def qotd_schedule_add(self, ctx: commands.Context, name: str, channel: discord.TextChannel, frequency: str, post_time: Optional[str] = None):
         """
         Adds a new schedule.
         
         Args:
+            name: A unique name for this schedule (e.g. "Main").
             channel: The channel to post in.
             frequency: e.g., "1 day", "12 hours".
-            list_id: The PRIMARY list to use. You can add more lists for priority using `setpriorities`.
             post_time: Optional HH:MM UTC time.
         """
-        lists_data = await self.config.lists()
-        if list_id not in lists_data: return await ctx.send(warning(f"List ID `{list_id}` not found."))
-        schedule_id = str(uuid.uuid4()).split('-')[0]
+        schedules_data = await self.config.schedules()
+        if name in schedules_data:
+            return await ctx.send(warning(f"A schedule named **{name}** already exists."))
+
+        schedule_id = name # User provided name is now the ID
         now_utc = datetime.now(timezone.utc)
         try:
             time_unit = frequency.split()
@@ -1039,14 +1041,15 @@ class QuestionOfTheDay(commands.Cog):
         except (ValueError, IndexError):
             return await ctx.send(warning("Invalid frequency format. Must be like '1 day' or '3 hours'."))
         
-        temp_schedule = Schedule(id=schedule_id, list_id=None, priorities=[list_id], channel_id=channel.id, frequency=frequency, post_time=post_time, next_run_time=now_utc)
+        temp_schedule = Schedule(id=schedule_id, list_id=None, priorities=[], channel_id=channel.id, frequency=frequency, post_time=post_time, next_run_time=now_utc)
         next_run = self._calculate_next_run_time(temp_schedule, now_utc - timedelta(minutes=1)) 
-        new_schedule = Schedule(id=schedule_id, list_id=None, priorities=[list_id], channel_id=channel.id, frequency=frequency, post_time=post_time, next_run_time=next_run)
+        new_schedule = Schedule(id=schedule_id, list_id=None, priorities=[], channel_id=channel.id, frequency=frequency, post_time=post_time, next_run_time=next_run)
+        
         serialized_schedule = json.loads(new_schedule.model_dump_json())
         async with self.config.schedules() as schedules:
             schedules[schedule_id] = serialized_schedule
-        time_str = f"at **{post_time} UTC**" if post_time else ""
-        await ctx.send(f"Added new schedule (ID: `{schedule_id}`). Next run: {discord.utils.format_dt(next_run, 'R')}.\nUse `[p]qotd schedule setpriorities {schedule_id} ...` to add fallback lists.")
+        
+        await ctx.send(f"Added new schedule **{name}**. Next run: {discord.utils.format_dt(next_run, 'R')}.\n⚠️ **Note:** This schedule has no lists yet! Use `[p]qotd schedule setpriorities {name} ...` to add them.")
 
     @qotd_schedule_management.command(name="setpriorities")
     async def qotd_schedule_setpriorities(self, ctx: commands.Context, schedule_id: str, *list_ids: str):
@@ -1126,7 +1129,7 @@ class QuestionOfTheDay(commands.Cog):
             p_names = []
             for pid in priorities:
                 p_names.append(lists_data.get(pid, {}).get('name', pid))
-            priority_display = " -> ".join(p_names)
+            priority_display = " -> ".join(p_names) if p_names else "*(No lists configured)*"
 
             channel = self.bot.get_channel(schedule.channel_id)
             channel_mention = channel.mention if channel else f"ID: {schedule.channel_id} (Missing)"
@@ -1245,11 +1248,6 @@ class QuestionOfTheDay(commands.Cog):
             
         embed.description = description
         await ctx.send(embed=embed)
-
-    @qotd_schedule_management.group(name="rule")
-    async def qotd_schedule_rule(self, ctx: commands.Context):
-        """Manage date-based rules."""
-        pass
 
     @qotd_schedule_rule.command(name="addpriority")
     async def qotd_schedule_rule_add_priority(self, ctx: commands.Context, schedule_id: str, start_date: str, end_date: str, *list_ids: str):
