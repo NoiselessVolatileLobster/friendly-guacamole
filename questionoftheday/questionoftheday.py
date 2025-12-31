@@ -986,15 +986,25 @@ class QuestionOfTheDay(commands.Cog):
         # Create new rule
         new_rule = ListPriorityRule(priority=priority, start_md=start_date, end_md=end_date)
         
-        # Remove any EXACT duplicate ranges to avoid clutter, or maybe just append?
-        # Let's just append for now, simpler logic.
-        l_obj.priority_rules.append(new_rule)
+        # Check for existing rule with exact same range
+        existing_index = -1
+        for i, r in enumerate(l_obj.priority_rules):
+            if r.start_md == start_date and r.end_md == end_date:
+                existing_index = i
+                break
+        
+        action_word = "Added"
+        if existing_index != -1:
+            l_obj.priority_rules[existing_index] = new_rule
+            action_word = "Updated"
+        else:
+            l_obj.priority_rules.append(new_rule)
         
         async with self.config.lists() as lists:
             lists[list_id] = l_obj.model_dump()
             
         p_text = f"Priority {priority}" if priority > 0 else "Exclusion (0)"
-        await ctx.send(success(f"Added rule for **{l_obj.name}**: {start_date} to {end_date} = **{p_text}**."))
+        await ctx.send(success(f"{action_word} rule for **{l_obj.name}**: {start_date} to {end_date} = **{p_text}**."))
 
     @qotd_list_management.command(name="resetpriorities")
     async def qotd_list_priority_reset(self, ctx: commands.Context, list_id: str):
