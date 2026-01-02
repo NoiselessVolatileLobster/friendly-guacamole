@@ -1422,14 +1422,74 @@ class VibeCheck(getattr(commands, "Cog", object)):
             
         return 0
 
+    async def _get_user_xp(self, guild: discord.Guild, member: discord.Member) -> int:
+        """
+        Retrieves user XP using multiple potential LevelUp interfaces.
+        Similar to _get_user_level but targets XP specifically.
+        """
+        levelup = self.bot.get_cog("LevelUp")
+        if not levelup:
+            return 0
+        
+        uid_str = str(member.id)
+        gid = guild.id
+
+        # 1. Try Direct API/Cog Method (User suggested 'get_xp')
+        if hasattr(levelup, "get_xp"):
+            try:
+                val = await levelup.get_xp(guild.id, member.id)
+                if val is not None:
+                    return int(val)
+            except Exception:
+                pass
+            
+        # 2. Vertyco DB (Pydantic)
+        if hasattr(levelup, "db"):
+            try:
+                if hasattr(levelup.db, "get_conf"):
+                    conf = levelup.db.get_conf(gid)
+                    if conf:
+                        users = getattr(conf, "users", {})
+                        if isinstance(users, dict):
+                            u = users.get(member.id) or users.get(uid_str)
+                            if u:
+                                return int(getattr(u, "xp", 0) if not isinstance(u, dict) else u.get("xp", 0))
+            except Exception:
+                pass
+
+        # 3. Vertyco Old Data
+        if hasattr(levelup, "data") and isinstance(levelup.data, dict):
+             try:
+                g_data = levelup.data.get(gid) or levelup.data.get(str(gid))
+                if g_data:
+                    users = g_data.get("users", {})
+                    u = users.get(member.id) or users.get(uid_str)
+                    if u:
+                        return int(u.get("xp", 0))
+             except Exception:
+                 pass
+
+        # 4. Red Config (Standard)
+        try:
+             xp = await levelup.config.guild(guild).users(uid_str).xp()
+             if xp:
+                 return int(xp)
+        except Exception:
+             pass
+        
+        return 0
+
     async def _give_levelup_xp(self, guild: discord.Guild, member: discord.Member, amount: int):
         """
-        Attempts to grant XP using the LevelUp cog.
-        Supports common LevelUp implementations.
+        Attempts to grant XP using the LevelUp cog, with pre/post debug logging.
         """
         levelup = self.bot.get_cog("LevelUp")
         if not levelup:
             return
+
+        # Pre-Check Debug Log
+        old_xp = await self._get_user_xp(guild, member)
+        log.info(f"[VibeCheck Debug] Awarding {amount} XP to {member.name}. Current XP: {old_xp}")
 
         try:
             # Vertyco/Red Modern: add_xp(guild_id, user_id, amount)
@@ -1450,6 +1510,11 @@ class VibeCheck(getattr(commands, "Cog", object)):
                 
         except Exception as e:
             log.error(f"Failed to grant LevelUp XP: {e}")
+
+        # Post-Check Debug Log
+        # Small delay might be needed for DB commits in some systems, but usually fine here
+        new_xp = await self._get_user_xp(guild, member)
+        log.info(f"[VibeCheck Debug] XP Transaction Complete for {member.name}. New XP: {new_xp} (Change: {new_xp - old_xp})")
 
     async def _get_active_vote_msg_id(self, guild: discord.Guild, user_id: int) -> Optional[str]:
         """Check if user has an ongoing kick vote."""
