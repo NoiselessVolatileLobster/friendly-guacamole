@@ -1213,6 +1213,8 @@ class VibeCheck(getattr(commands, "Cog", object)):
         """Resets a user's global vibes."""
         log.debug("Resetting %s's vibes", str(user))
         await self.conf.user(user).vibes.set(0)
+        # Reset new member award flag so testing can happen again
+        await self.conf.user(user).new_member_xp_awarded.set(False)
         await ctx.send("{}'s vibes has been reset to 0.".format(user.name))
         
     @vibecheckset.command(name="resetratio")
@@ -1619,13 +1621,15 @@ class VibeCheck(getattr(commands, "Cog", object)):
                     is_new_user = age_seconds <= (xp_minutes * 60)
                     
                     if is_new_user or (age_seconds < (xp_minutes * 60 * 2)): # Log if new or recently new
+                        already_awarded = await receiver_settings.new_member_xp_awarded()
                         needed = xp_threshold - new_vibes
-                        log_msg = (
-                            f"[VibeCheck Debug] {member_receiver.name} (New Member: {is_new_user}). "
-                            f"Score: {new_vibes}/{xp_threshold}. "
-                            f"Needs: {needed if needed > 0 else 'Done'}."
+                        log.info(
+                            f"[VibeCheck Debug] {member_receiver.name} Status:\n"
+                            f" - Is New: {is_new_user}\n"
+                            f" - Logic: {current_vibes} (Current) < {xp_threshold} (Thresh) <= {new_vibes} (New)\n"
+                            f" - Already Awarded: {already_awarded}\n"
+                            f" - Needs: {needed if needed > 0 else 'Done'}"
                         )
-                        log.info(log_msg)
 
                     if is_new_user and current_vibes < xp_threshold <= new_vibes:
                         already_awarded = await receiver_settings.new_member_xp_awarded()
