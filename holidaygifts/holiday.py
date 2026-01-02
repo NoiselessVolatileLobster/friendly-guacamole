@@ -388,8 +388,10 @@ class HolidayGifts(commands.Cog):
         """View all current settings."""
         data = await self.config.guild(ctx.guild).all()
         
+        channel_mention = f"<#{data['channel_id']}>" if data['channel_id'] else "Not Set"
+        
         desc = (
-            f"**Channel:** {f'<#{data['channel_id']}>' if data['channel_id'] else 'Not Set'}\n"
+            f"**Channel:** {channel_mention}\n"
             f"**Test Mode:** {data['testing_mode']}\n"
             f"**Total Opens:** {data['stats']['opened_total']}\n"
             f"**XP Given:** {data['stats']['total_xp']}\n"
