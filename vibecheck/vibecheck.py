@@ -1432,10 +1432,13 @@ class VibeCheck(getattr(commands, "Cog", object)):
             return
 
         try:
-            # Try accessing via Vrt-Cogs Method (Direct Object Pass)
+            # Vertyco/Red Modern: add_xp(guild_id, user_id, amount)
             if hasattr(levelup, "add_xp"):
-                # Call add_xp with the Member object, not the ID
-                await levelup.add_xp(member, amount)
+                try:
+                    await levelup.add_xp(guild.id, member.id, amount)
+                except TypeError:
+                    # Fallback for older versions: add_xp(member, amount)
+                    await levelup.add_xp(member, amount)
                 
                 # Check for levelups immediately after adding XP
                 if hasattr(levelup, "check_levelups"):
@@ -1533,28 +1536,40 @@ class VibeCheck(getattr(commands, "Cog", object)):
         if not member_receiver or not target_guild:
             return 
             
-        # 5. Check for New Member XP Reward
+        # 5. Check for New Member XP Reward (DEBUG ADDED)
         if new_vibes > current_vibes: 
             guild_conf = self.conf.guild(target_guild)
             xp_minutes = await guild_conf.new_member_xp_minutes()
             
             if xp_minutes and xp_minutes > 0:
-                xp_threshold = await guild_conf.new_member_xp_threshold()
-                if current_vibes < xp_threshold <= new_vibes:
-                    already_awarded = await receiver_settings.new_member_xp_awarded()
-                    if not already_awarded:
-                        if member_receiver.joined_at:
-                            joined_at = member_receiver.joined_at
-                            if joined_at.tzinfo is None:
-                                joined_at = joined_at.replace(tzinfo=timezone.utc)
-                            now = datetime.now(timezone.utc)
-                            age_seconds = (now - joined_at).total_seconds()
-                            
-                            if age_seconds <= (xp_minutes * 60):
-                                xp_amount = await guild_conf.new_member_xp_amount()
-                                if xp_amount > 0:
-                                    await self._give_levelup_xp(target_guild, member_receiver, xp_amount)
-                                    await receiver_settings.new_member_xp_awarded.set(True)
+                if member_receiver.joined_at:
+                    joined_at = member_receiver.joined_at
+                    if joined_at.tzinfo is None:
+                        joined_at = joined_at.replace(tzinfo=timezone.utc)
+                    now = datetime.now(timezone.utc)
+                    age_seconds = (now - joined_at).total_seconds()
+                    
+                    # Log Check
+                    xp_threshold = await guild_conf.new_member_xp_threshold()
+                    is_new_user = age_seconds <= (xp_minutes * 60)
+                    
+                    if is_new_user or (age_seconds < (xp_minutes * 60 * 2)): # Log if new or recently new
+                        needed = xp_threshold - new_vibes
+                        log_msg = (
+                            f"[VibeCheck Debug] {member_receiver.name} (New Member: {is_new_user}). "
+                            f"Score: {new_vibes}/{xp_threshold}. "
+                            f"Needs: {needed if needed > 0 else 'Done'}."
+                        )
+                        log.info(log_msg)
+
+                    if is_new_user and current_vibes < xp_threshold <= new_vibes:
+                        already_awarded = await receiver_settings.new_member_xp_awarded()
+                        if not already_awarded:
+                            xp_amount = await guild_conf.new_member_xp_amount()
+                            if xp_amount > 0:
+                                await self._give_levelup_xp(target_guild, member_receiver, xp_amount)
+                                await receiver_settings.new_member_xp_awarded.set(True)
+                                log.info(f"[VibeCheck] Awarded {xp_amount} XP to new member {member_receiver.name}")
 
         # 6. Run WarnSystem Integration Check (With Anti-Spam)
         if new_vibes < current_vibes:
