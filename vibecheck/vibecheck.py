@@ -1432,20 +1432,19 @@ class VibeCheck(getattr(commands, "Cog", object)):
             return
 
         try:
-            # Try accessing via public API (common in some forks)
-            if hasattr(levelup, "api") and hasattr(levelup.api, "add_xp"):
+            # Try accessing via Vrt-Cogs Method (Direct Object Pass)
+            if hasattr(levelup, "add_xp"):
+                # Call add_xp with the Member object, not the ID
+                await levelup.add_xp(member, amount)
+                
+                # Check for levelups immediately after adding XP
+                if hasattr(levelup, "check_levelups"):
+                    await levelup.check_levelups(member)
+
+            # Try accessing via API (common in some other forks)
+            elif hasattr(levelup, "api") and hasattr(levelup.api, "add_xp"):
                 await levelup.api.add_xp(guild.id, member.id, amount)
                 
-            # Try accessing standard method (common in original)
-            elif hasattr(levelup, "add_xp"):
-                import inspect
-                sig = inspect.signature(levelup.add_xp)
-                params = list(sig.parameters.keys())
-                
-                if params[0] == 'guild_id':
-                    await levelup.add_xp(guild.id, member.id, amount)
-                else:
-                    await levelup.add_xp(member.id, amount)
         except Exception as e:
             log.error(f"Failed to grant LevelUp XP: {e}")
 
