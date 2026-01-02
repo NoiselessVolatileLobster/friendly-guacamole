@@ -1,0 +1,9 @@
+{
+    "author": ["NoiselessVolatileLobster"],
+    "name": "SpotlightTracker",
+    "short": "Track D&D player participation via voice activity.",
+    "description": "Monitors unmuted duration in voice channels to help DMs balance player spotlight time. Includes auto-updating dashboard and file output.",
+    "tags": ["dnd", "voice", "utility", "streamdeck"],
+    "requirements": [],
+    "permissions": ["manage_channels"]
+}
