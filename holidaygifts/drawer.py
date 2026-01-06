@@ -4,8 +4,9 @@ import io
 import asyncio
 import time
 
-# URL for Font Awesome 6 Free (Solid) OTF
-FA_URL = "https://raw.githubusercontent.com/FortAwesome/Font-Awesome/6.x/otfs/Font%20Awesome%206%20Free-Solid-900.otf"
+# URL for Font Awesome 6 Free (Solid) TTF
+# Switched to TTF and a specific version tag (6.5.1) for better stability/compatibility than OTF
+FA_URL = "https://raw.githubusercontent.com/FortAwesome/Font-Awesome/6.5.1/webfonts/fa-solid-900.ttf"
 
 # Font Cache (stores the BytesIO object of the font file)
 FONT_FILE_CACHE = None
@@ -42,23 +43,32 @@ HOLIDAY_ICONS = {
 async def get_fontawesome(bot, size):
     """
     Returns an ImageFont object for FontAwesome, downloading it if necessary.
+    Returns None if download fails.
     """
     global FONT_FILE_CACHE
     
+    # 1. Try Cache
     if FONT_FILE_CACHE:
-        FONT_FILE_CACHE.seek(0)
-        return ImageFont.truetype(FONT_FILE_CACHE, size)
+        try:
+            FONT_FILE_CACHE.seek(0)
+            return ImageFont.truetype(FONT_FILE_CACHE, size)
+        except Exception:
+            # If cache is corrupted, reset it
+            FONT_FILE_CACHE = None
     
+    # 2. Download
     try:
         async with bot.session.get(FA_URL) as resp:
             if resp.status == 200:
                 data = await resp.read()
                 FONT_FILE_CACHE = io.BytesIO(data)
                 return ImageFont.truetype(FONT_FILE_CACHE, size)
+            else:
+                print(f"FontAwesome Download Failed: Status {resp.status}")
     except Exception as e:
         print(f"Failed to download FontAwesome: {e}")
         
-    return ImageFont.load_default()
+    return None
 
 async def generate_holiday_image(bot, opened_days: list, current_day_int: int):
     """
@@ -83,6 +93,7 @@ async def generate_holiday_image(bot, opened_days: list, current_day_int: int):
     image = Image.new("RGBA", (width, height), bg_color)
     draw = ImageDraw.Draw(image)
     
+    # Load Fonts
     icon_size = int(cell_size * 0.85)
     fa_font = await get_fontawesome(bot, icon_size)
     
@@ -112,6 +123,7 @@ async def generate_holiday_image(bot, opened_days: list, current_day_int: int):
         
         is_opened = i in opened_days
         
+        # Determine Fill
         if is_opened:
             fill = box_color_opened
             if i == 25:
@@ -121,19 +133,31 @@ async def generate_holiday_image(bot, opened_days: list, current_day_int: int):
         else:
             fill = box_color_default
 
+        # Draw Rectangle
         draw.rectangle([x1, y1, x2, y2], fill=fill, outline=(0,0,0))
         
         if is_opened:
-            icon_char = HOLIDAY_ICONS.get(i, "\uf06b")
-            try:
-                draw.text((center_x, center_y), icon_char, fill=(255, 255, 255), font=fa_font, anchor="mm")
-            except ValueError:
-                w, h = draw.textsize(icon_char, font=fa_font)
-                draw.text(((x1 + (cell_size-w)/2), (y1 + (cell_size-h)/2)), icon_char, fill=(255, 255, 255), font=fa_font)
+            # Draw Icon
+            if fa_font:
+                icon_char = HOLIDAY_ICONS.get(i, "\uf06b")
+                try:
+                    # New Pillow (8.0+)
+                    draw.text((center_x, center_y), icon_char, fill=(255, 255, 255), font=fa_font, anchor="mm")
+                except ValueError:
+                    # Old Pillow (<8.0)
+                    w, h = draw.textsize(icon_char, font=fa_font)
+                    draw.text(((x1 + (cell_size-w)/2), (y1 + (cell_size-h)/2)), icon_char, fill=(255, 255, 255), font=fa_font)
+            else:
+                # Fallback if font failed to download
+                draw.text((center_x, center_y), "!", fill=(255, 0, 0), font=mark_font, anchor="mm")
 
+            # Day Number (Small)
             draw.text((x1 + 5, y1 + 5), str(i), fill=(220, 220, 220), font=number_font)
         else:
+            # Day Number (Normal)
             draw.text((x1 + 10, y1 + 10), str(i), fill=text_color, font=number_font)
+            
+            # Missed Overlay
             if i < current_day_int:
                 draw.text((x1 + 30, y1 + 20), "X", fill=fail_color, font=mark_font)
 
