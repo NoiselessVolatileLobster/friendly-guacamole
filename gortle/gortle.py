@@ -65,7 +65,8 @@ class Gortle(commands.Cog):
             "weekly_role_day": 0,
             "weekly_role_hour": 9,
             "last_weekly_award": 0,
-            "emoji_map": {} # Stores "name" -> emoji_id
+            "emoji_map": {}, # Stores "name" -> emoji_id
+            "suggested_words": []
         }
 
         default_guild = {
@@ -485,7 +486,12 @@ class Gortle(commands.Cog):
             return
 
         if guess not in self.guesses:
-            await message.channel.send("I do not think that word is in my dictionary.", delete_after=5)
+            prefixes = await self.bot.get_valid_prefixes(message.guild)
+            prefix = prefixes[0] if prefixes else "!"
+            await message.channel.send(
+                f"I do not think that word is in my dictionary. You can suggest it using `{prefix}gortle addword {guess}`", 
+                delete_after=10
+            )
             return
 
         # NOTE: We do NOT set the last_guess_time here anymore. 
@@ -724,6 +730,28 @@ class Gortle(commands.Cog):
             embed.set_thumbnail(url=thumb)
             
         await channel.send(embed=embed)
+    
+    @commands.group()
+    async def gortle(self, ctx):
+        """Gortle game commands."""
+        pass
+
+    @gortle.command()
+    async def addword(self, ctx, word: str):
+        """Suggest a word to be added to the dictionary."""
+        word = word.lower().strip()
+        if len(word) != 6 or not word.isalpha():
+            return await ctx.send("Word must be exactly 6 letters.")
+        
+        if word in self.guesses:
+            return await ctx.send("That word is already in the dictionary.")
+            
+        async with self.config.suggested_words() as suggestions:
+            if word in suggestions:
+                return await ctx.send("That word has already been suggested.")
+            suggestions.append(word)
+            
+        await ctx.send(f"Suggestion recorded: **{word}**")
 
     @commands.command(aliases=["gortlehow"])
     async def teachmehowtogortle(self, ctx):
@@ -799,6 +827,14 @@ class Gortle(commands.Cog):
     async def gortleset(self, ctx):
         """Configuration for Gortle."""
         pass
+    
+    @gortleset.command()
+    async def suggestions(self, ctx):
+        """View suggested words."""
+        words = await self.config.suggested_words()
+        if not words:
+            return await ctx.send("No pending suggestions.")
+        await ctx.send(box(", ".join(words)))
 
     @gortleset.command()
     async def view(self, ctx):
