@@ -29,31 +29,40 @@ class Say(commands.Cog):
         [p]say #channel <message>
         [p]say <attachment> (No text required if attachment is present)
         """
-        
-        # 1. Delete the user's message immediately
-        try:
-            await ctx.message.delete()
-        except (discord.Forbidden, discord.NotFound):
-            pass
 
-        # 2. Determine the target destination
+        # 1. Determine the target destination
         target_destination = channel or ctx.channel
 
-        # 3. Check if the bot has permission to speak in the target
+        # 2. Check if the bot has permission to speak in the target
         if not target_destination.permissions_for(ctx.guild.me).send_messages:
             try:
+                # We can't delete the message yet if we want to warn the user,
+                # but usually, we want to fail gracefully.
                 await ctx.author.send(f"I do not have permission to send messages in {target_destination.mention}.")
             except discord.Forbidden:
                 pass
             return
 
-        # 4. Process Attachments
-        # We need to convert the attachments from the context message into discord.File objects
+        # 3. Process Attachments
+        # CRITICAL FIX: This must happen BEFORE deleting the user's message.
+        # If we delete the message first, the CDN URL becomes invalid (404).
         files: List[discord.File] = []
         if ctx.message.attachments:
-            for attachment in ctx.message.attachments:
-                # Converts the attachment directly to a file object
-                files.append(await attachment.to_file())
+            try:
+                for attachment in ctx.message.attachments:
+                    # Converts the attachment directly to a file object in memory
+                    files.append(await attachment.to_file())
+            except discord.NotFound:
+                # In case the user deleted the message manually extremely fast
+                await ctx.send("I couldn't grab the attachment before the message was deleted.")
+                return
+
+        # 4. Delete the user's message
+        # Now that we have the files in memory, it is safe to delete the original.
+        try:
+            await ctx.message.delete()
+        except (discord.Forbidden, discord.NotFound):
+            pass
 
         # 5. Validation
         # Ensure we aren't trying to send an empty message
