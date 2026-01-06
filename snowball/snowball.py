@@ -224,25 +224,30 @@ class Snowball(commands.Cog):
             end_str = await conf.season_end_str()
             last_year = await conf.last_season_year()
             
-            # Skip if not configured
-            if start_str == "0" or end_str == "0":
-                pass
-            else:
+            should_run = True
+
+            # If dates are configured, validate we are in-season
+            if start_str != "0" and end_str != "0":
                 current_start, current_end = self.get_season_dates(start_str, end_str)
                 now = datetime.now()
                 
                 # Check if we just passed the end date
-                # We identify the season by its start year.
-                # If now > end, and we haven't processed this specific end year yet.
                 if now > current_end:
-                    # Determine the "season year" identifier. 
-                    # If the season is Dec 2025 - Jan 2026, we can call it season 2025.
                     season_id = current_end.year
                     
                     if season_id > last_year:
                         await self.run_end_of_season(guild)
                         await conf.last_season_year.set(season_id)
-                        continue # Skip snowfall if ended
+                    
+                    # If passed end date, do NOT run snow logic
+                    should_run = False
+                
+                elif now < current_start:
+                    # If before start date, do NOT run snow logic
+                    should_run = False
+
+            if not should_run:
+                continue
 
             # 2. Snowfall Logic
             # Generate probability 0-100
@@ -281,7 +286,53 @@ class Snowball(commands.Cog):
         if not all_members:
             return
 
-        # 3. Stats Map
+        # 3. Distribute Rewards (New)
+        currency_name = await bank.get_currency_name(guild)
+        reward_amount = 5000
+        
+        winners_embed = discord.Embed(
+            title="👑 Season Champions", 
+            description=f"The following players have received a prize of **{reward_amount} {currency_name}**!",
+            color=discord.Color.purple()
+        )
+        
+        has_winners = False
+
+        # Prize 1: Damage Dealt
+        sorted_damage = sorted(all_members.items(), key=lambda x: x[1].get("stat_damage_dealt", 0), reverse=True)
+        if sorted_damage:
+            top_id, top_data = sorted_damage[0]
+            val = top_data.get("stat_damage_dealt", 0)
+            if val > 0:
+                user = guild.get_member(top_id)
+                if user:
+                    try:
+                        await bank.deposit_credits(user, reward_amount)
+                        winners_embed.add_field(name="⚔️ Damage Champion", value=f"{user.mention}\n**{val}** Damage Dealt", inline=True)
+                        has_winners = True
+                    except Exception:
+                        pass # Handle bank errors gracefully
+
+        # Prize 2: Snowballs Made
+        sorted_snowballs = sorted(all_members.items(), key=lambda x: x[1].get("stat_snowballs_made", 0), reverse=True)
+        if sorted_snowballs:
+            top_id, top_data = sorted_snowballs[0]
+            val = top_data.get("stat_snowballs_made", 0)
+            if val > 0:
+                user = guild.get_member(top_id)
+                if user:
+                    try:
+                        await bank.deposit_credits(user, reward_amount)
+                        winners_embed.add_field(name="☃️ Snowball Champion", value=f"{user.mention}\n**{val}** Snowballs Made", inline=True)
+                        has_winners = True
+                    except Exception:
+                        pass
+
+        if has_winners:
+            await channel.send(embed=winners_embed)
+            await asyncio.sleep(3)
+
+        # 4. Stats Map
         sort_map = {
             "Damage Dealt": "stat_damage_dealt",
             "Damage Taken": "stat_hits_taken",
