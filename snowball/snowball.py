@@ -2,7 +2,7 @@ import discord
 import asyncio
 import random
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from redbot.core import commands, Config, bank
 from redbot.core.utils.chat_formatting import box, humanize_list
 from discord.ext import tasks
@@ -174,10 +174,11 @@ class Snowball(commands.Cog):
             "snowball_roll_time": 60,
             "channel_id": None,
             "snowfall_probability": 50,
-            # Season config
-            "start_date": 0,
-            "end_date": 0,
-            "season_ended": False
+            # Season config (Stores MM-DD as strings)
+            "season_start_str": "0",
+            "season_end_str": "0",
+            # Tracks the year we last processed rewards for to prevent duplicates
+            "last_season_year": 0 
         }
 
         default_member = {
@@ -219,15 +220,29 @@ class Snowball(commands.Cog):
         for guild in self.bot.guilds:
             # 1. Check Season Status
             conf = self.config.guild(guild)
-            end_date = await conf.end_date()
-            season_ended = await conf.season_ended()
+            start_str = await conf.season_start_str()
+            end_str = await conf.season_end_str()
+            last_year = await conf.last_season_year()
             
-            now = int(time.time())
-
-            # If end date is set, passed, and we haven't announced it yet
-            if end_date != 0 and now > end_date and not season_ended:
-                await self.run_end_of_season(guild)
-                continue # Skip snowfall logic if season just ended
+            # Skip if not configured
+            if start_str == "0" or end_str == "0":
+                pass
+            else:
+                current_start, current_end = self.get_season_dates(start_str, end_str)
+                now = datetime.now()
+                
+                # Check if we just passed the end date
+                # We identify the season by its start year.
+                # If now > end, and we haven't processed this specific end year yet.
+                if now > current_end:
+                    # Determine the "season year" identifier. 
+                    # If the season is Dec 2025 - Jan 2026, we can call it season 2025.
+                    season_id = current_end.year
+                    
+                    if season_id > last_year:
+                        await self.run_end_of_season(guild)
+                        await conf.last_season_year.set(season_id)
+                        continue # Skip snowfall if ended
 
             # 2. Snowfall Logic
             # Generate probability 0-100
@@ -264,15 +279,9 @@ class Snowball(commands.Cog):
         # 2. Fetch Data for Leaderboards
         all_members = await self.config.all_members(guild)
         if not all_members:
-            await self.config.guild(guild).season_ended.set(True)
             return
 
-        # 3. Create a dummy view just to access the sort logic/maps
-        # We need a context-like object for the view, but the view mainly needs guild/member info
-        # We can construct a minimal dummy ctx class or just pass the channel/guild manually if we refactor
-        # But simpler: Re-instantiate the logic locally or use the existing View code slightly modified.
-        
-        # We will reuse the sort map from the View class to ensure consistency
+        # 3. Stats Map
         sort_map = {
             "Damage Dealt": "stat_damage_dealt",
             "Damage Taken": "stat_hits_taken",
@@ -283,15 +292,6 @@ class Snowball(commands.Cog):
         }
 
         # 4. Loop through categories and post
-        # Create a dummy context object that just has .guild
-        class DummyCtx:
-            def __init__(self, g): self.guild = g
-        
-        dummy_ctx = DummyCtx(guild)
-        
-        # Helper method from LeaderboardView (instantiating just to access helper is fine)
-        # We can just manually build it here to avoid complex View instantiation without a real interaction
-        
         for pretty_name, stat_key in sort_map.items():
             sorted_data = sorted(
                 all_members.items(), 
@@ -316,11 +316,68 @@ class Snowball(commands.Cog):
             # Delay to avoid throttling
             await asyncio.sleep(5)
 
-        # 5. Mark season as ended
-        await self.config.guild(guild).season_ended.set(True)
-
 
     # --- Helper Functions ---
+
+    def get_season_dates(self, start_md: str, end_md: str):
+        """
+        Calculates the start and end datetime objects for the current or upcoming season.
+        Handles years wrapping around (e.g. Dec to Jan).
+        Returns (start_dt, end_dt).
+        """
+        now = datetime.now()
+        current_year = now.year
+        
+        # Parse Month/Day
+        try:
+            s_m, s_d = map(int, start_md.split("-"))
+            e_m, e_d = map(int, end_md.split("-"))
+        except ValueError:
+            return now, now # Fail safe
+
+        # Construct potential dates for this year
+        start_this_year = datetime(current_year, s_m, s_d)
+        end_this_year = datetime(current_year, e_m, e_d)
+        
+        # Determine if season wraps around year end (e.g. Dec 1 to Jan 7)
+        wraps = start_this_year > end_this_year
+
+        if wraps:
+            # If wrapping, we have two possible windows relevant to 'now':
+            # 1. The one starting late last year (e.g. Dec 2024 - Jan 2025)
+            # 2. The one starting late this year (e.g. Dec 2025 - Jan 2026)
+            
+            # Check window 1 (Last Year Start -> This Year End)
+            start_prev = datetime(current_year - 1, s_m, s_d)
+            end_curr = end_this_year # Jan 2025
+            
+            # Check window 2 (This Year Start -> Next Year End)
+            start_curr = start_this_year # Dec 2025
+            end_next = datetime(current_year + 1, e_m, e_d) # Jan 2026
+            
+            # Logic:
+            # If we are in Jan (before end_curr), the season is active (started prev year).
+            # If we are in Dec (after start_curr), the season is active (ends next year).
+            # If we are in between (Feb - Nov), we look at start_curr (Next season).
+            
+            if now <= end_curr:
+                return start_prev, end_curr
+            elif now >= start_curr:
+                return start_curr, end_next
+            else:
+                # We are in the off-season. Return the UPCOMING season.
+                return start_curr, end_next
+                
+        else:
+            # Simple case: Season within same year (e.g. June to August)
+            if now > end_this_year:
+                # Season finished this year. Return next year's dates.
+                start_next = datetime(current_year + 1, s_m, s_d)
+                end_next = datetime(current_year + 1, e_m, e_d)
+                return start_next, end_next
+            else:
+                # Season hasn't happened or is happening.
+                return start_this_year, end_this_year
 
     async def check_channel(self, ctx):
         """Ensures the command is used in the allowed channel."""
@@ -342,27 +399,29 @@ class Snowball(commands.Cog):
     async def check_season(self, ctx):
         """Checks if the current time is within the season dates."""
         if await self.bot.is_owner(ctx.author) or ctx.author.guild_permissions.administrator:
-            # Optional: Allow admins to test commands outside season? 
-            # For now, let's enforce season for everyone to avoid confusion, 
-            # unless start/end are 0 (disabled dates).
+            # Optional bypass for testing
             pass
 
         data = await self.config.guild(ctx.guild).all()
-        start = data['start_date']
-        end = data['end_date']
-        now = int(time.time())
-
-        # If dates are 0, assume season is always open or not configured
-        if start == 0 and end == 0:
-            return True
+        start_str = data.get('season_start_str', "0")
+        end_str = data.get('season_end_str', "0")
         
-        if now < start:
-            relative = f"<t:{start}:R>"
-            await ctx.send(f"🛑 The Snowball season hasn't started yet! It begins {relative}.")
+        # If dates are 0, assume season is always open
+        if start_str == "0" and end_str == "0":
+            return True
+
+        now = datetime.now()
+        start_dt, end_dt = self.get_season_dates(start_str, end_str)
+        
+        # If now is before start, it's upcoming
+        if now < start_dt:
+            # Use timestamp for localized time
+            ts = int(start_dt.timestamp())
+            await ctx.send(f"🛑 The Snowball season hasn't started yet! It begins <t:{ts}:F>.")
             return False
         
-        if now > end:
-            # If manual end message hasn't triggered yet, this catches user interaction
+        # If now is after end, it's over
+        if now > end_dt:
             await ctx.send(f"🛑 The Snowball season has ended! See you next year.")
             return False
 
@@ -775,11 +834,15 @@ class Snowball(commands.Cog):
             embed.add_field(name=f"{item_name} - {price} {currency}", value=desc_str, inline=False)
 
             async def button_callback(interaction, i_name=item_name, i_price=price):
-                # Re-check season in case it ended while menu was open
-                data = await self.config.guild(interaction.guild).all()
-                now = int(time.time())
-                if data['end_date'] != 0 and now > data['end_date']:
-                    return await interaction.response.send_message("The season has ended! Shop closed.", ephemeral=True)
+                # Re-check season
+                conf = self.config.guild(interaction.guild)
+                s_str = await conf.season_start_str()
+                e_str = await conf.season_end_str()
+                
+                if s_str != "0" and e_str != "0":
+                    start_dt, end_dt = self.get_season_dates(s_str, e_str)
+                    if datetime.now() > end_dt:
+                        return await interaction.response.send_message("The season has ended! Shop closed.", ephemeral=True)
 
                 if not await bank.can_spend(interaction.user, i_price):
                     return await interaction.response.send_message("You cannot afford this!", ephemeral=True)
@@ -893,51 +956,35 @@ class Snowball(commands.Cog):
         This does not remove the items from the shop.
         """
         await self.config.clear_all_members(ctx.guild)
-        # Also reset season ended flag so the end message can trigger again if dates are reset
-        await self.config.guild(ctx.guild).season_ended.set(False)
+        await self.config.guild(ctx.guild).last_season_year.set(0) # Reset season tracker
         await ctx.send("🚨 **GAME RESET!** 🚨\nAll player HP, stats, snowballs, and inventories have been wiped. Let the new games begin!")
 
     @snowballset.command(name="dates")
-    async def set_dates(self, ctx, start_date: str, end_date: str):
+    async def set_dates(self, ctx, start_md: str, end_md: str):
         """
-        Set the start and end dates for the Snowball season.
-        Format: YYYY-MM-DD or "YYYY-MM-DD HH:MM" (Quotes required for space).
+        Set the recurring start and end dates for the Snowball season.
+        Format: MM-DD (e.g. 12-01 01-07).
         Use '0' for both to disable the date check.
         """
-        if start_date == "0" and end_date == "0":
-            await self.config.guild(ctx.guild).start_date.set(0)
-            await self.config.guild(ctx.guild).end_date.set(0)
-            await self.config.guild(ctx.guild).season_ended.set(False)
+        if start_md == "0" and end_md == "0":
+            await self.config.guild(ctx.guild).season_start_str.set("0")
+            await self.config.guild(ctx.guild).season_end_str.set("0")
             return await ctx.send("📅 Season date checks disabled. The game is open indefinitely.")
 
-        formats = ["%Y-%m-%d", "%Y-%m-%d %H:%M"]
+        try:
+            # Validate format
+            datetime.strptime(f"2020-{start_md}", "%Y-%m-%d")
+            datetime.strptime(f"2020-{end_md}", "%Y-%m-%d")
+        except ValueError:
+            return await ctx.send("⚠️ Invalid format. Please use `MM-DD` (e.g. `12-01`).")
+
+        await self.config.guild(ctx.guild).season_start_str.set(start_md)
+        await self.config.guild(ctx.guild).season_end_str.set(end_md)
         
-        dt_start = None
-        dt_end = None
-
-        for f in formats:
-            try:
-                if not dt_start: dt_start = datetime.strptime(start_date, f)
-            except ValueError: pass
-            
-            try:
-                if not dt_end: dt_end = datetime.strptime(end_date, f)
-            except ValueError: pass
-
-        if not dt_start or not dt_end:
-            return await ctx.send("⚠️ Invalid format. Please use `YYYY-MM-DD` or `\"YYYY-MM-DD HH:MM\"`.")
-
-        ts_start = int(dt_start.timestamp())
-        ts_end = int(dt_end.timestamp())
-
-        if ts_end <= ts_start:
-            return await ctx.send("⚠️ End date must be after start date!")
-
-        await self.config.guild(ctx.guild).start_date.set(ts_start)
-        await self.config.guild(ctx.guild).end_date.set(ts_end)
-        await self.config.guild(ctx.guild).season_ended.set(False) # Reset this so end message triggers again
-
-        await ctx.send(f"📅 Season configured!\nStarts: <t:{ts_start}:F>\nEnds: <t:{ts_end}:F>")
+        # Calculate next dates for display
+        s_dt, e_dt = self.get_season_dates(start_md, end_md)
+        
+        await ctx.send(f"📅 Season configured!\nNext Window: <t:{int(s_dt.timestamp())}:D> to <t:{int(e_dt.timestamp())}:D>")
 
     @snowballset.command(name="view")
     async def view_settings(self, ctx):
@@ -948,13 +995,13 @@ class Snowball(commands.Cog):
         channel_obj = ctx.guild.get_channel(channel_id) if channel_id else None
         channel_str = channel_obj.mention if channel_obj else "Anywhere (None set)"
         
-        start_ts = guild_data.get('start_date', 0)
-        end_ts = guild_data.get('end_date', 0)
+        start_str = guild_data.get('season_start_str', "0")
+        end_str = guild_data.get('season_end_str', "0")
         
-        if start_ts == 0:
+        if start_str == "0":
             date_str = "Indefinite (Always Open)"
         else:
-            date_str = f"<t:{start_ts}:d> to <t:{end_ts}:d>"
+            date_str = f"Recurring: {start_str} to {end_str}"
 
         embed = discord.Embed(title="⚙️ Snowball Settings", color=discord.Color.light_grey())
         embed.add_field(name="Fight Channel", value=channel_str, inline=True)
