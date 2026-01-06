@@ -171,7 +171,7 @@ class HolidayGifts(commands.Cog):
         # 4. Check if already opened today
         if holiday_day in user_data['opened_days']:
             # Generate image anyway so they can see their progress
-            img_file = await generate_holiday_image(user_data['opened_days'], holiday_day)
+            img_file = await generate_holiday_image(self.bot, user_data['opened_days'], holiday_day)
             return await interaction.response.send_message("You have already opened today's gift! Here is your calendar:", file=img_file, ephemeral=True)
 
         # 5. SPECIAL: Day 25 Logic
@@ -180,7 +180,7 @@ class HolidayGifts(commands.Cog):
             needed = set(range(1, 25))
             opened = set(user_data['opened_days'])
             if not needed.issubset(opened):
-                img_file = await generate_holiday_image(user_data['opened_days'], holiday_day)
+                img_file = await generate_holiday_image(self.bot, user_data['opened_days'], holiday_day)
                 return await interaction.response.send_message("Day 25 is locked! You needed to open all previous 24 gifts to claim the grand prize.", file=img_file, ephemeral=True)
 
         # 6. Grant Rewards
@@ -263,7 +263,7 @@ class HolidayGifts(commands.Cog):
                 stats["users_completed"] += 1
 
         # 8. Send Image and Message
-        img_file = await generate_holiday_image(user_data['opened_days'] + [holiday_day], holiday_day)
+        img_file = await generate_holiday_image(self.bot, user_data['opened_days'] + [holiday_day], holiday_day)
         
         msg = f"**Day {holiday_day} Opened!** 🎄\n"
         if reward_text:
