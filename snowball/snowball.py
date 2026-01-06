@@ -959,6 +959,19 @@ class Snowball(commands.Cog):
         await self.config.guild(ctx.guild).last_season_year.set(0) # Reset season tracker
         await ctx.send("🚨 **GAME RESET!** 🚨\nAll player HP, stats, snowballs, and inventories have been wiped. Let the new games begin!")
 
+    @snowballset.command(name="forceseasonend")
+    async def force_season_end(self, ctx):
+        """
+        Manually trigger the end-of-season rewards and leaderboards.
+        Useful if the automatic trigger was missed or you want to end it early.
+        """
+        channel_id = await self.config.guild(ctx.guild).channel_id()
+        if not channel_id:
+            return await ctx.send("Please set a fight channel first using `[p]snowballset channel` so I know where to post the results.")
+
+        await ctx.send("Triggering end of season event...")
+        await self.run_end_of_season(ctx.guild)
+
     @snowballset.command(name="dates")
     async def set_dates(self, ctx, start_md: str, end_md: str):
         """
