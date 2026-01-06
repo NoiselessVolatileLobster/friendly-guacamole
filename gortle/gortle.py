@@ -424,7 +424,7 @@ class Gortle(commands.Cog):
         if top_scorer and top_score > 0:
             try:
                 await top_scorer.add_roles(role, reason="Gortle weekly winner")
-                await target_channel.send(f"醇 **{top_scorer.mention}** is the Gortle Champion of the week with {top_score} points!")
+                await target_channel.send(f"顏為唶 **{top_scorer.mention}** is the Gortle Champion of the week with {top_score} points!")
             except discord.Forbidden:
                 await target_channel.send("I tried to give the weekly role but lack permissions.")
         
@@ -450,7 +450,7 @@ class Gortle(commands.Cog):
             sleep_streak = await self.config.consecutive_no_guesses()
             
             if not is_active and sleep_streak >= 3:
-                await message.channel.send("🥱 I'm awake! Getting a new game ready...")
+                await message.channel.send("馃ケ I'm awake! Getting a new game ready...")
                 await self.start_new_game(manual=True)
                 return
 
@@ -461,6 +461,7 @@ class Gortle(commands.Cog):
         if not re.fullmatch(r"[a-z]{6}", guess):
             return 
         
+        # Optimization: Check if game is active before loading other configs
         if not await self.config.game_active():
             return
             
@@ -476,7 +477,9 @@ class Gortle(commands.Cog):
             try:
                 await message.delete()
                 next_time = int(last_guess + cooldown)
-                await message.channel.send(f"{message.author.mention}, you need to wait. Next guess: <t:{next_time}:R>", delete_after=5)
+                remaining = int(next_time - now)
+                # Updated to show remaining time explicitly as requested
+                await message.channel.send(f"{message.author.mention}, you need to wait. ({remaining}s left) Next guess: <t:{next_time}:R>", delete_after=5)
             except discord.Forbidden:
                 pass
             return
@@ -485,7 +488,8 @@ class Gortle(commands.Cog):
             await message.channel.send("I do not think that word is in my dictionary.", delete_after=5)
             return
 
-        await self.config.member(message.author).last_guess_time.set(int(now))
+        # NOTE: We do NOT set the last_guess_time here anymore. 
+        # We wait until we verify it's not a duplicate guess inside the lock.
         
         async with self.lock:
             if not await self.config.game_active():
@@ -494,9 +498,15 @@ class Gortle(commands.Cog):
 
             state = await self.config.game_state()
             history = state.get("history", [])
+            
+            # Check for duplicates
             if any(entry.get("word") == guess for entry in history):
                 await message.channel.send("That word has already been guessed.", delete_after=5)
+                # We return EARLY without updating last_guess_time, so the user is not punished.
                 return
+
+            # Valid new guess: Update timer now
+            await self.config.member(message.author).last_guess_time.set(int(now))
 
             await self.process_guess(message, guess)
 
