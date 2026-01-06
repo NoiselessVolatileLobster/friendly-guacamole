@@ -1,13 +1,11 @@
 from PIL import Image, ImageDraw, ImageFont
 import discord
 import io
-import asyncio
 import time
 from pathlib import Path
 
-# URL for Font Awesome 6 Free (Solid) TTF
-FA_URL = "https://raw.githubusercontent.com/FortAwesome/Font-Awesome/6.5.1/webfonts/fa-solid-900.ttf"
-FONT_FILENAME = "FontAwesome6_Solid.ttf"
+# Filename for local loading
+FONT_FILENAME = "fa-solid-900.ttf"
 
 # Holiday Icon Map (Font Awesome 6 Unicode PUA)
 HOLIDAY_ICONS = {
@@ -38,34 +36,22 @@ HOLIDAY_ICONS = {
     25: "\uf06b"  # Gift
 }
 
-async def get_fontawesome(bot, data_path: Path, size: int):
+async def get_fontawesome(data_path: Path, size: int):
     """
     Returns an ImageFont object from the local data folder.
-    Downloads it if it doesn't exist.
+    Strictly reads from disk, does not download.
     """
     font_path = data_path / FONT_FILENAME
     
-    # 1. Check if file exists on disk
-    if not font_path.exists():
+    if font_path.exists():
         try:
-            async with bot.session.get(FA_URL) as resp:
-                if resp.status == 200:
-                    data = await resp.read()
-                    with open(font_path, "wb") as f:
-                        f.write(data)
-                else:
-                    print(f"HolidayGifts: Font download failed with status {resp.status}")
-                    return None
+            return ImageFont.truetype(str(font_path), size)
         except Exception as e:
-            print(f"HolidayGifts: Failed to download FontAwesome: {e}")
-            return None
-            
-    # 2. Load from disk
-    try:
-        return ImageFont.truetype(str(font_path), size)
-    except Exception as e:
-        print(f"HolidayGifts: Error loading font from {font_path}: {e}")
-        return None
+            print(f"HolidayGifts: Error loading font from {font_path}: {e}")
+    else:
+        print(f"HolidayGifts: Font file NOT found at: {font_path}")
+        
+    return None
 
 async def generate_holiday_image(bot, opened_days: list, current_day_int: int, data_path: Path):
     """
@@ -93,11 +79,8 @@ async def generate_holiday_image(bot, opened_days: list, current_day_int: int, d
     # Load Fonts
     icon_size = int(cell_size * 0.85)
     
-    # Ensure data path exists before trying to save font there
-    if not data_path.exists():
-        data_path.mkdir(parents=True, exist_ok=True)
-        
-    fa_font = await get_fontawesome(bot, data_path, icon_size)
+    # Pass the path to get_fontawesome
+    fa_font = await get_fontawesome(data_path, icon_size)
     
     try:
         number_font = ImageFont.truetype("arialbd.ttf", 20)
@@ -151,7 +134,7 @@ async def generate_holiday_image(bot, opened_days: list, current_day_int: int, d
                     w, h = draw.textsize(icon_char, font=fa_font)
                     draw.text(((x1 + (cell_size-w)/2), (y1 + (cell_size-h)/2)), icon_char, fill=(255, 255, 255), font=fa_font)
             else:
-                # Fallback if font failed to download/load
+                # Fallback if font failed to load from disk
                 draw.text((center_x, center_y), "!", fill=(255, 0, 0), font=mark_font, anchor="mm")
 
             # Day Number (Small)

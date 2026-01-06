@@ -2,12 +2,11 @@ import discord
 import asyncio
 import datetime
 import random
+from pathlib import Path
 from typing import Optional, Union, Dict, List
 
 from redbot.core import commands, Config, bank, checks
 from redbot.core.utils.chat_formatting import humanize_list, box
-# Import data_manager to get the persistent storage path
-from redbot.core.data_manager import cog_data_path
 from discord.ui import View, Button
 
 # Import the image generator
@@ -149,8 +148,8 @@ class HolidayGifts(commands.Cog):
         guild = interaction.guild
         user = interaction.user
         
-        # 0. Get Data Path for Images
-        data_path = cog_data_path(self)
+        # 0. Get Data Path for Images (Local 'data' folder next to this file)
+        data_path = Path(__file__).parent / "data"
 
         # 1. Check Date Availability
         holiday_day = await self.get_holiday_day(guild)
