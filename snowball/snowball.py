@@ -2,6 +2,7 @@ import discord
 import asyncio
 import random
 import time
+from datetime import datetime
 from redbot.core import commands, Config, bank
 from redbot.core.utils.chat_formatting import box, humanize_list
 from discord.ext import tasks
@@ -37,13 +38,11 @@ class LeaderboardView(View):
             self.add_item(btn)
 
     async def button_callback(self, interaction: discord.Interaction):
-        # Fix: Access custom_id from the interaction data payload
         self.current_sort = interaction.data["custom_id"]
         
         # Update button styles to show active selection
         for child in self.children:
             if isinstance(child, Button):
-                # Compare against the child's custom_id
                 child.style = discord.ButtonStyle.primary if child.custom_id == self.current_sort else discord.ButtonStyle.secondary
         
         embed = self.generate_embed()
@@ -51,15 +50,17 @@ class LeaderboardView(View):
 
     def generate_embed(self):
         sort_key = self.sort_map[self.current_sort]
-        
-        # Sort data
+        return self._build_embed(self.current_sort, sort_key)
+
+    def _build_embed(self, title_suffix, sort_key):
+        # Shared logic for building the embed so we can use it for end-of-season too
         sorted_members = sorted(
             self.all_data.items(), 
             key=lambda x: x[1].get(sort_key, 0), 
             reverse=True
         )[:10]
 
-        embed = discord.Embed(title=f"🏆 Snowball Championships: {self.current_sort}", color=discord.Color.gold())
+        embed = discord.Embed(title=f"🏆 Snowball Championships: {title_suffix}", color=discord.Color.gold())
         
         desc = ""
         for index, (user_id, data) in enumerate(sorted_members, 1):
@@ -67,11 +68,7 @@ class LeaderboardView(View):
             name = user.display_name if user else "Unknown User"
             val = data.get(sort_key, 0)
             
-            # Format the value if it's money
-            if sort_key == "stat_credits_spent":
-                val_str = f"{val}" 
-            else:
-                val_str = f"{val}"
+            val_str = f"{val}"
 
             desc += f"**{index}. {name}**: {val_str}\n"
             
@@ -79,7 +76,7 @@ class LeaderboardView(View):
             desc = "No stats recorded yet!"
             
         embed.description = desc
-        embed.set_footer(text="Click the buttons below to sort by different stats.")
+        embed.set_footer(text="Top 10 Players")
         return embed
 
 class Snowball(commands.Cog):
@@ -176,7 +173,11 @@ class Snowball(commands.Cog):
             "shop_last_refresh": 0,
             "snowball_roll_time": 60,
             "channel_id": None,
-            "snowfall_probability": 50
+            "snowfall_probability": 50,
+            # Season config
+            "start_date": 0,
+            "end_date": 0,
+            "season_ended": False
         }
 
         default_member = {
@@ -214,15 +215,28 @@ class Snowball(commands.Cog):
 
     @tasks.loop(minutes=15)
     async def snowfall_loop(self):
-        """Calculates snowfall probability every 15 minutes."""
+        """Calculates snowfall probability every 15 minutes and checks for season end."""
         for guild in self.bot.guilds:
+            # 1. Check Season Status
+            conf = self.config.guild(guild)
+            end_date = await conf.end_date()
+            season_ended = await conf.season_ended()
+            
+            now = int(time.time())
+
+            # If end date is set, passed, and we haven't announced it yet
+            if end_date != 0 and now > end_date and not season_ended:
+                await self.run_end_of_season(guild)
+                continue # Skip snowfall logic if season just ended
+
+            # 2. Snowfall Logic
             # Generate probability 0-100
             probability = random.randint(0, 100)
-            await self.config.guild(guild).snowfall_probability.set(probability)
+            await conf.snowfall_probability.set(probability)
             
             # Check for heavy snow
             if probability > 85:
-                channel_id = await self.config.guild(guild).channel_id()
+                channel_id = await conf.channel_id()
                 if channel_id:
                     channel = guild.get_channel(channel_id)
                     # Ensure bot can speak there and channel exists
@@ -232,6 +246,79 @@ class Snowball(commands.Cog):
     @snowfall_loop.before_loop
     async def before_snowfall_loop(self):
         await self.bot.wait_until_red_ready()
+
+    async def run_end_of_season(self, guild):
+        """Posts the end of season message and leaderboards."""
+        channel_id = await self.config.guild(guild).channel_id()
+        if not channel_id:
+            return
+            
+        channel = guild.get_channel(channel_id)
+        if not channel or not channel.permissions_for(guild.me).send_messages:
+            return
+
+        # 1. Announce End
+        await channel.send("🎉 **The Snowball Season has officially ended!** 🎉\nThanks for playing! Come back next year!")
+        await asyncio.sleep(2)
+
+        # 2. Fetch Data for Leaderboards
+        all_members = await self.config.all_members(guild)
+        if not all_members:
+            await self.config.guild(guild).season_ended.set(True)
+            return
+
+        # 3. Create a dummy view just to access the sort logic/maps
+        # We need a context-like object for the view, but the view mainly needs guild/member info
+        # We can construct a minimal dummy ctx class or just pass the channel/guild manually if we refactor
+        # But simpler: Re-instantiate the logic locally or use the existing View code slightly modified.
+        
+        # We will reuse the sort map from the View class to ensure consistency
+        sort_map = {
+            "Damage Dealt": "stat_damage_dealt",
+            "Damage Taken": "stat_hits_taken",
+            "Snowballs Made": "stat_snowballs_made",
+            "Cookies Eaten": "stat_cookies_eaten",
+            "Drinks Drunk": "stat_drinks_drunk",
+            "Money Spent": "stat_credits_spent"
+        }
+
+        # 4. Loop through categories and post
+        # Create a dummy context object that just has .guild
+        class DummyCtx:
+            def __init__(self, g): self.guild = g
+        
+        dummy_ctx = DummyCtx(guild)
+        
+        # Helper method from LeaderboardView (instantiating just to access helper is fine)
+        # We can just manually build it here to avoid complex View instantiation without a real interaction
+        
+        for pretty_name, stat_key in sort_map.items():
+            sorted_data = sorted(
+                all_members.items(), 
+                key=lambda x: x[1].get(stat_key, 0), 
+                reverse=True
+            )[:10]
+
+            embed = discord.Embed(title=f"🏆 Final Leaderboard: {pretty_name}", color=discord.Color.gold())
+            desc = ""
+            for index, (user_id, data) in enumerate(sorted_data, 1):
+                user = guild.get_member(user_id)
+                name = user.display_name if user else "Unknown User"
+                val = data.get(stat_key, 0)
+                desc += f"**{index}. {name}**: {val}\n"
+            
+            if not desc:
+                desc = "No stats recorded."
+            
+            embed.description = desc
+            await channel.send(embed=embed)
+            
+            # Delay to avoid throttling
+            await asyncio.sleep(5)
+
+        # 5. Mark season as ended
+        await self.config.guild(guild).season_ended.set(True)
+
 
     # --- Helper Functions ---
 
@@ -250,6 +337,35 @@ class Snowball(commands.Cog):
             await ctx.send(f"🚫 Run Snowball commands in {channel.mention}!", delete_after=5)
             return False
             
+        return True
+
+    async def check_season(self, ctx):
+        """Checks if the current time is within the season dates."""
+        if await self.bot.is_owner(ctx.author) or ctx.author.guild_permissions.administrator:
+            # Optional: Allow admins to test commands outside season? 
+            # For now, let's enforce season for everyone to avoid confusion, 
+            # unless start/end are 0 (disabled dates).
+            pass
+
+        data = await self.config.guild(ctx.guild).all()
+        start = data['start_date']
+        end = data['end_date']
+        now = int(time.time())
+
+        # If dates are 0, assume season is always open or not configured
+        if start == 0 and end == 0:
+            return True
+        
+        if now < start:
+            relative = f"<t:{start}:R>"
+            await ctx.send(f"🛑 The Snowball season hasn't started yet! It begins {relative}.")
+            return False
+        
+        if now > end:
+            # If manual end message hasn't triggered yet, this catches user interaction
+            await ctx.send(f"🛑 The Snowball season has ended! See you next year.")
+            return False
+
         return True
 
     async def check_status(self, ctx):
@@ -297,8 +413,8 @@ class Snowball(commands.Cog):
         Equip a booster item from your inventory.
         You must unequip your current item first.
         """
-        if not await self.check_channel(ctx):
-            return
+        if not await self.check_channel(ctx): return
+        if not await self.check_season(ctx): return
 
         inventory = await self.config.member(ctx.author).inventory()
         # Find exact casing
@@ -337,8 +453,8 @@ class Snowball(commands.Cog):
     @commands.command()
     async def snowunequip(self, ctx):
         """Unequip your current booster and return it to inventory."""
-        if not await self.check_channel(ctx):
-            return
+        if not await self.check_channel(ctx): return
+        if not await self.check_season(ctx): return
 
         async with self.config.member(ctx.author).all() as data:
             active = data.get('active_booster')
@@ -361,10 +477,9 @@ class Snowball(commands.Cog):
     @commands.command()
     async def makesnowballs(self, ctx):
         """Start making snowballs."""
-        if not await self.check_channel(ctx):
-            return
-        if not await self.check_status(ctx):
-            return
+        if not await self.check_channel(ctx): return
+        if not await self.check_season(ctx): return
+        if not await self.check_status(ctx): return
 
         member_conf = self.config.member(ctx.author)
         gathering_end = await member_conf.gathering_end()
@@ -421,10 +536,9 @@ class Snowball(commands.Cog):
     @commands.command()
     async def eat(self, ctx, *, item_name: str):
         """Eat a cookie to regain HP."""
-        if not await self.check_channel(ctx):
-            return
-        if not await self.check_status(ctx):
-            return
+        if not await self.check_channel(ctx): return
+        if not await self.check_season(ctx): return
+        if not await self.check_status(ctx): return
 
         inventory = await self.config.member(ctx.author).inventory()
         # Find exact casing
@@ -464,10 +578,9 @@ class Snowball(commands.Cog):
     @commands.command()
     async def drink(self, ctx, *, item_name: str):
         """Drink a beverage to gain a temporary damage boost."""
-        if not await self.check_channel(ctx):
-            return
-        if not await self.check_status(ctx):
-            return
+        if not await self.check_channel(ctx): return
+        if not await self.check_season(ctx): return
+        if not await self.check_status(ctx): return
 
         inventory = await self.config.member(ctx.author).inventory()
         found_name = None
@@ -510,10 +623,9 @@ class Snowball(commands.Cog):
     @commands.command(aliases=["throw"])
     async def throwball(self, ctx, target: discord.Member):
         """Throw a snowball at someone!"""
-        if not await self.check_channel(ctx):
-            return
-        if not await self.check_status(ctx):
-            return
+        if not await self.check_channel(ctx): return
+        if not await self.check_season(ctx): return
+        if not await self.check_status(ctx): return
         
         if target.bot:
             return await ctx.send("🤖 Robots don't feel the cold. Save your ammo!")
@@ -614,10 +726,9 @@ class Snowball(commands.Cog):
     @commands.command()
     async def snowshop(self, ctx):
         """Open the Snowball Shop."""
-        if not await self.check_channel(ctx):
-            return
-        if not await self.check_status(ctx):
-            return
+        if not await self.check_channel(ctx): return
+        if not await self.check_season(ctx): return
+        if not await self.check_status(ctx): return
 
         guild_conf = self.config.guild(ctx.guild)
         last_refresh = await guild_conf.shop_last_refresh()
@@ -664,6 +775,12 @@ class Snowball(commands.Cog):
             embed.add_field(name=f"{item_name} - {price} {currency}", value=desc_str, inline=False)
 
             async def button_callback(interaction, i_name=item_name, i_price=price):
+                # Re-check season in case it ended while menu was open
+                data = await self.config.guild(interaction.guild).all()
+                now = int(time.time())
+                if data['end_date'] != 0 and now > data['end_date']:
+                    return await interaction.response.send_message("The season has ended! Shop closed.", ephemeral=True)
+
                 if not await bank.can_spend(interaction.user, i_price):
                     return await interaction.response.send_message("You cannot afford this!", ephemeral=True)
                 
@@ -776,7 +893,51 @@ class Snowball(commands.Cog):
         This does not remove the items from the shop.
         """
         await self.config.clear_all_members(ctx.guild)
+        # Also reset season ended flag so the end message can trigger again if dates are reset
+        await self.config.guild(ctx.guild).season_ended.set(False)
         await ctx.send("🚨 **GAME RESET!** 🚨\nAll player HP, stats, snowballs, and inventories have been wiped. Let the new games begin!")
+
+    @snowballset.command(name="dates")
+    async def set_dates(self, ctx, start_date: str, end_date: str):
+        """
+        Set the start and end dates for the Snowball season.
+        Format: YYYY-MM-DD or "YYYY-MM-DD HH:MM" (Quotes required for space).
+        Use '0' for both to disable the date check.
+        """
+        if start_date == "0" and end_date == "0":
+            await self.config.guild(ctx.guild).start_date.set(0)
+            await self.config.guild(ctx.guild).end_date.set(0)
+            await self.config.guild(ctx.guild).season_ended.set(False)
+            return await ctx.send("📅 Season date checks disabled. The game is open indefinitely.")
+
+        formats = ["%Y-%m-%d", "%Y-%m-%d %H:%M"]
+        
+        dt_start = None
+        dt_end = None
+
+        for f in formats:
+            try:
+                if not dt_start: dt_start = datetime.strptime(start_date, f)
+            except ValueError: pass
+            
+            try:
+                if not dt_end: dt_end = datetime.strptime(end_date, f)
+            except ValueError: pass
+
+        if not dt_start or not dt_end:
+            return await ctx.send("⚠️ Invalid format. Please use `YYYY-MM-DD` or `\"YYYY-MM-DD HH:MM\"`.")
+
+        ts_start = int(dt_start.timestamp())
+        ts_end = int(dt_end.timestamp())
+
+        if ts_end <= ts_start:
+            return await ctx.send("⚠️ End date must be after start date!")
+
+        await self.config.guild(ctx.guild).start_date.set(ts_start)
+        await self.config.guild(ctx.guild).end_date.set(ts_end)
+        await self.config.guild(ctx.guild).season_ended.set(False) # Reset this so end message triggers again
+
+        await ctx.send(f"📅 Season configured!\nStarts: <t:{ts_start}:F>\nEnds: <t:{ts_end}:F>")
 
     @snowballset.command(name="view")
     async def view_settings(self, ctx):
@@ -786,9 +947,18 @@ class Snowball(commands.Cog):
         channel_id = guild_data['channel_id']
         channel_obj = ctx.guild.get_channel(channel_id) if channel_id else None
         channel_str = channel_obj.mention if channel_obj else "Anywhere (None set)"
+        
+        start_ts = guild_data.get('start_date', 0)
+        end_ts = guild_data.get('end_date', 0)
+        
+        if start_ts == 0:
+            date_str = "Indefinite (Always Open)"
+        else:
+            date_str = f"<t:{start_ts}:d> to <t:{end_ts}:d>"
 
         embed = discord.Embed(title="⚙️ Snowball Settings", color=discord.Color.light_grey())
         embed.add_field(name="Fight Channel", value=channel_str, inline=True)
+        embed.add_field(name="Season Dates", value=date_str, inline=True)
         embed.add_field(name="Snowball Roll Time", value=f"{guild_data['snowball_roll_time']} seconds", inline=True)
         
         items = guild_data['items']
