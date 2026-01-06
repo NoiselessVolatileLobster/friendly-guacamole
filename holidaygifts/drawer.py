@@ -3,13 +3,11 @@ import discord
 import io
 import asyncio
 import time
+from pathlib import Path
 
 # URL for Font Awesome 6 Free (Solid) TTF
-# Switched to TTF and a specific version tag (6.5.1) for better stability/compatibility than OTF
 FA_URL = "https://raw.githubusercontent.com/FortAwesome/Font-Awesome/6.5.1/webfonts/fa-solid-900.ttf"
-
-# Font Cache (stores the BytesIO object of the font file)
-FONT_FILE_CACHE = None
+FONT_FILENAME = "FontAwesome6_Solid.ttf"
 
 # Holiday Icon Map (Font Awesome 6 Unicode PUA)
 HOLIDAY_ICONS = {
@@ -40,37 +38,36 @@ HOLIDAY_ICONS = {
     25: "\uf06b"  # Gift
 }
 
-async def get_fontawesome(bot, size):
+async def get_fontawesome(bot, data_path: Path, size: int):
     """
-    Returns an ImageFont object for FontAwesome, downloading it if necessary.
-    Returns None if download fails.
+    Returns an ImageFont object from the local data folder.
+    Downloads it if it doesn't exist.
     """
-    global FONT_FILE_CACHE
+    font_path = data_path / FONT_FILENAME
     
-    # 1. Try Cache
-    if FONT_FILE_CACHE:
+    # 1. Check if file exists on disk
+    if not font_path.exists():
         try:
-            FONT_FILE_CACHE.seek(0)
-            return ImageFont.truetype(FONT_FILE_CACHE, size)
-        except Exception:
-            # If cache is corrupted, reset it
-            FONT_FILE_CACHE = None
-    
-    # 2. Download
+            async with bot.session.get(FA_URL) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    with open(font_path, "wb") as f:
+                        f.write(data)
+                else:
+                    print(f"HolidayGifts: Font download failed with status {resp.status}")
+                    return None
+        except Exception as e:
+            print(f"HolidayGifts: Failed to download FontAwesome: {e}")
+            return None
+            
+    # 2. Load from disk
     try:
-        async with bot.session.get(FA_URL) as resp:
-            if resp.status == 200:
-                data = await resp.read()
-                FONT_FILE_CACHE = io.BytesIO(data)
-                return ImageFont.truetype(FONT_FILE_CACHE, size)
-            else:
-                print(f"FontAwesome Download Failed: Status {resp.status}")
+        return ImageFont.truetype(str(font_path), size)
     except Exception as e:
-        print(f"Failed to download FontAwesome: {e}")
-        
-    return None
+        print(f"HolidayGifts: Error loading font from {font_path}: {e}")
+        return None
 
-async def generate_holiday_image(bot, opened_days: list, current_day_int: int):
+async def generate_holiday_image(bot, opened_days: list, current_day_int: int, data_path: Path):
     """
     Generates a 5x5 grid image for the Holiday Gifts system.
     """
@@ -95,7 +92,12 @@ async def generate_holiday_image(bot, opened_days: list, current_day_int: int):
     
     # Load Fonts
     icon_size = int(cell_size * 0.85)
-    fa_font = await get_fontawesome(bot, icon_size)
+    
+    # Ensure data path exists before trying to save font there
+    if not data_path.exists():
+        data_path.mkdir(parents=True, exist_ok=True)
+        
+    fa_font = await get_fontawesome(bot, data_path, icon_size)
     
     try:
         number_font = ImageFont.truetype("arialbd.ttf", 20)
@@ -109,6 +111,7 @@ async def generate_holiday_image(bot, opened_days: list, current_day_int: int):
             mark_font = ImageFont.load_default()
 
     for i in range(1, 26):
+        # Calculate Grid Position (0-indexed)
         idx = i - 1
         row = idx // cols
         col = idx % cols
@@ -148,7 +151,7 @@ async def generate_holiday_image(bot, opened_days: list, current_day_int: int):
                     w, h = draw.textsize(icon_char, font=fa_font)
                     draw.text(((x1 + (cell_size-w)/2), (y1 + (cell_size-h)/2)), icon_char, fill=(255, 255, 255), font=fa_font)
             else:
-                # Fallback if font failed to download
+                # Fallback if font failed to download/load
                 draw.text((center_x, center_y), "!", fill=(255, 0, 0), font=mark_font, anchor="mm")
 
             # Day Number (Small)

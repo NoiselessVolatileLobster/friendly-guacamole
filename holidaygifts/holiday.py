@@ -6,6 +6,8 @@ from typing import Optional, Union, Dict, List
 
 from redbot.core import commands, Config, bank, checks
 from redbot.core.utils.chat_formatting import humanize_list, box
+# Import data_manager to get the persistent storage path
+from redbot.core.data_manager import cog_data_path
 from discord.ui import View, Button
 
 # Import the image generator
@@ -147,6 +149,9 @@ class HolidayGifts(commands.Cog):
         guild = interaction.guild
         user = interaction.user
         
+        # 0. Get Data Path for Images
+        data_path = cog_data_path(self)
+
         # 1. Check Date Availability
         holiday_day = await self.get_holiday_day(guild)
         if not holiday_day:
@@ -171,7 +176,7 @@ class HolidayGifts(commands.Cog):
         # 4. Check if already opened today
         if holiday_day in user_data['opened_days']:
             # Generate image anyway so they can see their progress
-            img_file = await generate_holiday_image(self.bot, user_data['opened_days'], holiday_day)
+            img_file = await generate_holiday_image(self.bot, user_data['opened_days'], holiday_day, data_path)
             return await interaction.response.send_message("You have already opened today's gift! Here is your calendar:", file=img_file, ephemeral=True)
 
         # 5. SPECIAL: Day 25 Logic
@@ -180,7 +185,7 @@ class HolidayGifts(commands.Cog):
             needed = set(range(1, 25))
             opened = set(user_data['opened_days'])
             if not needed.issubset(opened):
-                img_file = await generate_holiday_image(self.bot, user_data['opened_days'], holiday_day)
+                img_file = await generate_holiday_image(self.bot, user_data['opened_days'], holiday_day, data_path)
                 return await interaction.response.send_message("Day 25 is locked! You needed to open all previous 24 gifts to claim the grand prize.", file=img_file, ephemeral=True)
 
         # 6. Grant Rewards
@@ -263,7 +268,7 @@ class HolidayGifts(commands.Cog):
                 stats["users_completed"] += 1
 
         # 8. Send Image and Message
-        img_file = await generate_holiday_image(self.bot, user_data['opened_days'] + [holiday_day], holiday_day)
+        img_file = await generate_holiday_image(self.bot, user_data['opened_days'] + [holiday_day], holiday_day, data_path)
         
         msg = f"**Day {holiday_day} Opened!** 🎄\n"
         if reward_text:
