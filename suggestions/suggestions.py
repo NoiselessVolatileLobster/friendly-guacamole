@@ -4,7 +4,10 @@ from redbot.core.utils.chat_formatting import box, humanize_list
 from redbot.core.utils.predicates import MessagePredicate
 import asyncio
 import datetime
+import logging
 from collections import defaultdict, Counter
+
+log = logging.getLogger("red.suggestions")
 
 class SuggestionModal(discord.ui.Modal):
     def __init__(self, cog):
@@ -50,8 +53,10 @@ class EntryView(discord.ui.View):
     @discord.ui.button(label="📩 Make a suggestion", style=discord.ButtonStyle.primary, custom_id="suggestions:create_btn")
     async def create_callback(self, interaction: discord.Interaction, button: discord.ui.Button):
         conf_channel = await self.cog.config.guild(interaction.guild).channel_id()
+        # Optional: Allow creating from anywhere, or restrict to specific channel
+        # Currently restricting to the config channel to keep flow contained
         if interaction.channel_id != conf_channel:
-            await interaction.response.send_message("This button is not active in this channel.", ephemeral=True)
+            await interaction.response.send_message(f"Please go to <#{conf_channel}> to make a suggestion.", ephemeral=True)
             return
 
         guild = interaction.guild
@@ -199,6 +204,7 @@ class Suggestions(commands.Cog):
     async def refresh_dashboard(self, guild, force_repost=False):
         """
         Refreshes the 'sticky' interaction message in the main channel.
+        Robustly handles missing messages or permissions.
         """
         channel_id = await self.config.guild(guild).channel_id()
         if not channel_id:
@@ -216,20 +222,49 @@ class Suggestions(commands.Cog):
         if msg_id:
             try:
                 msg = await channel.fetch_message(msg_id)
-                if force_repost:
-                    await msg.delete()
-                    msg = None # Signal to send new
-                else:
-                    await msg.edit(embed=embed, view=self.entry_view)
-                    return 
             except discord.NotFound:
-                msg = None 
+                msg = None # Need to create new
             except discord.Forbidden:
-                return 
+                # If we can't see the message/history, we assume it's lost and try to send a new one
+                # This might cause duplicates if perms are weird (Send = Yes, History = No), but better than no dashboard
+                msg = None 
+
+        # Sticky Logic:
+        # If we found the message, check if it's the last one in the channel.
+        # If it is, we don't need to delete and resend, just edit.
+        if msg and force_repost:
+            last_message = channel.last_message
+            if not last_message:
+                # Cache might be empty, try fetching 1
+                try:
+                    async for m in channel.history(limit=1):
+                        last_message = m
+                except discord.Forbidden:
+                    last_message = None
+
+            if last_message and last_message.id == msg.id:
+                # It is already at the bottom! Just edit.
+                force_repost = False 
+            else:
+                # It's not at the bottom, so we delete the old one
+                try:
+                    await msg.delete()
+                except (discord.NotFound, discord.Forbidden):
+                    pass
+                msg = None # Signal to create new
+
+        if msg:
+            try:
+                await msg.edit(embed=embed, view=self.entry_view)
+            except discord.NotFound:
+                msg = None # Edit failed, it was deleted mid-process
 
         if msg is None:
-            new_msg = await channel.send(embed=embed, view=self.entry_view)
-            await self.config.guild(guild).dashboard_msg_id.set(new_msg.id)
+            try:
+                new_msg = await channel.send(embed=embed, view=self.entry_view)
+                await self.config.guild(guild).dashboard_msg_id.set(new_msg.id)
+            except discord.Forbidden:
+                log.warning(f"Could not send suggestion dashboard in guild {guild.id}: Missing permissions.")
 
     async def update_live_overview(self, guild):
         """
@@ -246,20 +281,25 @@ class Suggestions(commands.Cog):
         msg_id = await self.config.guild(guild).overview_msg_id()
         embed = await self.generate_dashboard_embed(guild, is_overview=True)
         
+        msg = None
         if msg_id:
             try:
                 msg = await channel.fetch_message(msg_id)
+            except (discord.NotFound, discord.Forbidden):
+                msg = None
+
+        if msg:
+            try:
                 await msg.edit(embed=embed)
-            except discord.NotFound:
-                # If deleted, send a new one
+            except Exception:
+                msg = None # If edit fails, try sending new
+
+        if msg is None:
+            try:
                 new_msg = await channel.send(embed=embed)
                 await self.config.guild(guild).overview_msg_id.set(new_msg.id)
             except discord.Forbidden:
                 pass
-        else:
-            # Send initial if config exists but no msg id
-            new_msg = await channel.send(embed=embed)
-            await self.config.guild(guild).overview_msg_id.set(new_msg.id)
 
     async def update_suggestion_message(self, guild, data):
         channel_id = await self.config.guild(guild).channel_id()
@@ -268,7 +308,7 @@ class Suggestions(commands.Cog):
 
         try:
             message = await channel.fetch_message(data['message_id'])
-        except:
+        except (discord.NotFound, discord.Forbidden):
             return
 
         emoji_up = await self.config.guild(guild).emoji_up()
@@ -291,6 +331,7 @@ class Suggestions(commands.Cog):
 
         embed = message.embeds[0]
         
+        # Clean title to prevent stacking tags
         clean_title = embed.title.replace("[APPROVED] ", "").replace("[REJECTED] ", "")
         
         if status == 'approved':
@@ -309,7 +350,10 @@ class Suggestions(commands.Cog):
         
         embed.description = new_desc
 
-        await message.edit(embed=embed, view=view)
+        try:
+            await message.edit(embed=embed, view=view)
+        except discord.Forbidden:
+            pass
 
     async def process_suggestion(self, interaction, channel_id, title, text):
         guild = interaction.guild
@@ -334,21 +378,32 @@ class Suggestions(commands.Cog):
             return
 
         view = VoteView(s_id, 0, 0, emoji_up, emoji_down)
+        
+        # Verify permissions
+        perms = channel.permissions_for(guild.me)
+        if not perms.send_messages or not perms.embed_links:
+            await interaction.response.send_message("I do not have permissions to send messages/embeds in the suggestions channel.", ephemeral=True)
+            return
+            
         msg = await channel.send(embed=embed, view=view)
 
-        thread_name = f"{s_id} - {title}"
-        thread = await msg.create_thread(name=thread_name)
+        thread = None
+        if perms.create_public_threads:
+            try:
+                thread_name = f"{s_id} - {title}"
+                thread = await msg.create_thread(name=thread_name)
+                thread_content = f"## Suggestion {s_id} - {title}\n{text}"
+                await thread.send(content=thread_content)
+            except discord.Forbidden:
+                pass # Can't create thread, oh well
 
-        thread_content = f"## Suggestion {s_id} - {title}\n{text}"
-        await thread.send(content=thread_content)
-        
         s_data = {
             "id": s_id,
             "author_id": interaction.user.id,
             "title": title,
             "content": text,
             "timestamp": datetime.datetime.now().timestamp(),
-            "thread_id": thread.id,
+            "thread_id": thread.id if thread else None,
             "message_id": msg.id, 
             "status": "open",
             "reason": "",
@@ -371,14 +426,10 @@ class Suggestions(commands.Cog):
                 pass
 
         try:
-            await interaction.user.send(
-                f"Your suggestion has been created and is open for voting!{reward_msg}\n"
-                f"Link: {thread.jump_url}"
-            )
+            thread_link = f" in {thread.mention}" if thread else ""
+            await interaction.response.send_message(f"Suggestion created{thread_link}!", ephemeral=True)
         except:
-            pass 
-        
-        await interaction.response.send_message(f"Suggestion created in {thread.mention}", ephemeral=True)
+            pass
 
         # Update Sticky Dashboard (Repost at bottom)
         await self.refresh_dashboard(guild, force_repost=True)
@@ -605,6 +656,8 @@ Thread Chat:    {cfg['credits_thread']} (Min Msgs: {cfg['thread_min_msgs']})
             if thread:
                 if not thread.name.startswith("[APPROVED]"):
                     new_name = f"[APPROVED] {thread.name}"
+                    # Ensure name is not too long for Discord (100 chars max)
+                    if len(new_name) > 100: new_name = new_name[:100]
                     await thread.edit(name=new_name, locked=True, archived=True)
                 else:
                     await thread.edit(locked=True, archived=True)
@@ -664,6 +717,7 @@ Thread Chat:    {cfg['credits_thread']} (Min Msgs: {cfg['thread_min_msgs']})
             if thread:
                 if not thread.name.startswith("[REJECTED]"):
                     new_name = f"[REJECTED] {thread.name}"
+                    if len(new_name) > 100: new_name = new_name[:100]
                     await thread.edit(name=new_name, locked=True, archived=True)
                 else:
                     await thread.edit(locked=True, archived=True)
@@ -875,4 +929,6 @@ Thread Chat:    {cfg['credits_thread']} (Min Msgs: {cfg['thread_min_msgs']})
                     await self.update_suggestion_message(guild, data)
                     await interaction.response.send_message(msg_txt, ephemeral=True)
             except Exception as e:
+                # Log actual errors, don't just pass silently if it's a code error
+                # But ignore 404/Unknown Interaction if user clicked too fast
                 pass
