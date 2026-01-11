@@ -451,7 +451,7 @@ class Gortle(commands.Cog):
             sleep_streak = await self.config.consecutive_no_guesses()
             
             if not is_active and sleep_streak >= 3:
-                await message.channel.send("馃ケ I'm awake! Getting a new game ready...")
+                await message.channel.send("I'm awake! Getting a new game ready...")
                 await self.start_new_game(manual=True)
                 return
 
