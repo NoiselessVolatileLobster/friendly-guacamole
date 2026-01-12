@@ -636,6 +636,60 @@ Thread Chat:    {cfg['credits_thread']} (Min Msgs: {cfg['thread_min_msgs']})
         """
         await ctx.send(msg)
 
+    @suggestionsset.command(name="voters")
+    async def ss_voters(self, ctx, suggestion_id: str):
+        """View who upvoted and downvoted a specific suggestion."""
+        data = await self.config.guild(ctx.guild).suggestions()
+        
+        if suggestion_id not in data:
+            return await ctx.send(f"Suggestion #{suggestion_id} not found.")
+        
+        s_data = data[suggestion_id]
+        upvotes = s_data['upvotes']
+        downvotes = s_data['downvotes']
+
+        def resolve_list(user_ids):
+            if not user_ids:
+                return "None"
+            
+            lines = []
+            for uid in user_ids:
+                member = ctx.guild.get_member(uid)
+                if member:
+                    lines.append(f"{member.mention} ({member.id})")
+                else:
+                    lines.append(f"<@{uid}> (Left Server)")
+            
+            full_text = "\n".join(lines)
+            
+            # Discord Embed Field Limit is 1024. Truncate if necessary.
+            if len(full_text) > 1000:
+                truncated = full_text[:950]
+                # Calculate remaining lines outside the f-string to prevent SyntaxError
+                shown_lines_count = truncated.count("\n") + 1
+                remaining = len(lines) - shown_lines_count
+                return truncated + f"\n... and {remaining} more."
+            return full_text
+
+        embed = discord.Embed(
+            title=f"Voters for Suggestion #{suggestion_id}",
+            description=f"**Title:** {s_data.get('title', 'N/A')}",
+            color=discord.Color.gold()
+        )
+
+        embed.add_field(
+            name=f"👍 Upvotes ({len(upvotes)})", 
+            value=resolve_list(upvotes), 
+            inline=False
+        )
+        embed.add_field(
+            name=f"👎 Downvotes ({len(downvotes)})", 
+            value=resolve_list(downvotes), 
+            inline=False
+        )
+
+        await ctx.send(embed=embed)
+
     @suggestionsset.command(name="approve")
     async def ss_approve(self, ctx, suggestion_id: str, *, message: str):
         """Approve a suggestion."""
@@ -756,57 +810,6 @@ Thread Chat:    {cfg['credits_thread']} (Min Msgs: {cfg['thread_min_msgs']})
         await self.refresh_dashboard(ctx.guild, force_repost=False)
         # Update live overview
         await self.update_live_overview(ctx.guild)
-
-    @suggestionsset.command(name="voters")
-    async def ss_voters(self, ctx, suggestion_id: str):
-        """View who upvoted and downvoted a specific suggestion."""
-        data = await self.config.guild(ctx.guild).suggestions()
-        
-        if suggestion_id not in data:
-            return await ctx.send(f"Suggestion #{suggestion_id} not found.")
-        
-        s_data = data[suggestion_id]
-        upvotes = s_data['upvotes']
-        downvotes = s_data['downvotes']
-
-        def resolve_list(user_ids):
-            if not user_ids:
-                return "None"
-            
-            lines = []
-            for uid in user_ids:
-                member = ctx.guild.get_member(uid)
-                if member:
-                    lines.append(f"{member.mention} ({member.id})")
-                else:
-                    lines.append(f"<@{uid}> (Left Server)")
-            
-            # formatting to string
-            full_text = "\n".join(lines)
-            
-            # Discord Embed Field Limit is 1024. Truncate if necessary.
-            if len(full_text) > 1000:
-                return full_text[:950] + f"\n... and {len(lines) - full_text[:950].count('\n')} more."
-            return full_text
-
-        embed = discord.Embed(
-            title=f"Voters for Suggestion #{suggestion_id}",
-            description=f"**Title:** {s_data.get('title', 'N/A')}",
-            color=discord.Color.gold()
-        )
-
-        embed.add_field(
-            name=f"👍 Upvotes ({len(upvotes)})", 
-            value=resolve_list(upvotes), 
-            inline=False
-        )
-        embed.add_field(
-            name=f"👎 Downvotes ({len(downvotes)})", 
-            value=resolve_list(downvotes), 
-            inline=False
-        )
-
-        await ctx.send(embed=embed)
 
     @suggestionsset.command(name="resetstats")
     async def ss_resetstats(self, ctx):
