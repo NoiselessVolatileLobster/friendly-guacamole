@@ -3,9 +3,11 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 
-from redbot.core import commands, Config
+from redbot.core import commands, Config, checks
 from redbot.core.utils.chat_formatting import box
-# tabulate is included in Red's environment
+from redbot.core.utils.predicates import MessagePredicate
+
+# Tabulate is available in the Red environment
 from tabulate import tabulate
 
 class Hibernate(commands.Cog):
@@ -40,6 +42,26 @@ class Hibernate(commands.Cog):
     def cog_unload(self):
         if self.bg_loop:
             self.bg_loop.cancel()
+
+    async def is_hibernating(self, member: discord.Member) -> bool:
+        """
+        Public API: Check if a user is currently hibernating.
+        
+        Usage from another cog:
+            hibernate = bot.get_cog("Hibernate")
+            if hibernate and await hibernate.is_hibernating(member):
+                # do something
+        """
+        if not member:
+            return False
+            
+        end_time = await self.config.member(member).hibernation_end()
+        if end_time:
+            # Check if it hasn't expired yet
+            now = datetime.now(timezone.utc).timestamp()
+            return now < end_time
+            
+        return False
 
     async def check_hibernations(self):
         """Background task to remove roles from users whose hibernation has expired."""
@@ -91,7 +113,6 @@ class Hibernate(commands.Cog):
             except Exception as e:
                 print(f"Error in Hibernate loop: {e}")
 
-    # Using hybrid_command ensures this works as both [p]hibernate AND /hibernate
     @commands.hybrid_command(name="hibernate", description="Self-assign the hibernation role for a set period.")
     @commands.guild_only()
     async def hibernate(self, ctx: commands.Context):
@@ -248,6 +269,7 @@ class Hibernate(commands.Cog):
             return await ctx.send("No users are currently recorded as hibernating.")
 
         headers = ["ID", "User", "End Date", "Time Left"]
+        # Using tabulate within a code block for the table preference
         output = tabulate(table_data, headers=headers, tablefmt="presto")
         
         await ctx.send(box(output, lang="text"))
@@ -359,7 +381,7 @@ class Hibernate(commands.Cog):
         if not target_role:
             return await ctx.send("The configured hibernation role no longer exists.")
 
-        # 2. Check if already hibernating
+        # 2. Check if already hibernating (Optional: You could allow overwriting)
         if target_role in member.roles:
             return await ctx.send(f"{member.display_name} is already hibernating.")
 
