@@ -425,7 +425,7 @@ class Gortle(commands.Cog):
         if top_scorer and top_score > 0:
             try:
                 await top_scorer.add_roles(role, reason="Gortle weekly winner")
-                await target_channel.send(f"顏為唶 **{top_scorer.mention}** is the Gortle Champion of the week with {top_score} points!")
+                await target_channel.send(f":tada: **{top_scorer.mention}** is the Gortle Champion of the week with {top_score} points!")
             except discord.Forbidden:
                 await target_channel.send("I tried to give the weekly role but lack permissions.")
         
