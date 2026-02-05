@@ -1,0 +1,9 @@
+{
+    "author": ["NoiselessVolatileLobster"],
+    "name": "QuestionOfTheDay",
+    "short": "Manage and post scheduled Questions of the Day.",
+    "description": "A robust system for scheduling and managing questions across different channels and lists with advanced priority scheduling.",
+    "tags": ["qotd", "questions", "scheduler", "engagement"],
+    "end_user_data_statement": "This cog stores user IDs for question suggestions and stats.",
+    "min_bot_version": "3.5.0"
+}
