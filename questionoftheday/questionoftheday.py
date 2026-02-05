@@ -34,10 +34,11 @@ class Schedule(BaseModel):
     id: str
     channel_id: int
     frequency: str
-    post_time: Optional[str] = None 
+    post_time: Optional[str] = None
     next_run_time: datetime
-    # New Field: specific lists linked to this schedule.
-    # If empty, the schedule is considered "inactive" or "unconfigured".
+    # If set, this defines the anchor point for the schedule intervals (e.g., Every 2 weeks FROM this date)
+    start_date: Optional[datetime] = None
+    # Specific lists linked to this schedule.
     lists: List[str] = Field(default_factory=list)
 
 class QuestionData(BaseModel):
@@ -275,6 +276,14 @@ class QuestionOfTheDay(commands.Cog):
                         dt_obj = dt_obj.replace(tzinfo=timezone.utc)
                     schedule_dict['next_run_time'] = dt_obj
                 
+                # 1b. Start Date Fix
+                start_date_data = schedule_dict.get('start_date')
+                if isinstance(start_date_data, str):
+                    dt_obj = datetime.fromisoformat(start_date_data)
+                    if dt_obj.tzinfo is None:
+                        dt_obj = dt_obj.replace(tzinfo=timezone.utc)
+                    schedule_dict['start_date'] = dt_obj
+
                 # 2. Cleanup
                 schedule_dict.pop('list_id', None) # Legacy cleanup
                 
@@ -467,6 +476,8 @@ class QuestionOfTheDay(commands.Cog):
 
     def _calculate_next_run_time(self, schedule: Schedule, last_run: datetime) -> datetime:
         now_utc = datetime.now(timezone.utc)
+        
+        # Parse Frequency Delta
         try:
             time_unit = schedule.frequency.split()
             if len(time_unit) != 2: raise ValueError
@@ -478,8 +489,27 @@ class QuestionOfTheDay(commands.Cog):
             elif unit == 'week': delta = timedelta(weeks=amount)
             else: raise ValueError
         except (ValueError, IndexError, TypeError):
+            # Fallback for bad frequency
             return now_utc + timedelta(days=3650) 
             
+        # 1. Start Date Logic (Anchored)
+        if schedule.start_date:
+            # If the start date is in the future, that is our next run.
+            if schedule.start_date > now_utc:
+                return schedule.start_date
+            
+            # If start date is in the past, calculate the next slot based on delta intervals
+            elapsed_seconds = (now_utc - schedule.start_date).total_seconds()
+            delta_seconds = delta.total_seconds()
+            
+            if delta_seconds <= 0: return now_utc + timedelta(days=365)
+
+            periods_passed = int(elapsed_seconds // delta_seconds)
+            next_run = schedule.start_date + (delta * (periods_passed + 1))
+            
+            return next_run
+
+        # 2. Daily/Time Logic (Non-anchored date, but anchored time)
         if schedule.post_time:
             try:
                 hour, minute = map(int, schedule.post_time.split(':'))
@@ -495,6 +525,8 @@ class QuestionOfTheDay(commands.Cog):
                  next_run += delta
                  
             return next_run
+        
+        # 3. Simple Interval Logic (No time anchor)
         else:
             return last_run + delta
 
@@ -643,8 +675,18 @@ class QuestionOfTheDay(commands.Cog):
                 linked_lists = sdata.get('lists', [])
                 linked_str = humanize_list([f"`{l}`" for l in linked_lists]) if linked_lists else "⚠️ No lists linked"
 
+                # Check for start date
+                start_date_str = ""
+                sd_raw = sdata.get('start_date')
+                if isinstance(sd_raw, str):
+                    try: 
+                        sd_dt = datetime.fromisoformat(sd_raw)
+                        start_date_str = f"\n└ Starts: {discord.utils.format_dt(sd_dt, 'D')}"
+                    except: pass
+
                 schedule_text += f"**{sid}** in {chan_name}\n"
-                schedule_text += f"└ Freq: `{sdata.get('frequency')}` | Next: {next_run_str}\n"
+                schedule_text += f"└ Freq: `{sdata.get('frequency')}` | Next: {next_run_str}"
+                schedule_text += f"{start_date_str}\n"
                 schedule_text += f"└ Linked Lists: {linked_str}\n"
 
         if len(schedule_text) > 1024:
@@ -1071,7 +1113,7 @@ class QuestionOfTheDay(commands.Cog):
         pass
 
     @qotd_schedule_management.command(name="add")
-    async def qotd_schedule_add(self, ctx: commands.Context, name: str, channel: discord.TextChannel, frequency: str, post_time: Optional[str] = None):
+    async def qotd_schedule_add(self, ctx: commands.Context, name: str, channel: discord.TextChannel, frequency: str, post_time: Optional[str] = None, start_date: Optional[str] = None):
         """
         Adds a new schedule.
         
@@ -1080,6 +1122,7 @@ class QuestionOfTheDay(commands.Cog):
             channel: The channel to post in.
             frequency: e.g., "1 day", "12 hours".
             post_time: Optional HH:MM UTC time.
+            start_date: Optional start date in YYYY-MM-DD format.
         """
         schedules_data = await self.config.schedules()
         if name in schedules_data:
@@ -1087,6 +1130,8 @@ class QuestionOfTheDay(commands.Cog):
 
         schedule_id = name 
         now_utc = datetime.now(timezone.utc)
+        
+        # Parse frequency
         try:
             time_unit = frequency.split()
             if len(time_unit) != 2: raise ValueError
@@ -1096,18 +1141,61 @@ class QuestionOfTheDay(commands.Cog):
         except (ValueError, IndexError):
             return await ctx.send(warning("Invalid frequency format. Must be like '1 day' or '3 hours'."))
         
-        # Temp schedule to calc run time
-        temp_schedule = Schedule(id=schedule_id, channel_id=channel.id, frequency=frequency, post_time=post_time, next_run_time=now_utc)
-        next_run = self._calculate_next_run_time(temp_schedule, now_utc - timedelta(minutes=1)) 
-        
-        # Real schedule
-        new_schedule = Schedule(id=schedule_id, channel_id=channel.id, frequency=frequency, post_time=post_time, next_run_time=next_run)
+        # Determine anchor/start
+        anchor_dt = None
+        if start_date:
+            try:
+                # Basic YYYY-MM-DD parsing
+                parsed_date = datetime.strptime(start_date, "%Y-%m-%d")
+                
+                # Combine with post_time if exists
+                if post_time:
+                    try:
+                        ph, pm = map(int, post_time.split(':'))
+                        parsed_date = parsed_date.replace(hour=ph, minute=pm)
+                    except ValueError:
+                        return await ctx.send(warning("Invalid post_time format. Use HH:MM."))
+                
+                # Set timezone to UTC
+                anchor_dt = parsed_date.replace(tzinfo=timezone.utc)
+                
+            except ValueError:
+                return await ctx.send(warning("Invalid start_date format. Use YYYY-MM-DD."))
+
+        # Initial Run Calculation
+        initial_next_run = now_utc
+        if anchor_dt:
+            # If start date is in future, that is the first run
+            if anchor_dt > now_utc:
+                initial_next_run = anchor_dt
+            else:
+                # If start date is in past, calculate next slot
+                temp_sched = Schedule(id=schedule_id, channel_id=channel.id, frequency=frequency, post_time=post_time, next_run_time=now_utc, start_date=anchor_dt)
+                initial_next_run = self._calculate_next_run_time(temp_sched, now_utc)
+        else:
+            # Standard logic without start_date anchor
+            temp_sched = Schedule(id=schedule_id, channel_id=channel.id, frequency=frequency, post_time=post_time, next_run_time=now_utc)
+            initial_next_run = self._calculate_next_run_time(temp_sched, now_utc - timedelta(minutes=1))
+
+        # Create final schedule
+        new_schedule = Schedule(
+            id=schedule_id, 
+            channel_id=channel.id, 
+            frequency=frequency, 
+            post_time=post_time, 
+            next_run_time=initial_next_run,
+            start_date=anchor_dt
+        )
         
         serialized_schedule = json.loads(new_schedule.model_dump_json())
         async with self.config.schedules() as schedules:
             schedules[schedule_id] = serialized_schedule
         
-        await ctx.send(f"Added new schedule **{name}** in {channel.mention}. Next run: {discord.utils.format_dt(next_run, 'R')}.\n\n⚠️ **Important:** This schedule has no lists linked! Use `{ctx.prefix}qotd schedule link {name} <list_id>` to add some.")
+        msg = f"Added new schedule **{name}** in {channel.mention}.\nNext run: {discord.utils.format_dt(initial_next_run, 'f')} ({discord.utils.format_dt(initial_next_run, 'R')})."
+        if anchor_dt:
+             msg += f"\nAnchored to start date: {start_date}."
+             
+        await ctx.send(msg + f"\n\n⚠️ **Important:** This schedule has no lists linked! Use `{ctx.prefix}qotd schedule link {name} <list_id>` to add some.")
 
     @qotd_schedule_management.command(name="remove")
     async def qotd_schedule_remove(self, ctx: commands.Context, schedule_id: str):
