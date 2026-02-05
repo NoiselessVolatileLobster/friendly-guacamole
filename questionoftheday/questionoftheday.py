@@ -944,7 +944,37 @@ class QuestionOfTheDay(commands.Cog):
     @qotd_list_management.command(name="view")
     async def qotd_list_view(self, ctx: commands.Context):
         """Displays all available question lists."""
-        await self.qotd_set_view(ctx)
+        lists_data = await self.config.lists()
+        all_questions = await self.config.questions()
+        
+        if not lists_data:
+            return await ctx.send(info("No lists configured."))
+
+        msg = ""
+        for lid, ldata in lists_data.items():
+            ldata = self._migrate_list_dict(ldata)
+            count = sum(1 for q in all_questions.values() if q.get('list_id') == lid)
+            
+            msg += f"**{ldata['name']}** (`{lid}`)\n"
+            msg += f"Questions: {count}\n"
+            
+            if 'priority_rules' in ldata and ldata['priority_rules']:
+                sorted_rules = sorted(ldata['priority_rules'], key=lambda x: x['start_md'])
+                for r in sorted_rules:
+                    p_str = f"Priority {r['priority']}" if r['priority'] > 0 else "Excluded"
+                    msg += f"└ {r['start_md']} to {r['end_md']}: {p_str}\n"
+            msg += "\n"
+
+        pages = list(pagify(msg, page_length=2000)) # Keep it safe for description or content
+        for i, page in enumerate(pages):
+            embed = discord.Embed(
+                title="Question Lists",
+                description=page,
+                color=await ctx.embed_color()
+            )
+            if len(pages) > 1:
+                embed.set_footer(text=f"Page {i+1}/{len(pages)}")
+            await ctx.send(embed=embed)
 
     @qotd_list_management.command(name="clear")
     async def qotd_list_clear(self, ctx: commands.Context, list_id: str):
