@@ -163,19 +163,15 @@ class VibeCheck(getattr(commands, "Cog", object)):
 
     def cog_unload(self):
         # Clean up view when cog is unloaded/reloaded
-        self.bot.remove_view(self.vote_view)
+        # Fix: Check if view exists before removing to prevent AttributeError during crashes
+        if hasattr(self, "vote_view") and self.vote_view:
+            self.bot.remove_view(self.vote_view)
 
     # --- PUBLIC API ---
 
     async def get_vibe_score(self, user_id: int) -> int:
         """
         Public API method for other cogs to retrieve a user's vibe score.
-
-        Args:
-            user_id (int): The Discord ID of the user.
-
-        Returns:
-            int: The global vibe score of the user. Returns 0 if no data exists.
         """
         return await self.conf.user_from_id(user_id).vibes()
 
@@ -183,12 +179,6 @@ class VibeCheck(getattr(commands, "Cog", object)):
         """
         Public API method to retrieve a user's vibe ratio.
         Ratio = Good Vibes Sent - Bad Vibes Sent.
-
-        Args:
-            user_id (int): The Discord ID of the user.
-
-        Returns:
-            int: The vibe ratio.
         """
         user_data = await self.conf.user_from_id(user_id).all()
         return user_data.get("good_vibes_sent", 0) - user_data.get("bad_vibes_sent", 0)
@@ -1371,10 +1361,20 @@ class VibeCheck(getattr(commands, "Cog", object)):
         if not levelup:
             return 0
         
+        # 1. Preferred API Method (Explicitly requested for integration)
+        if hasattr(levelup, "get_level"):
+            try:
+                val = levelup.get_level(member)
+                if asyncio.iscoroutine(val):
+                    val = await val
+                return int(val)
+            except Exception:
+                pass
+        
         uid_str = str(member.id)
         gid = guild.id
         
-        # --- Method 1: Vertyco's New DB Structure (Pydantic) ---
+        # --- Method 2: Vertyco's New DB Structure (Pydantic) ---
         # Checks if the cog uses a 'db' object with specific attributes
         if hasattr(levelup, "db"):
             try:
@@ -1395,7 +1395,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
             except Exception as e:
                 log.debug(f"VibeCheck: Failed to read Vertyco DB: {e}")
 
-        # --- Method 2: Vertyco's Old Data Cache (Dict) ---
+        # --- Method 3: Vertyco's Old Data Cache (Dict) ---
         # Checks direct dictionary access used in older versions
         if hasattr(levelup, "data") and isinstance(levelup.data, dict):
             try:
@@ -1408,7 +1408,7 @@ class VibeCheck(getattr(commands, "Cog", object)):
             except Exception as e:
                 log.debug(f"VibeCheck: Failed to access Vertyco LevelUp data: {e}")
 
-        # --- Method 3: Standard Red Config (Fallback) ---
+        # --- Method 4: Standard Red Config (Fallback) ---
         # Uses the official async Config API
         try:
             # FIX: Use .all() or specific value access, .get() does not exist on Config Group
