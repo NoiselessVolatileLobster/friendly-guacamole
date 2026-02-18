@@ -294,12 +294,15 @@ class ServerLore(commands.Cog):
             
         log_channel = ctx.guild.get_channel(log_channel_id)
         if log_channel and log_channel.permissions_for(ctx.guild.me).send_messages:
-            embed = discord.Embed(title="New Lore Created", color=discord.Color.green())
+            embed = discord.Embed(
+                title="New Lore Created", 
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
             embed.add_field(name="Target", value=f"{user} (`{user.id}`)", inline=True)
             embed.add_field(name="Author", value=f"{ctx.author} (`{ctx.author.id}`)", inline=True)
             embed.add_field(name="Lore", value=message, inline=False)
             embed.add_field(name="Link", value=f"[Jump]({jump_url})", inline=False)
-            embed.set_timestamp(now=True)
             
             try:
                 await log_channel.send(embed=embed)
@@ -319,12 +322,15 @@ class ServerLore(commands.Cog):
             orig_author_id = item_to_delete.get("author", "Unknown")
             orig_content = item_to_delete.get("content", "No content.")
             
-            embed = discord.Embed(title="Lore Deleted", color=discord.Color.red())
+            embed = discord.Embed(
+                title="Lore Deleted", 
+                color=discord.Color.red(),
+                timestamp=discord.utils.utcnow()
+            )
             embed.add_field(name="Target", value=target_text, inline=True)
             embed.add_field(name="Deleted By", value=f"{deleter} (`{deleter.id}`)", inline=True)
             embed.add_field(name="Original Author", value=f"<@{orig_author_id}>", inline=True)
             embed.add_field(name="Original Content", value=orig_content, inline=False)
-            embed.set_timestamp(now=True)
 
             try:
                 await log_channel.send(embed=embed)
