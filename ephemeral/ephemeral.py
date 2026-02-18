@@ -820,6 +820,94 @@ class Ephemeral(commands.Cog):
         await self._handle_ephemeral_success(ctx.guild, user, settings, manual=True)
         await ctx.send(f"✅ Marked {user.mention} as succeeded.")
 
+    @ephemeralset.group(name="manual")
+    @checks.admin_or_permissions(manage_guild=True)
+    async def ephemeralset_manual(self, ctx: commands.Context):
+        """Manual management of Ephemeral users."""
+        pass
+
+    @ephemeralset_manual.command(name="messages")
+    async def manual_messages(self, ctx: commands.Context, user: discord.Member, count: int):
+        """Manually set the message count for an Ephemeral user."""
+        member_data = await self.config.member(user).all()
+        if not member_data["is_ephemeral"]:
+            return await ctx.send(f"{user.mention} is not currently in Ephemeral mode.")
+
+        await self.config.member(user).message_count.set(count)
+        
+        settings = await self.config.guild(ctx.guild).all()
+        threshold = settings["messages_threshold"]
+        
+        await ctx.send(f"✅ Set message count for {user.mention} to **{count}/{threshold}**.")
+
+        if count >= threshold:
+            await self._handle_ephemeral_success(ctx.guild, user, settings, manual=True)
+            await ctx.send(f"🎉 {user.mention} has met the threshold via manual update and has been released from Ephemeral mode.")
+
+    @ephemeralset_manual.command(name="set")
+    async def manual_set(self, ctx: commands.Context, user: discord.Member):
+        """
+        Manually start Ephemeral mode for a user.
+        
+        This sets the roles, initializes the timer, and resets message count.
+        Useful if a user joined while the bot was offline.
+        """
+        guild = ctx.guild
+        settings = await self.config.guild(guild).all()
+        
+        ephemeral_role_id = settings["ephemeral_role_id"]
+        not_started_role_id = settings["ephemeral_not_started_role_id"]
+        read_rules_role_id = settings["ephemeral_read_rules_role_id"]
+
+        if not ephemeral_role_id:
+            return await ctx.send("Ephemeral role is not configured.")
+
+        ephemeral_role = guild.get_role(ephemeral_role_id)
+        not_started_role = guild.get_role(not_started_role_id) if not_started_role_id else None
+        read_rules_role = guild.get_role(read_rules_role_id) if read_rules_role_id else None
+        
+        if not ephemeral_role:
+             return await ctx.send("The configured Ephemeral role no longer exists.")
+
+        # 1. Stop existing timers
+        self.stop_join_timer(guild.id, user.id)
+        self.stop_user_timer(guild.id, user.id)
+
+        # 2. Manage Roles
+        reasons = []
+        try:
+            if not_started_role and not_started_role in user.roles:
+                await user.remove_roles(not_started_role, reason="Manual Ephemeral Start")
+                reasons.append("Removed 'Not Started' role")
+            
+            if ephemeral_role not in user.roles:
+                await user.add_roles(ephemeral_role, reason="Manual Ephemeral Start")
+                reasons.append("Added 'Ephemeral' role")
+                
+            if read_rules_role and read_rules_role not in user.roles:
+                await user.add_roles(read_rules_role, reason="Manual Ephemeral Start")
+                reasons.append("Added 'Read Rules' role")
+        except discord.Forbidden:
+             return await ctx.send("I do not have permission to manage roles for this user.")
+
+        # 3. Set Config
+        now = datetime.now().timestamp()
+        await self.config.member(user).set({
+            "start_time": now,
+            "message_count": 0,
+            "is_ephemeral": True,
+            "first_greeting_sent": False,
+            "second_greeting_sent": False,
+        })
+
+        # 4. Start Timer
+        self.start_user_timer(guild.id, user.id)
+        
+        # 5. Log
+        await self._log_event(guild, f"▶️ **Manual Start:** {user.mention} (`{user.id}`) was manually placed into Ephemeral mode by {ctx.author.mention}.")
+
+        await ctx.send(f"✅ Manually started Ephemeral mode for {user.mention}.\nRoles updated: {', '.join(reasons) if reasons else 'None needed'}.\nTimer started.")
+
     @ephemeralset.command(name="phrase")
     async def ephemeralset_phrase(self, ctx: commands.Context, *, phrase: str):
         """Sets the activation phrase."""
