@@ -1,0 +1,11 @@
+{
+    "author": ["NoiselessVolatileLobster"],
+    "description": "Store and manage lore about server members.",
+    "install_msg": "ServerLore installed. Use `[p]newlore` to add lore and `[p]serverloreset` to configure.",
+    "name": "ServerLore",
+    "permissions": ["manage_messages"],
+    "required_python_version": [3, 8],
+    "short": "Server Lore Manager",
+    "tags": ["lore", "rpg", "notes", "database"],
+    "version": "1.0.0"
+}
