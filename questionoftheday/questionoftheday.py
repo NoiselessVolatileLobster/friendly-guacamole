@@ -1266,6 +1266,42 @@ class QuestionOfTheDay(commands.Cog):
             
         await ctx.send(success(f"Unlinked list `{list_id}` from schedule **{schedule_id}**."))
 
+    @qotd_schedule_management.command(name="force")
+    async def qotd_schedule_force(self, ctx: commands.Context, schedule_id: str):
+        """Forces a schedule to run immediately, skipping the wait."""
+        schedules_data = await self.config.schedules()
+        if schedule_id not in schedules_data:
+            return await ctx.send(warning(f"Schedule `{schedule_id}` not found."))
+
+        schedule_dict = schedules_data[schedule_id]
+        
+        try:
+            if isinstance(schedule_dict.get('next_run_time'), str):
+                schedule_dict['next_run_time'] = datetime.fromisoformat(schedule_dict['next_run_time'])
+            if schedule_dict['next_run_time'].tzinfo is None:
+                schedule_dict['next_run_time'] = schedule_dict['next_run_time'].replace(tzinfo=timezone.utc)
+                
+            start_date_data = schedule_dict.get('start_date')
+            if isinstance(start_date_data, str):
+                dt_obj = datetime.fromisoformat(start_date_data)
+                if dt_obj.tzinfo is None:
+                    dt_obj = dt_obj.replace(tzinfo=timezone.utc)
+                schedule_dict['start_date'] = dt_obj
+                
+            schedule = Schedule.model_validate(schedule_dict)
+        except (ValidationError, ValueError) as e:
+            log.error(f"Failed to validate schedule {schedule_id}: {e}")
+            return await ctx.send(error("Schedule data is corrupted. Check logs."))
+
+        await ctx.send(info(f"Forcing schedule `{schedule_id}` to run now..."))
+        
+        try:
+            await self._post_scheduled_question(schedule_id, schedule)
+            await ctx.send(success(f"Successfully triggered schedule `{schedule_id}`."))
+        except Exception as e:
+            log.exception(f"Error forcing schedule {schedule_id}: {e}")
+            await ctx.send(error(f"An error occurred while forcing the schedule: {e}"))
+
     @qotd_schedule_management.command(name="list")
     async def qotd_schedule_list(self, ctx: commands.Context):
         """Lists all active schedules."""
