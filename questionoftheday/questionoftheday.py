@@ -4,7 +4,7 @@ import logging
 import random
 import uuid
 from datetime import datetime, timedelta, timezone, time
-from typing import Dict, List, Literal, Optional, Set, Union
+from typing import Dict, List, Literal, Optional, Set, Union, Callable, Awaitable
 from pathlib import Path
 
 import discord
@@ -295,6 +295,7 @@ class QuestionOfTheDay(commands.Cog):
                 continue
 
             if schedule and now_utc >= schedule.next_run_time:
+                log.debug(f"Schedule '{schedule_id}' is triggered to run.")
                 try:
                     await self._post_scheduled_question(schedule_id, schedule)
                 except Exception as e:
@@ -372,17 +373,19 @@ class QuestionOfTheDay(commands.Cog):
         candidates.sort(key=lambda x: x[0])
         
         if not candidates:
-            log.info(f"Schedule {schedule_id}: No available lists (all excluded by date rules).")
+            log.info(f"Schedule '{schedule_id}': No available lists (all excluded by date rules).")
             await self._update_schedule_next_run(schedule_id, schedule, now_utc)
             return
 
         selected_q = None
         selected_qid = None
         selected_list_name = ""
+        not_asked_remaining = 0
 
         # 3. Iterate candidates to find a valid question
         # We look at top priority lists first. If they have no questions, we fall back to lower priority.
         for prio, target_list in candidates:
+            log.debug(f"Schedule '{schedule_id}': Checking list '{target_list.name}' (Priority {prio})")
             
             eligible_q_data = {
                 qid: qdata
@@ -391,6 +394,7 @@ class QuestionOfTheDay(commands.Cog):
             }
             
             if not eligible_q_data:
+                log.debug(f"Schedule '{schedule_id}': List '{target_list.name}' has no eligible questions. Skipping.")
                 continue 
 
             eligible_q_objs = []
@@ -408,37 +412,42 @@ class QuestionOfTheDay(commands.Cog):
                 continue
 
             not_asked = [q for q in eligible_q_objs if q.status == "not asked"]
+            not_asked_remaining = len(not_asked)
             
             if not_asked:
                 selected_q = random.choice(not_asked)
                 selected_qid = selected_q.id
+                not_asked_remaining -= 1
+                log.debug(f"Schedule '{schedule_id}': Selected NEW unasked question '{selected_qid}' from '{target_list.name}'. Remaining unasked: {not_asked_remaining}")
             else:
-                # Recycle oldest if all asked
+                log.debug(f"Schedule '{schedule_id}': No new questions in '{target_list.name}'. Falling back to absolutely oldest asked question.")
+                # Recycle the absolute oldest asked question to maximize time between repeats
                 def sort_key(q):
                     if q.last_asked is None: 
-                        return timedelta(days=3650).total_seconds() 
+                        return 0 # Oldest possible timestamp
                     if q.last_asked.tzinfo is None:
                         q.last_asked = q.last_asked.replace(tzinfo=timezone.utc)
-                    return (now_utc - q.last_asked).total_seconds()
+                    return q.last_asked.timestamp()
                 
                 eligible_q_objs.sort(key=sort_key, reverse=False)
-                # Pick from top 5 oldest to add slight variety
-                top_candidates = eligible_q_objs[:min(5, len(eligible_q_objs))]
-                selected_q = random.choice(top_candidates)
+                
+                # Pick absolute oldest
+                selected_q = eligible_q_objs[0]
                 selected_qid = selected_q.id
+                log.debug(f"Schedule '{schedule_id}': Fallback selected question '{selected_qid}' last asked on {selected_q.last_asked}.")
 
             if selected_q:
                 selected_list_name = target_list.name
                 break # Found a question
 
         if not selected_q:
-             log.info(f"Schedule {schedule_id}: Lists available {len(candidates)}, but no questions found in them.")
+             log.info(f"Schedule '{schedule_id}': Lists available {len(candidates)}, but no valid questions found in them.")
              await self._update_schedule_next_run(schedule_id, schedule, now_utc)
              return
 
         channel = self.bot.get_channel(schedule.channel_id)
         if not channel:
-            log.warning(f"Schedule {schedule_id}: Channel {schedule.channel_id} not found.")
+            log.warning(f"Schedule '{schedule_id}': Channel {schedule.channel_id} not found.")
             await self._update_schedule_next_run(schedule_id, schedule, now_utc)
             return
             
@@ -457,12 +466,21 @@ class QuestionOfTheDay(commands.Cog):
         embed.set_footer(text=footer_text)
         # --------------------
 
+        # Trigger Low Question Warning if < 5 new questions remain
+        warning_msg = None
+        if not_asked_remaining < 5:
+            warning_msg = "⚠️ We're running low on questions! Click the **Suggest A Question** to add more!"
+            log.debug(f"Schedule '{schedule_id}': Low questions trigger hit for list '{selected_list_name}' ({not_asked_remaining} unasked left).")
+
         try:
             lists_data = await self.config.lists()
             list_names = [v['name'] for v in lists_data.values() if v['id'] not in ["suggestions", "unassigned"]]
             view = SuggestionButton(self, list_names) 
             
-            await channel.send(embed=embed, view=view)
+            if warning_msg:
+                await channel.send(content=warning_msg, embed=embed, view=view)
+            else:
+                await channel.send(embed=embed, view=view)
             
             selected_q.status = "asked"
             selected_q.last_asked = now_utc
@@ -624,44 +642,41 @@ class QuestionOfTheDay(commands.Cog):
         )
         embed.add_field(name="Global Settings", value=global_settings, inline=False)
 
-        # 2. Lists
+        # 2. Lists Code-Block Table using Red's formatting tools
         lists_data = await self.config.lists()
         all_questions = await self.config.questions()
         
-        list_text = ""
         if not lists_data:
             list_text = "No lists defined."
         else:
+            list_lines = []
+            list_lines.append(f"{'ID':<12} | {'Name':<18} | {'Tot':<4} | {'New':<4}")
+            list_lines.append("-" * 47)
             for lid, ldata in lists_data.items():
                 ldata = self._migrate_list_dict(ldata) 
-                
-                count = sum(1 for q in all_questions.values() if q.get('list_id') == lid)
-                list_text += f"**{ldata['name']}** (`{lid}`): {count} questions\n"
-                
-                if 'priority_rules' in ldata and ldata['priority_rules']:
-                    sorted_rules = sorted(ldata['priority_rules'], key=lambda x: x['start_md'])
-                    for r in sorted_rules:
-                        p_str = f"Priority {r['priority']}" if r['priority'] > 0 else "Excluded"
-                        list_text += f"└ {r['start_md']} to {r['end_md']}: {p_str}\n"
+                list_qs = [q for q in all_questions.values() if q.get('list_id') == lid]
+                count = len(list_qs)
+                new_count = sum(1 for q in list_qs if q.get('status') == 'not asked')
+                list_lines.append(f"{lid[:12]:<12} | {ldata['name'][:18]:<18} | {count:<4} | {new_count:<4}")
+            
+            list_text = box("\n".join(list_lines)[:1000], lang="text")
 
-        if len(list_text) > 1024:
-            list_text = list_text[:1021] + "..."
-        
-        if not list_text: list_text = "No lists configured."
+        embed.add_field(name="Question Lists Overview", value=list_text, inline=False)
 
-        embed.add_field(name="Question Lists & Priorities", value=list_text, inline=False)
-
-        # 3. Schedules
+        # 3. Schedules Code-Block Table
         schedules_data = await self.config.schedules()
-        schedule_text = ""
         
         if not schedules_data:
             schedule_text = "No schedules defined."
         else:
+            sched_lines = []
+            sched_lines.append(f"{'ID':<12} | {'Channel':<15} | {'Next Run':<15}")
+            sched_lines.append("-" * 50)
+            
             for sid, sdata in schedules_data.items():
                 chan_id = sdata.get('channel_id')
                 chan = ctx.guild.get_channel(chan_id)
-                chan_name = chan.mention if chan else f"Invalid Channel {chan_id}"
+                chan_name = chan.name[:15] if chan else str(chan_id)[:15]
                 
                 run_time_str = sdata.get('next_run_time')
                 next_run_str = "Unknown"
@@ -669,30 +684,20 @@ class QuestionOfTheDay(commands.Cog):
                     try:
                         rt = datetime.fromisoformat(run_time_str)
                         if rt.tzinfo is None: rt = rt.replace(tzinfo=timezone.utc)
-                        next_run_str = discord.utils.format_dt(rt, "R")
-                    except: next_run_str = "Invalid Date"
-
-                linked_lists = sdata.get('lists', [])
-                linked_str = humanize_list([f"`{l}`" for l in linked_lists]) if linked_lists else "⚠️ No lists linked"
-
-                # Check for start date
-                start_date_str = ""
-                sd_raw = sdata.get('start_date')
-                if isinstance(sd_raw, str):
-                    try: 
-                        sd_dt = datetime.fromisoformat(sd_raw)
-                        start_date_str = f"\n└ Starts: {discord.utils.format_dt(sd_dt, 'D')}"
+                        next_run_str = rt.strftime("%b %d %H:%M")
                     except: pass
 
-                schedule_text += f"**{sid}** in {chan_name}\n"
-                schedule_text += f"└ Freq: `{sdata.get('frequency')}` | Next: {next_run_str}"
-                schedule_text += f"{start_date_str}\n"
-                schedule_text += f"└ Linked Lists: {linked_str}\n"
-
-        if len(schedule_text) > 1024:
-            schedule_text = schedule_text[:1021] + "..."
+                sched_lines.append(f"{sid[:12]:<12} | {chan_name:<15} | {next_run_str:<15}")
+                
+                linked_lists = sdata.get('lists', [])
+                if linked_lists:
+                    sched_lines.append(f"  └ Lists: {','.join(linked_lists)}")
+                else:
+                    sched_lines.append(f"  └ [No Lists Linked!]")
+                
+            schedule_text = box("\n".join(sched_lines)[:1000], lang="text")
             
-        embed.add_field(name="Schedules", value=schedule_text, inline=False)
+        embed.add_field(name="Schedules Overview", value=schedule_text, inline=False)
 
         await ctx.send(embed=embed)
 
@@ -992,26 +997,31 @@ class QuestionOfTheDay(commands.Cog):
         if not lists_data:
             return await ctx.send(info("No lists configured."))
 
-        msg = ""
+        lines = []
+        lines.append(f"{'ID':<15} | {'List Name':<25} | {'Tot':<5} | {'New':<5}")
+        lines.append("-" * 60)
+
         for lid, ldata in lists_data.items():
             ldata = self._migrate_list_dict(ldata)
             count = sum(1 for q in all_questions.values() if q.get('list_id') == lid)
+            new_count = sum(1 for q in all_questions.values() if q.get('list_id') == lid and q.get('status') == 'not asked')
             
-            msg += f"**{ldata['name']}** (`{lid}`)\n"
-            msg += f"Questions: {count}\n"
+            name_str = ldata['name'][:25]
+            id_str = lid[:15]
+            lines.append(f"{id_str:<15} | {name_str:<25} | {count:<5} | {new_count:<5}")
             
             if 'priority_rules' in ldata and ldata['priority_rules']:
                 sorted_rules = sorted(ldata['priority_rules'], key=lambda x: x['start_md'])
                 for r in sorted_rules:
                     p_str = f"Priority {r['priority']}" if r['priority'] > 0 else "Excluded"
-                    msg += f"└ {r['start_md']} to {r['end_md']}: {p_str}\n"
-            msg += "\n"
+                    lines.append(f"  └ {r['start_md']} to {r['end_md']}: {p_str}")
 
-        pages = list(pagify(msg, page_length=2000)) # Keep it safe for description or content
+        full_text = "\n".join(lines)
+        pages = list(pagify(full_text, page_length=1900))
         for i, page in enumerate(pages):
             embed = discord.Embed(
-                title="Question Lists",
-                description=page,
+                title="Question Lists Detailed View",
+                description=box(page, lang="text"),
                 color=await ctx.embed_color()
             )
             if len(pages) > 1:
