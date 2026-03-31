@@ -16,14 +16,14 @@ class AWordAnHour(commands.Cog):
         }
         self.config.register_guild(**default_guild)
 
-    @commands.group(name="awah", invoke_without_command=True)
+    @commands.group(name="awordanhourset", invoke_without_command=True)
     @commands.guild_only()
     @checks.admin_or_permissions(manage_guild=True)
-    async def awah(self, ctx):
+    async def awordanhourset(self, ctx):
         """Configuration commands for AWordAnHour."""
         await ctx.send_help()
 
-    @awah.command(name="channel")
+    @awordanhourset.command(name="channel")
     async def set_channel(self, ctx, channel: discord.TextChannel):
         """Set the channel where the game will be played."""
         await self.config.guild(ctx.guild).channel_id.set(channel.id)
@@ -42,17 +42,20 @@ class AWordAnHour(commands.Cog):
         await channel.send(embed=embed)
         await ctx.send(f"AWordAnHour channel set to {channel.mention}.")
 
-    @awah.command(name="reset")
+    @awordanhourset.command(name="reset")
     async def reset_sentence(self, ctx):
         """Manually reset the current sentence."""
         await self.config.guild(ctx.guild).current_sentence.set([])
         await ctx.send("The sentence has been reset.")
 
-    @awah.command(name="view")
+    @awordanhourset.command(name="view")
     async def view_sentence(self, ctx):
         """View the configured channel and current sentence in progress."""
         channel_id = await self.config.guild(ctx.guild).channel_id()
-        words = await self.config.guild(ctx.guild).current_sentence()
+        words_data = await self.config.guild(ctx.guild).current_sentence()
+        
+        # Extract words, handling backward compatibility for older strings
+        words = [w["word"] if isinstance(w, dict) else w for w in words_data]
         
         # Determine Channel Status
         if channel_id:
@@ -73,15 +76,46 @@ class AWordAnHour(commands.Cog):
             
         await ctx.send(f"{channel_status}\n\n{sentence_status}")
 
+    @awordanhourset.command(name="remove")
+    async def remove_words(self, ctx, amount: int):
+        """Remove the last X words from the sentence and delete their messages."""
+        if amount <= 0:
+            return await ctx.send("Please provide a positive number of words to remove.")
+
+        channel_id = await self.config.guild(ctx.guild).channel_id()
+        channel = ctx.guild.get_channel(channel_id)
+
+        async with self.config.guild(ctx.guild).current_sentence() as sentence:
+            if not sentence:
+                return await ctx.send("The sentence is currently empty.")
+
+            amount = min(amount, len(sentence))
+            removed_items = sentence[-amount:]
+            del sentence[-amount:]
+
+        # Delete the corresponding messages if we have the channel and message IDs
+        if channel:
+            for item in removed_items:
+                if isinstance(item, dict) and "message_id" in item:
+                    try:
+                        msg = await channel.fetch_message(item["message_id"])
+                        await msg.delete()
+                    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                        continue # Skip if message was already deleted or we lack permissions
+
+        await ctx.send(f"Successfully removed the last {amount} word(s) from the story.")
+
     async def finish_sentence(self, channel, guild):
         """Helper to finalize the sentence, post the embed, and pin it."""
-        words = await self.config.guild(guild).current_sentence()
+        words_data = await self.config.guild(guild).current_sentence()
         
-        if not words:
+        if not words_data:
             # If empty, we don't post a "finished" embed, just a small notice
             await channel.send("The sentence was empty, so we are just starting fresh!", delete_after=5)
             return
 
+        # Extract words, handling backward compatibility for older strings
+        words = [w["word"] if isinstance(w, dict) else w for w in words_data]
         text = " ".join(words)
         
         # Create the Finished Sentence Embed
@@ -120,7 +154,7 @@ class AWordAnHour(commands.Cog):
 
         content = message.content.strip()
 
-        # Check for Stop via Message (Still strictly enforced if someone types it manually)
+        # Check for Stop via Message
         if content == "🛑":
             await self.finish_sentence(message.channel, message.guild)
             return
@@ -134,9 +168,9 @@ class AWordAnHour(commands.Cog):
                 pass 
             return
 
-        # If we passed checks, add the word
+        # If we passed checks, add the word AND message ID
         async with self.config.guild(message.guild).current_sentence() as s:
-            s.append(content)
+            s.append({"word": content, "message_id": message.id})
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload):
